@@ -1,0 +1,242 @@
+=== SOURCE: current_sensing_application.pdf ===
+=== PAGES: 4 ===
+
+
+--- PAGE 1 ---
+Application Brief
+Current Sensing Applications in Communication 
+Infrastructure Equipment
+In this article, a fresh look is taken into the 
+major electronic end equipment for cellular wireless 
+infrastructure (WI) from the perspective of current 
+sensing (CS). Several types of CS applications in 
+such equipment are reviewed.
+Current Sensing in Power Supply Block
+As shown in Figure 1, the power supply for the 
+WI equipment comes from the utility grid, solar 
+energy, or sometimes a combination of the two. The 
+power supply is often backed up with battery storage 
+for uninterrupted service during a power outage, 
+especially in remote areas where solely depending on 
+grid electricity is not an option due to limitations from 
+physical accessibility or economic feasibility.
+AC/DC
+DCDC Charger
+Load
+Figure 1. WI Power Supply Block Diagram
+The power supply block can be either integrated 
+into the WI end equipment, or can be stand-
+alone. Regardless of the implementation, a common 
+requirement is an intelligent power management 
+system to charge batteries and provide seamless 
+transitions between power sources. Current and 
+voltage sensing is an indispensable function in such 
+power management systems.
+Current sensing can be implemented either on the 
+high side or on the low side. Dedicated high-voltage, 
+shunt-based, Current Sense Amplifiers (CSA) such as 
+the INA240 or INA241A are often required for fault 
+to ground prevention. Magnetic current sensors such 
+as the TMCS1123 or TMCS1101 are both options 
+for high-voltage applications due to their inherent 
+galvanic isolation. The TMCS1123 provides ambient 
+field rejection, fast overcurrent detection, and is 
+capable of 75ARMS of continuous current flow perfect 
+for incoming grid or solar power.
+Current Sensing at Point Of Load
+The typical WI electronic system is powered from a 
+DC bus, such as 12 V to 48 V. Lower supply rails are 
+derived from the bus voltage.
+These lower voltage rails are called point-of-load 
+(POL) supplies, stemming from the fact that these 
+rails satisfy a set of specific requirements and are 
+typically located in the vicinity of the supported 
+loads. Depending on how critical or informative 
+the measurements are, monitoring the current or 
+voltage in one or more of these POL supplies is 
+recommended. The main requirements for the CSA 
+in this situation can include (among others) accuracy, 
+speed, dynamic range, and power dissipation by the 
+associated shunt resistor.
+CSA
+VDD
+Point of Load
+CSA
+High Side I-Sense
+Low Side I-Sense
+Figure 2. Point of Load Current Sensing Options
+As shown in Figure 2, current can be sensed at either 
+side of the load, with analog or digital CSA, and 
+through either external or integrated shunt resistors.
+CSA comes with a matched resistor gain network that 
+provides value in terms of cost, board space, and 
+performance. Most CSAs feature fixed-gain, ranging 
+from 10 to 1000. Some CSAs offer configurable 
+gain. For example, the INA225 has configurable gain 
+through two digital control pins, while other CSAs 
+have a gain that is configurable through an external 
+resistor, such as INA139.
+System integration is further improved when a 
+selected CSA that comes with integrated analog 
+to digital conversion (ADC) and a shunt resistor. 
+EZShunt™ Technology integrates the shunt resistor 
+into the leadframe of the device, that generally 
+reduces the overall form factor of the current sensing 
+www.ti.com
+SBOA366C – DECEMBER 2020 – REVISED AUGUST 2023
+Submit Document Feedback
+Current Sensing Applications in Communication Infrastructure Equipment
+1
+Copyright © 2023 Texas Instruments Incorporated
+
+--- PAGE 2 ---
+circuit. The INA700 is an ultra-small wafer chip scale 
+digital power monitor with a 40-V common mode 
+range and a 2-mΩ leadframe resistance, which makes 
+the device 10ARMS capable. The INA780A is a slightly 
+larger EZShunt™ product offered in a QFN package 
+with a 85-V common-mode range and a 400-μΩ 
+leadframe resistance, making the device 75ARMS 
+capable.
+The key considerations in selecting a CSA and 
+associated shunt resistor for POL measurement starts 
+with common-mode voltage, current range, accuracy, 
+and speed. In addition, if overcurrent protection (OCP) 
+is required, a CSA with an integrated fast-action 
+comparator is often the best choice, where system 
+parameters such as offset and propagation delay are 
+specified. Compared with discrete components, such 
+a CSA helps remove uncertainties and as a result, 
+simplifies the design.
+To monitor multiple POLs, a multichannel CSA such 
+as the INA4290 or INA4180 can make sense, since 
+these amplifiers offer four channels of analog output. 
+When a microcontroller or FPGA is present in the 
+equipment, an ADC channel is typically available, as 
+well as a digital bus such as I2C. In this situation, an 
+analog or digital output CSA can be implemented as 
+a POL monitor. A multichannel digital monitor such as 
+the INA3221 is another option that frees up controller 
+ADC channels while taking advantage of an existing 
+I2C bus. This device offers a number of warning and 
+alert signals for fast action in case of a fault, as 
+well as current, voltage, or power information of three 
+independent channels.
+Current Sensing in Power Amplifiers
+The bias current in power amplifiers (PA) is adjusted 
+to meet the need of an end application, modulation 
+scheme, and operation class. A typical PA with 
+current sensing is shown in Figure 3.
+The PA is often constructed with silicon LDMOS 
+or GaN technology. Current sensing is important in 
+PA applications, both from the standpoint of the 
+PA operation and from the standpoint of overall 
+energy efficiency management. Under the same bias 
+voltage, the PA bias current differs due to device 
+variation. Further, the bias current changes with 
+temperature. Consequently, for the PA controller to 
+accurately control the bias current, both the current 
+and temperature information must be available. The 
+bias current information is required in improving 
+system efficiency, where approximately 50% of total 
+system power is consumed by the PA itself.
+Integrated power amplifier monitor and control 
+systems, such as the AMC7836, can simplify PA 
+circuit design. As mentioned, due to natural device 
+variation, knowing gate voltage alone is sometimes 
+not sufficient to achieve accurate bias current control. 
+When current sensing is required in the control loop, 
+a separate high-voltage CSA (such as the INA290 or 
+INA281) can be used.
+Power amplifier monitor and control systems such 
+as the AMC7834 are another option with integrated 
+current sensing capability. Such a design offers the 
+possibility of further reducing board space.
+Current/Voltage/Power/
+Energy Sense
+RF Input
+Temperature Sense
+ PA Controller 
+(w/uC or FPGA)
+ADC
+DAC
+VDD
+d
+s
+g
+Figure 3. PA Biasing and Current Sensing
+Alternate Device Recommendations
+TI offers a complete line of CSA and magnetic 
+sensors that serve in WI end equipment, from 
+high-voltage supply current and PA current sensing 
+to general purpose POL current monitoring. The 
+high-voltage INA310A also comes with integrated 
+comparator and reference output to facilitate the 
+OCP requirement. For applications where excellent 
+accuracy is required, the INA190 family of devices 
+are options with nA input bias current. These devices 
+are essential in situations where the sensed current 
+is small. Some of these devices come with Enable 
+pins for further power reduction; some are offered 
+in a WCSP package for board space optimization. 
+For applications with lower common mode voltage 
+requirements, the INA180 offers speed and overall 
+performance value. The INA301 family of devices 
+features integrated fast comparators and high-speed 
+amplifiers. Both outputs that are available that meet 
+the requirements of OCP.
+Table 1. Alternate Device Recommendations
+Device
+Characteristics
+INA310A
+Common mode range -4 V to 110 V; 
+comparator
+INA180
+Low IQ; High bandwidth
+INA190
+Low IQ; Low IB; enable pin
+INA301
+High bandwidth amplifier; fast comparator
+www.ti.com
+2
+Current Sensing Applications in Communication Infrastructure Equipment
+SBOA366C – DECEMBER 2020 – REVISED AUGUST 2023
+Submit Document Feedback
+Copyright © 2023 Texas Instruments Incorporated
+
+--- PAGE 3 ---
+Related Documentation
+1.
+Texas Instruments, Hybrid Battery Charger With Load Control for Telecom Equipment, application note.
+2.
+Texas Instruments, Precision Current Measurements on High-Voltage Power Supply Rails, application brief.
+3.
+Texas Instruments, Common Uses for Multichannel Current Monitoring
+www.ti.com
+SBOA366C – DECEMBER 2020 – REVISED AUGUST 2023
+Submit Document Feedback
+Current Sensing Applications in Communication Infrastructure Equipment
+3
+Copyright © 2023 Texas Instruments Incorporated
+
+--- PAGE 4 ---
+IMPORTANT NOTICE AND DISCLAIMER
+TI PROVIDES TECHNICAL AND RELIABILITY DATA (INCLUDING DATA SHEETS), DESIGN RESOURCES (INCLUDING REFERENCE 
+DESIGNS), APPLICATION OR OTHER DESIGN ADVICE, WEB TOOLS, SAFETY INFORMATION, AND OTHER RESOURCES “AS IS” 
+AND WITH ALL FAULTS, AND DISCLAIMS ALL WARRANTIES, EXPRESS AND IMPLIED, INCLUDING WITHOUT LIMITATION ANY 
+IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT OF THIRD 
+PARTY INTELLECTUAL PROPERTY RIGHTS.
+These resources are intended for skilled developers designing with TI products. You are solely responsible for (1) selecting the appropriate 
+TI products for your application, (2) designing, validating and testing your application, and (3) ensuring your application meets applicable 
+standards, and any other safety, security, regulatory or other requirements.
+These resources are subject to change without notice. TI grants you permission to use these resources only for development of an 
+application that uses the TI products described in the resource. Other reproduction and display of these resources is prohibited. No license 
+is granted to any other TI intellectual property right or to any third party intellectual property right. TI disclaims responsibility for, and you 
+will fully indemnify TI and its representatives against, any claims, damages, costs, losses, and liabilities arising out of your use of these 
+resources.
+TI’s products are provided subject to TI’s Terms of Sale or other applicable terms available either on ti.com or provided in conjunction with 
+such TI products. TI’s provision of these resources does not expand or otherwise alter TI’s applicable warranties or warranty disclaimers for 
+TI products.
+TI objects to and rejects any additional or different terms you may have proposed. IMPORTANT NOTICE
+Mailing Address: Texas Instruments, Post Office Box 655303, Dallas, Texas 75265
+Copyright © 2023, Texas Instruments Incorporated

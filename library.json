@@ -1,0 +1,40 @@
+{
+  "name": "INA3221",
+  "version": "0.1.0",
+  "description": "Production-grade INA3221 triple-channel power monitor driver",
+  "keywords": [
+    "ina3221",
+    "power-monitor",
+    "current-sensor",
+    "voltage-monitor",
+    "i2c",
+    "13-bit"
+  ],
+  "authors": [
+    {
+      "name": "Thymos Solution s.r.o",
+      "email": "info@thymos.cz",
+      "url": "https://www.thymos.cz",
+      "maintainer": true
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://www.thymos.cz/INA3221.git"
+  },
+  "license": "MIT",
+  "homepage": "https://www.thymos.cz",
+  "frameworks": [
+    "arduino"
+  ],
+  "platforms": [
+    "espressif32"
+  ],
+  "headers": [
+    "INA3221/INA3221.h"
+  ],
+  "build": {
+    "includeDir": "include",
+    "srcDir": "src"
+  }
+}

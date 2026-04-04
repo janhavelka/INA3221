@@ -1,0 +1,48 @@
+# INA3221 ESP-IDF Portability Status
+
+Last audited: 2026-04-03
+
+## Current Reality
+- Primary runtime remains PlatformIO + Arduino.
+- Core I2C access is callback-based (`Config.i2cWrite`, `Config.i2cWriteRead`).
+- Optional timing hooks are already available (`Config.nowMs`, `Config.cooperativeYield`, `Config.timeUser`).
+- Core logic does not call Arduino timing APIs directly.
+- Arduino timing is used only in fallback wrappers:
+  - `INA3221::_nowMs()` -> `millis()` when `Config.nowMs == nullptr`
+  - `INA3221::_cooperativeYield()` -> `yield()` when `Config.cooperativeYield == nullptr`
+
+## ESP-IDF Adapter Requirements
+To run under pure ESP-IDF, provide:
+1. I2C write callback.
+2. I2C write-read callback.
+3. Optional timing callbacks for full Arduino independence:
+   - `nowMs(user)`
+   - `cooperativeYield(user)`
+
+## Minimal Adapter Pattern
+```cpp
+static uint32_t idfNowMs(void*) {
+  return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+}
+
+static void idfYield(void*) {
+  taskYIELD();
+}
+
+INA3221::Config cfg{};
+cfg.i2cWrite = myI2cWrite;
+cfg.i2cWriteRead = myI2cWriteRead;
+cfg.nowMs = idfNowMs;
+cfg.cooperativeYield = idfYield;
+```
+
+## Porting Notes
+- Keep using `tick(nowMs)` from the application scheduler/task loop.
+- Transport callbacks should map native errors to `INA3221::Status` consistently.
+- Preserve timeout behavior by honoring the `timeoutMs` callback argument.
+
+## Verification Checklist
+- `python tools/check_core_timing_guard.py` passes.
+- Native tests pass (`pio test -e native`).
+- Example build passes (`pio run -e ex_bringup_s3`).
+- No new direct `millis/micros/yield/delay` calls are added outside portability wrappers.

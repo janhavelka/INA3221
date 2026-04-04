@@ -1,0 +1,878 @@
+=== SOURCE: current_sense_amplifiers.pdf ===
+=== PAGES: 8 ===
+
+
+--- PAGE 1 ---
+Current Sense Amplifiers
+2021
+ti.com/currentsense
+
+--- PAGE 2 ---
+2  |  Current Sense Amplifiers Guide 2021	
+Texas Instruments
+Integrates the full analog signal 
+processing and provides a voltage 
+or current output.  
+Integrates the full signal conditioning 
+path and utilizes a standard 2-wire 
+digital interface.
+Provides a simple ALERT signal when 
+the load current exceeds a threshold.
+Offers a low-drift, precision integrated 
+sense element.
++
+_
+_
++
+_
++
+_
++
+Current Sense Amplifiers
+Introduction
+What are Current Sense Amplifiers? 
+Current sense amplifiers, also called current shunt monitors, are specialized 
+differential amplifiers with a precisely matched resistive gain network with the 
+following characteristics:
+•	 Designed to monitor the current flow by measuring the voltage drop across 	
+a sense element, typically a shunt resistor
+•	 Tend to be easier to use, more precise and less prone to noise
+•	 Support currents from 10s of µA to 100s of A
+•	 Natively support common-mode voltages from -16 to +80 V and with 	
+additional circuitry up to 100s of volts 
+System benefits addressed by using current sense amplifiers:
+•	 Real-time overcurrent protection
+•	 Current and power monitoring for system optimization
+•	 Current measurement for closed-loop feedback
+Key Parameters
+Common Mode Range:
+This specification defines the DC voltage range at the input of an amplifier with 
+respect to ground. Current sense amplifiers are typically designed to support 
+common-mode voltages well beyond the chip supply voltage. For example, the 
+INA240 is capable of supporting a common-mode voltages between -4 V to +80 V 
+while running on a supply as low as 2.7 V.
+Offset Voltage:
+This is a differential DC error at the input of the amplifier. Historically, to reduce 
+the impact of amplifiers with high offsets, larger value shunt resistors were used 
+to increase the measured voltage drop. Today, TI is able to offer current sense 
+amplifiers with offsets as low as 10µV, enabling higher precision measurements 
+at low currents and allowing the use of smaller value shunt resistors for improved 
+system efficiency.
+Gain:
+Current sense amplifiers come with various gain options that have robust 
+performance over temperature and process variations by integrating a precisely 
+matched resistive gain network. The gain options for fixed gain amplifiers vary 
+from 0.125 V/V to 1000 V/V with gain errors as low as 0.01%. 
+Temperature Stability:
+Current sense amplifiers integrate the amplifier along with all the gain-setting 
+resistors which enables small and unified temperature drift. This allows for robust 
+current measurements across the whole specified temperature range. The achieved 
+temperature stability is one of the key advantages current sense amplifiers have over 
+discrete implementations.
+Analog output
+Digital output
+Comparator output
+Integrated shunt
+
+--- PAGE 3 ---
+Texas Instruments	
+Current Sense Amplifiers Guide 2021  |  3
+Current Sense Amplifiers
+Key Design Considerations
+High-Side Measurements
+Current sensing techniques connect the current sense element 	
+between the supply bus and the load.
+System Advantages:
+•	 Able to detect load short to ground
+•	 Current is monitored directly from the source
+•	 High immunity to ground disturbance
+ System Challenges:
+•	 High bus voltage limits the availability of high input common-mode 
+voltage devices 
+Advantages Over Discrete Current Sense Circuit:
+•	 Integrated gain resistors provide excellent matching to enable a 
+higher performing and more stable platform
+•	 Reduction in board space requirements
+•	 High dynamic changes in the common-mode voltage are difficult 	
+to achieve with standard op amps
+•	 Unique input architecture allows for the common-mode voltage 	
+to greatly exceed the device supply voltage
+Low-Side Measurements
+Current sensing techniques connect the current sense element 	
+between the load and ground.
+System Advantages:
+•	 Simple to implement and low-cost solution
+•	 Wide range of available options
+System Challenges:
+•	 Difficult to detect load short to ground
+•	 System ground disturbance by the shunt resistor
+Advantages Over Discrete Current Sense Circuit:
+•	 Integrated gain resistors provide excellent matching to enable a 
+higher performing and more stable platform
+•	 Reduction in board space requirements
+•	 True differential measurement across the shunt resistor
+•	 Lower VOFFSET saves system power by enabling the use of  	
+smaller value shunt resistors to achieve the same error level
+LOAD
+Bus
+voltage
+INA290
++5V
++5V
+I2C
+RS
+ADS114
++
+–
+LOAD
+INA181
++5V
+I2C
+RS
+ADS114
++
+–
+Bus
+voltage
+In-line Measurements
+Current sensing techniques connect the current sense element in-line 
+to the load.
+System advantages:
+•	 True phase current at all times reduces phase to phase errors
+•	 Best current feedback for greatest accuracy
+System Challenges:
+•	 PWM common-mode voltage seen by amplifier
+•	 High common-mode voltage combined with high dV/dT poses steep 
+challenge to many amplifiers
+INA240 advantages over discrete current sense circuit
+•	 Enhanced PWM rejection provides high levels of suppression for large 
+common-mode transients (dV/dT) in systems that use PWM signals
++
+Supply
+IN+
+(2.7 V to 5.5 V)
+IN-
+REF2
+REF1
+OUT
+Typical application
+BUS
+M
+INA240
+
+--- PAGE 4 ---
+4  |  Current Sense Amplifiers Guide 2021	
+Texas Instruments
+Current sensing reference designs. See more designs online at ti.com/referencedesigns.
+Design Number
+Description
+TIDA-00795
+Automotive Precision eFuse
+One of the keys to preventing damage in automotive 
+electronic systems is the ability to detect and react 
+to potentially damaging conditions as rapidly as 
+possible. This INA300-Q1 eFuse reference design is 
+focused on providing high accuracy and fast response 
+over-current protection at current levels as high as 
+30 A and scalable to > 100 A. 
+TIDA-00528
+40 V to 400 V Unidirectional Current/
+Voltage/Power Monitoring
+This reference design demonstrates a simple, non-
+isolated technique using a precision op amp and a  
+high voltage P-FET to extend the common-mode voltage 
+of a current sense amplifier up to 400 V. With minor 
+component changes, this design can be optimized 
+for any voltage ranging from 40 to 400 V.
+TIDA-00753
+Three-phase Current Measurements  
+for Motor
+Maximizing motor control requires accurate current 
+measurement.  This reference design featuring 
+the INA199 demonstrates a method for enhancing 
+the signal chain on the output of a current transformer.  
+In addition, this circuit offers significant power 
+savings by lowering the burden resistor value.
+Battery
+/ LOAD
+Current
+shunt
+Bi-Directional eFuse
++
++
+Battery
+/ LOAD
+INA300
+INA300
+Transient
+supressiion
+Transient
+supressiion
+Reverse 
+polarity
+protection &
+switch
+Current Sense Amplifiers
+Reference Designs
+300K Ω
+4.75K Ω
+36 V Transorb
+Device supply
+VS (2.7 to 5.5 V)
+I = VSENSE / R1
+VSENSE
+RZ
+5.1 V Zener
+OPA333
+R1 10 Ω
+VSENSE
+VSENSE
+RSHUNT
+R1 10 Ω
+10K Ω
+600 V
+P-FET
+Load
+Bus supply
+400 V
+SCL
+SDA
+MicroController/
+USBDIG
++
+-
++
+-
++
+-
+VS
+INA226
+VBus
+SCL
+SDA
+IN+
+IN-
+GND
+RSHUNT
+IN-
+IN+
+OUT
+INA199
+REF
++
+–
+TDKCT
+0–300 A
+N=3000
+0.1 E, 1W
+15ppm,
+2515
+C
+C
+C
+
+--- PAGE 5 ---
+Texas Instruments	
+Current Sense Amplifiers Guide 2021  |  5
+Current sensing reference designs. See more designs online at ti.com/referencedesigns.
+Design Number
+Description
+TIDA-00913
+48 V 3-Phase Inverter with Shunt-based 
+In-line Motor Phase Current Sensing
+This design realizes a 48 V/10A 3-phase GaN inverter with 
+precision in-line shunt-based phase current sensing for 
+accurate control of precision drives such as servo drives. 
+One of the largest challenges with in-line shunt-based 
+phase current sensing is the high common-mode voltage 
+transients during PWM switching. The INA240 current sense 
+amplifier overcomes this problem using enhanced PWM 
+rejection.
+TIDA-00440
+Leakage Current Measurement Reference 
+Design for Determining Insulation 
+Resistance
+This design provides a reference solution to 
+measure insulation resistance up to 100MΩ. It has 
+an on-board isolated 500 V DC power supply and an 
+isolated signal conditioning circuit to measure the 
+leakage current. This design is useful to find leakage 
+due to insulation breakdown in transformer and motor 
+windings.
+Current Sense Amplifiers
+Reference Designs
+R LIMIT
+Low-voltage DC/DC
+(Fly-BuckTM)     LM5160
+To 
+MCU
+LDO
+LDO
+R ISO
+R CAL
+R ISO = Insulation resistance
+R CAL = Calibration resistance
+10-V to 20-V DC
+Basic isolation
+V SENSE
+V SENSE
+500-V DC
+5V_VCC1
+5V_VCC2
+MUX
+TS5A23157
+INA225
+Digital
+ISO
+isolator
+7640
+Flyback
+(DC/DC)
+UCC28711
+150-V
+to 
+800-V
+DC
+AMC1200
+   EMI filter
+   (optional)
+VA,VB,
+VC, VDC
+PWM_AH
+PWM_AL
+PWM_BH
+PWM_BL
+PWM_CH
+PWM_CL
+4
+6
+/PWM 
+enable
+PCB 
+overtemperature 
+/PCB OT 
+alert
+AC motor
+TMP302
+Option to provide 3.3 V 
+to Launchpad™ 
+3.3 V
+LaunchPad™  interface connector
+VA
+VB
+VC
+LMG5200
+GaN driver
+LMG5200
+GaN driver
+LMG5200
+GaN driver
+INA240
+Phase C
+Phase B
+Phase A
+Motor terminal
+DC-DC
+48 V to 5 V
+DC input
+12 V to 60 V
+LDO 3.3 V
+VREF 3.3 V
+LM5018
+LP38691
+DC input
+REF3333
+5 V
+3.3 V
+Buffer for PWM w/ OE
+IC
+IB
+IA
+INA240
+INA240
+
+--- PAGE 6 ---
+Texas Instruments	
+Current Sense Amplifiers Guide 2021  |  6
+Analog Output Current Sense Amplifiers
+Featured Products
+Digital Output Power Monitors
+Featured Products
+For more information see: ti.com/currentsense.
+Part  
+Number
+AEC-Q100
+Available
+Bi–Directional
+Low–Side
+Description
+Common Mode
+Voltage Range
+Input Offset
+±µ V
+Max
+Input
+Offset Drift
+±µ V/°C
+Typ
+Gain Error 
+% Typ
+Package(s)
+INA190
+Family
+4
+4
+4
+1.8 V, High-precision Current Sense Amplifier with Power Down
+-0.1 to 40
+10
+0.1
+0.1
+10 UQFN,
+6 WCSP,
+6 SC70
+INA210
+Family
+4
+4
+4
+High performance, Zero-Drift Current Sense Amplifier
+-0.3 to 26
+35
+0.1
+0.02
+10 UQFN,  
+6 SC70
+INA240
+Family
+4
+4
+4
+High AC CMRR High Common Mode Current Sense Amplifier for 
+Motor & Solenoid Control
+-4 to 80
+25
+0.05
+0.05
+8 TSSOP, 
+8 SOIC
+INA216
+Family
+Ultra-small, 5 V Current Sense Amplifier
+1.8 to 5.5
+100
+0.06
+0.01
+10 UQFN,  
+4 WSCP
+INA199
+Family
+4
+4
+4
+Value line, Zero-Drift Current Sense Amplifier
+-0.3 to 26
+150
+0.1
+0.03
+10 UQFN,  
+6 SC70
+INAx180
+Family
+4
+4
+350kHz Bandwidth, Unidirectional Current Sense Amplifier for  
+Cost-sensitive Applications (Single, Dual, & Quad Options)
+-0.2 to 26
+150
+0.2
+0.1
+5 SOT-23,
+8 VSSOP,
+14 TSSOP
+INAx181
+Family
+4
+4
+4
+350kHz Bandwidth, Bidirectional Current Sense Amplifier for  
+Cost-sensitive Applications (Single, Dual, & Quad Options) 
+-0.2 to 26
+150
+0.2
+0.1
+6 SOT-23,
+10 VSSOP,
+20 TSSOP
+INA186 
+Family
+4
+4
+4
+40 V Bidirectional, Precision Current Sense Amplifier
+-0.1 to 40
+50
+0.05
+0.02
+6 SC70
+INA293
+Family
+4
+4
+110 V High Voltage, High Bandwidth, Unidirectional  
+Current Sense Amplifier
+-4 to 110
+100
+0.2
+0.02
+5 SOT-23
+INA290
+Family
+4
+120 V High Voltage, High Bandwidth, High-side  
+Current Sense Amplifier
+2.7 to 120
+100
+0.2
+0.02
+5 SC70
+INA185
+Family
+4
+4
+350kHz Bandwidth,  High-Precision, Bidirectional  Current Sense 
+Amplifier in SOT-563 Package
+-0.2 to 26
+55
+0.2
+0.05
+6 SOT-563
+INA225
+4
+4
+4
+Programmable-Gain, Zero-Drift, High Accuracy
+0 to 36
+150
+0.2
+0.05
+8 MSOP
+LMP8481
+Family
+4
+4
+High Common Mode, High-Speed  
+Current Sense Amplifier
+4.5 to 76
+265
+6
+0.6
+8 VSSOP
+LMP8640
+Family
+4
+4
+High-Speed Current Sense Amplifier
+-2 to 42
+900
+2.6
+0.25
+6 SOT-23
+INA250
+Family
+4
+4
+4
+High Accuracy, Zero-Drift Current Sense Amplifier with 0.1%,  
+15 PPM/°C 2mΩ Integrated Shunt
+0 to 36
+50mA
+25µA/°C
+0.3
+16 TSSOP
+INA253 
+Family
+4
+4
+4
+High AC CMRR High Common Mode Current Sense Amplifier 
+Solenoid Control with 0.1%, 15 PPM/°C 2mΩ Integrated Shunt
+-4 to 80
+12.5mA
+25µA/°C
+0.25
+20 TSSOP
+INA301
+Family
+4
+4
+Overcurrent Protection High-Speed, Precision Current Sense 
+Amplifier with Integrated Comparator
+0 to 36
+35
+0.1
+0.03
+8 VSSOP
+INA302
+Family
+4
+4
+4
+Overcurrent Protection High-Speed, Precision Current Sense 
+Amplifier with Integrated Dual Comparators
+0 to 36
+30
+0.02
+0.02
+14 TSSOP
+INA303
+Family
+4
+4
+4
+Overcurrent Protection High-Speed, Precision Current Sense 
+Amplifier with Integrated Window Comparator
+0 to 36
+30
+0.02
+0.02
+14 TSSOP
+INA381
+Family
+4
+4
+Cost-efficient Current Sense Amplifier with  
+Integrated Standalone Comparator
+-0.2 to 26
+150
+0.1
+0.1
+8 UQFN
+Preview devices as of Q2 2021
+Part 
+Number
+AEC-Q100
+Available
+Bi–Directional
+Low–Side
+Measurement 
+Parameter
+Values
+Description
+Common 
+Mode
+Voltage 
+Range
+Input 
+Offset
+±µ V
+Max
+Input
+Offset Drift
+±µ V/°C
+Typ
+Gain 
+Error  
+% Typ
+Package(s)
+INA226
+4
+4
+4
+I, V, P
+Ultra-High Accuracy, Current, Voltage, & Power
+0 to 36
+10
+0.02
+0.02
+10 VSSOP
+INA260
+4
+4
+I, V, P
+Ultra-High Accuracy, Current, Voltage, & Power Monitor with 
+0.1%, 15 PPM/°C 2mΩ Integrated Shunt
+0 to 36
+5mA
+1µA/°C
+0.02
+16 TSSOP
+INA233
+4
+4
+I, V, P, E
+High Accuracy, Current, Voltage, Power, & Energy  
+Monitor with 1.8 V I2C/PMBus
+0 to 36
+10
+0.02
+0.02
+10 VSSOP
+INA229
+4
+4
+4
+I, V, P, E
+85 V Current/Voltage/Power/Energy/Charge Monitoring Device 
+with SPI Interface with Internal Temperature Sensor
+0 to 85
+10
+0.01
+0.02
+10 VSSOP
+16 VQFN
+INA3221
+4
+4
+4
+I, V
+Triple-channel, Current & Voltage Monitor with Alert
+0 to 26
+80
+0.1
+0.1
+16 VQFN
+Preview devices as of Q2 2021
+
+--- PAGE 7 ---
+SLYB194E
+The platform bar, E2E, Sitara and Code Composer Studio are trademarks 
+and SIMPLE SWITCHER is a registered mark of Texas Instruments.
+All other trademarks are the property of their respective owners.
+TI Worldwide Technical Support
+Internet
+TI Semiconductor Product Information Center Home Page
+support.ti.com
+TI E2E™ Community Home Page
+e2e.ti.com
+Product Information Centers
+Americas	
+Phone	
++1(512) 434-1560
+Mexico	
+Phone	
+0800-670-7544
+Internet/Email	
+ti.com/lsds/ti/csc/support_Americas.page
+Europe, Middle East, and Africa
+Phone
+European Free Call	
+00800-ASK-TEXAS 
+(00800 275 83927)
+International	
++49 (0) 8161 80 2121
+Russian Support	
++7 (4) 95 98 10 701
+	Note: The European Free Call (Toll Free) number is not active in all ­countries.  
+If you have technical difficulty calling the free call number, please use the 
+­international number above.
+Internet
+www.ti.com/asktexas
+Direct Email	
+asktexas@ti.com
+Japan
+Fax
+International
++81-3-3344-5317
+Domestic
+0120-81-0036
+Internet/Email	
+International	
+ti.com/lsds/ti.csc/support_Japan.page
+Domestic
+www.tij.co.jp/pic
+Asia
+Phone	
+Toll-Free Number
+	
+	
+Note: Toll-free numbers may not support 
+mobile and IP phones.
+	
+	
+Australia	
+1-800-999-084
+	
+	
+China	
+800-820-8682
+	
+	
+Hong Kong	
+800-96-5941
+	
+	
+India	
+000-800-100-8888
+	
+	
+Indonesia	
+001-803-8861-1006
+	
+	
+Korea	
+080-551-2804
+	
+	
+Malaysia	
+1-800-80-3973
+	
+	
+New Zealand	
+0800-446-934
+	
+	
+Philippines	
+1-800-765-7404
+	
+	
+Singapore	
+800-886-1028
+	
+	
+Taiwan	
+0800-006800
+	
+	
+Thailand	
+001-800-886-0010
+International	
++86-21-23073444
+Fax	
++86-21-23073686
+Email	
+tiasia@ti.com or ti-china@ti.com
+Internet
+support.ti.com/sc/pic/asia.htm 
+Technical forums	 www.deyisupport.com
+B021014
+Important Notice: The products and services of Texas Instruments 
+Incorporated and its subsidiaries described herein are sold subject to TI’s 
+standard terms and conditions of sale. Customers are advised to obtain 
+the most current and complete information about TI products and services 
+before placing orders. TI assumes no liability for applications assistance, 
+customer’s applications or product designs, software performance, or 
+infringement of patents. The publication of information regarding any 
+other company’s products or services does not constitute TI’s approval, 
+warranty or endorsement thereof.
+© 2021 Texas Instruments Incorporated 
+
+--- PAGE 8 ---
+IMPORTANT NOTICE AND DISCLAIMER
+TI PROVIDES TECHNICAL AND RELIABILITY DATA (INCLUDING DATASHEETS), DESIGN RESOURCES (INCLUDING REFERENCE
+DESIGNS), APPLICATION OR OTHER DESIGN ADVICE, WEB TOOLS, SAFETY INFORMATION, AND OTHER RESOURCES “AS IS”
+AND WITH ALL FAULTS, AND DISCLAIMS ALL WARRANTIES, EXPRESS AND IMPLIED, INCLUDING WITHOUT LIMITATION ANY
+IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT OF THIRD
+PARTY INTELLECTUAL PROPERTY RIGHTS.
+These resources are intended for skilled developers designing with TI products. You are solely responsible for (1) selecting the appropriate
+TI products for your application, (2) designing, validating and testing your application, and (3) ensuring your application meets applicable
+standards, and any other safety, security, or other requirements. These resources are subject to change without notice. TI grants you
+permission to use these resources only for development of an application that uses the TI products described in the resource. Other
+reproduction and display of these resources is prohibited. No license is granted to any other TI intellectual property right or to any third party
+intellectual property right. TI disclaims responsibility for, and you will fully indemnify TI and its representatives against, any claims, damages,
+costs, losses, and liabilities arising out of your use of these resources.
+TI’s products are provided subject to TI’s Terms of Sale (https:www.ti.com/legal/termsofsale.html) or other applicable terms available either
+on ti.com or provided in conjunction with such TI products. TI’s provision of these resources does not expand or otherwise alter TI’s
+applicable warranties or warranty disclaimers for TI products.IMPORTANT NOTICE
+Mailing Address: Texas Instruments, Post Office Box 655303, Dallas, Texas 75265
+Copyright © 2021, Texas Instruments Incorporated

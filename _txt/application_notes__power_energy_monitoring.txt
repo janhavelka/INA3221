@@ -1,0 +1,310 @@
+=== SOURCE: power_energy_monitoring.pdf ===
+=== PAGES: 3 ===
+
+
+--- PAGE 1 ---
+Power Register
+Current Register
+I2C-, SMBus-,
+PMBus
+Compatible 
+Interface
+Voltage Register
+GND
+VBUS
+ADC
+V
+I
+A0
+A1
+ALERT
+SDA
+SCL
+C
+0.1 µF
+BYPASS
+High-Side 
+Shunt
+Low-Side 
+Shunt
+Load
+Alert 
+Registers
+VS
+Supply Voltage
+(2.7 V to 5.5 V)
+Bus Voltage
+(0 V to 36 V)
+IN-
+Power 
+Accumulator
+Copyright © 2017, Texas Instruments Incorporated
+INA233
+IN+
+u
+Power
+Bus Voltage
+Current
+Calibration
+Shunt Voltage
+Shunt Voltage 
+Channel
+Bus Voltage 
+Channel
+24-bit
+Power Accumulator
+16-bit
+ADC
+1
+SBOA194–April 2017
+Submit Documentation Feedback
+Copyright © 2017, Texas Instruments Incorporated
+Power and Energy Monitoring with Digital Current Sensors Dennis Hudgins
+____________________________________________________
+Power and Energy Monitoring With Digital Current 
+Sensors
+Dennis Hudgins
+As the demand for power efficient systems continues
+to grow, accurately monitoring system power and
+energy consumption is increasingly important and is a
+problem more engineers must solve. One solution to
+this problem is to use an analog to digital converter
+(ADC) for both the current and voltage and then
+multiply the result in a processor to obtain power.
+However, the communications delay and overhead
+between getting the current and voltage information
+introduces time alignment errors in the power
+measurement since both the current and the voltage
+can be varying independently of each other. To
+minimize the delay between the voltage and current
+measurements, the processor would need to dedicate
+adequate processing power to ADC communications
+and power calculations. Even with the processor
+primarily dedicated to this function, any interactions
+with other devices in the system could delay the
+voltage and current measurements reducing power
+monitoring accuracy. Adding additional responsibilities
+like averaging the system voltage, current, and power,
+as well as energy monitoring would start to further
+burden the processor with additional functions.
+A better way to monitor power is to use a digital
+current monitor to handle the mathematical
+processing, freeing up the processor to deal with other
+system tasks, and alerting the processor if higher level
+system actions need to occur. Texas Instruments
+provides a wide range of digital power and current
+monitors to address this problem. One such power,
+current and voltage monitor is the INA233. The
+INA233 enables the monitoring of voltage, current,
+power, and energy via an I2C, SMBus, PMBus
+compatible interface. A typical application and block
+diagram of the INA233 is shown in Figure 1.
+Figure 1. INA233 Typical Application Circuit
+A simplified block diagram of the power conversion
+engine is shown in Figure 2. Power is internally
+calculated from the shunt and bus voltage
+measurements in an interleaved fashion to minimize
+time alignment errors in the power calculation.
+Figure 2. INA233 Power Conversion Engine
+The internal calculations for power are done in the
+background independent of ADC conversion rates or
+digital bus communications. The device also features
+an ALERT pin that will notify the host processor if the
+current, power, or bus voltage is out of the expected
+range of operation. In the INA233, fault events are
+handled independently, such that multiple
+simultaneous fault conditions can be reported by
+reading internal status registers when the ALERT pin
+asserts. The internal processing and alert capabilities
+of the INA233 free the host processor to manage other
+tasks while the device takes care of continually
+monitoring the system. The host processor is notified
+via the ALERT pin only when additional attention is
+needed.
+The INA233 also features a 24-bit power accumulator
+that continuously adds the current power reading to
+the sum of previous power readings. The power
+accumulator can be used to monitor system energy
+consumption to get an average measurement of the
+power consumption overtime. Since power levels can
+fluctuate during any given instant in time, monitoring
+the energy provides a better way to gauge the average
+
+--- PAGE 2 ---
+n
+i
+i 1
+ADCPowerMeasurment
+Average Power = 
+n
+Total Accumulated Power over n samples
+Number of samples
+ ¦
+10 V/div
+m
+Number of Conversions
+0
+200
+400
+600
+800
+1000
+Conversion Time: 140 s
+m
+Conversion Time: 1.1ms
+Conversion Time: 8.244ms
+
+
+n
+i
+i 1
+Energy =  Average Power 
+ time 
+ADCPowerMeasurment
+  = 
+ 
+ n 
+ ADC conversion time
+n
+ Total Accumulated Power 
+ ADC conversion time
+ 
+u
+§
+·
+¨
+¸
+¨
+¸ u
+u
+¨
+¸
+¨
+¸
+¨
+¸
+©
+¹
+u
+¦
+www.ti.com
+2
+SBOA194–April 2017
+Submit Documentation Feedback
+Copyright © 2017, Texas Instruments Incorporated
+Power and Energy Monitoring with Digital Current Sensors Dennis Hudgins
+system power usage over long time intervals. Knowing
+the system energy consumption provides a metric to
+gauge system runtime and power efficiency, as well as
+the effects of power optimizations involving adjustment
+of power supply voltages and processor clock rates.
+The ADC conversion times for both shunt and bus
+voltage measurements are programmable from 140 µs
+to 8.244 ms. Longer conversion times are useful to
+decrease noise susceptibility and to achieve increased
+stability in device measurements. The effects of
+increased ADC conversion times measurements
+results is shown in Figure 3.
+Figure 3. Noise vs. ADC Conversion Time
+In addition to programmable ADC conversion times,
+the device can average up to 1024 conversion cycles
+and update the internal power, current, and voltage
+registers once the averaging is finished.
+Programmable conversion times along with averaging
+windows allow the device telemetry update rate to be
+adjusted to meet system timing needs.
+Even though the INA233 has built in averaging and
+adjustable ADC conversion times, the user has to wait
+until the averaging is complete before getting the
+result. One benefit of the internal power accumulator is
+that it allows the host to calculate the average power
+on demand, eliminating the otherwise delay for the
+averaging interval to finish. Getting an average power
+reading on demand is achieved by taking the value of
+the total accumulated power and dividing by the total
+sample count for that accumulation period as shown in
+Equation 1.
+(1)
+Once the average power is calculated, the energy
+consumption is determined by multiplying the average
+power by the time interval of that average or by
+multiplying the total accumulated power by the ADC
+conversion time as shown in Equation 2.
+(2)
+Since the ADC conversion time can vary by as much
+as 10%, it is recommended to multiply the average
+power by the time measured by an external time base.
+The time interval for the energy calculation should be
+long enough so that the communications time due to
+the digital bus is insignificant to the total time used in
+the energy calculation.
+The size of the power accumulator in the INA233 is
+limited to 24 bits. The value of the accumulator should
+be read periodically and cleared by the host to avoid
+overflow. The accumulator can be configured to be
+automatically cleared after each read. The time to
+overflow will be a function of the power, ADC
+conversion times and averaging times. Higher power
+levels will cause any overflow in the power
+accumulator to occur faster than lower power levels.
+Also, longer conversion times and higher number of
+averages will increase the time to overflow; in lower
+power cases, the time to overflow can be extended to
+be several hours up to days in length.
+The INA233 is one of many digital current monitors
+offered by Texas Instruments. Table 1 shows some
+alternative devices that can be used to monitor a
+system and help free the host processor to handle
+higher level tasks.
+Table 1. Alternative Device Recommendations
+Device
+Optimized Parameters
+Performance Trade-Off
+INA226
+I2C/SMBus compatible
+with reduced register set
+No Power Accumulator,
+no independent fault
+monitoring
+INA231
+WCSP package, reduced
+register set, lower cost
+Less accuracy, no power
+accumulator, no
+independent fault
+monitoring.
+INA219
+Lowest Cost, reduced
+register set
+Less accuracy and
+resolution, no ALERT, No
+power accumulator
+INA3221
+Monitors 3 channels
+Less accuracy and
+resolution, monitors bus
+and shunt voltages
+Table 2. Adjacent Tech Notes
+SBOA179
+Integrated, Current Sensing Analog-to-
+Digital Converter
+
+--- PAGE 3 ---
+IMPORTANT NOTICE AND DISCLAIMER
+TI PROVIDES TECHNICAL AND RELIABILITY DATA (INCLUDING DATASHEETS), DESIGN RESOURCES (INCLUDING REFERENCE 
+DESIGNS), APPLICATION OR OTHER DESIGN ADVICE, WEB TOOLS, SAFETY INFORMATION, AND OTHER RESOURCES “AS IS” 
+AND WITH ALL FAULTS, AND DISCLAIMS ALL WARRANTIES, EXPRESS AND IMPLIED, INCLUDING WITHOUT LIMITATION ANY 
+IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT OF THIRD 
+PARTY INTELLECTUAL PROPERTY RIGHTS.
+These resources are intended for skilled developers designing with TI products. You are solely responsible for (1) selecting the appropriate 
+TI products for your application, (2) designing, validating and testing your application, and (3) ensuring your application meets applicable 
+standards, and any other safety, security, or other requirements. These resources are subject to change without notice. TI grants you 
+permission to use these resources only for development of an application that uses the TI products described in the resource. Other 
+reproduction and display of these resources is prohibited. No license is granted to any other TI intellectual property right or to any third 
+party intellectual property right. TI disclaims responsibility for, and you will fully indemnify TI and its representatives against, any claims, 
+damages, costs, losses, and liabilities arising out of your use of these resources.
+TI’s products are provided subject to TI’s Terms of Sale (www.ti.com/legal/termsofsale.html) or other applicable terms available either on 
+ti.com or provided in conjunction with such TI products. TI’s provision of these resources does not expand or otherwise alter TI’s applicable 
+warranties or warranty disclaimers for TI products.
+Mailing Address: Texas Instruments, Post Office Box 655303, Dallas, Texas 75265
+Copyright © 2020, Texas Instruments Incorporated
