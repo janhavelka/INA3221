@@ -5,6 +5,7 @@
 
 #include <Arduino.h>
 #include <climits>
+#include <cmath>
 
 namespace INA3221 {
 
@@ -861,12 +862,12 @@ float INA3221::busRawToVolts(int16_t raw) {
 }
 
 int16_t INA3221::mvToShuntRaw(float mV) {
-  int16_t dataValue = static_cast<int16_t>(mV / cmd::SHUNT_LSB_MV);
+  int16_t dataValue = static_cast<int16_t>(lrintf(mV / cmd::SHUNT_LSB_MV));
   return static_cast<int16_t>(dataValue << cmd::DATA_SHIFT);
 }
 
 int16_t INA3221::voltsToBusRaw(float volts) {
-  int16_t dataValue = static_cast<int16_t>(volts / cmd::BUS_LSB_V);
+  int16_t dataValue = static_cast<int16_t>(lrintf(volts / cmd::BUS_LSB_V));
   return static_cast<int16_t>(dataValue << cmd::DATA_SHIFT);
 }
 
