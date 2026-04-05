@@ -47,12 +47,24 @@ struct AlertFlags {
 class INA3221 {
 public:
   // === Lifecycle ===
+  /// Initialize the driver with configuration and verify manufacturer/die IDs.
   Status begin(const Config& config);
+  /// Process pending operations (currently bounded polling only).
   void tick(uint32_t nowMs);
+  /// Best-effort power the device down and clear cached conversion state.
   void end();
 
+  /// Check if begin() completed successfully and end() has not been called.
+  bool isInitialized() const { return _initialized; }
+
+  /// Get the cached configuration snapshot currently owned by the driver.
+  const Config& getConfig() const { return _config; }
+
   // === Diagnostics (no health tracking) ===
+  /// Check device presence and identity without updating health counters.
   Status probe();
+
+  /// Re-validate IDs, clear conversion state, and re-apply cached configuration.
   Status recover();
 
   // === Driver State ===
@@ -97,11 +109,23 @@ public:
   Status setAveraging(Averaging avg);
   Averaging getAveraging() const { return _config.averaging; }
 
+  /// Set bus-voltage conversion time.
   Status setVBusConvTime(ConvTime ct);
+  /// Get bus-voltage conversion time.
   ConvTime getVBusConvTime() const { return _config.vBusCt; }
+  /// Cross-library naming alias for setVBusConvTime().
+  Status setVbusConvTime(ConvTime ct) { return setVBusConvTime(ct); }
+  /// Cross-library naming alias for getVBusConvTime().
+  ConvTime getVbusConvTime() const { return getVBusConvTime(); }
 
+  /// Set shunt-voltage conversion time.
   Status setVShuntConvTime(ConvTime ct);
+  /// Get shunt-voltage conversion time.
   ConvTime getVShuntConvTime() const { return _config.vShCt; }
+  /// Cross-library naming alias for setVShuntConvTime().
+  Status setVshuntConvTime(ConvTime ct) { return setVShuntConvTime(ct); }
+  /// Cross-library naming alias for getVShuntConvTime().
+  ConvTime getVshuntConvTime() const { return getVShuntConvTime(); }
 
   Status setChannelEnable(Channel ch, bool enable);
   bool getChannelEnable(Channel ch) const;
@@ -134,6 +158,12 @@ public:
   Status readManufacturerId(uint16_t& id);
   Status readDieId(uint16_t& id);
 
+  // === Raw Register Access ===
+  /// Read a 16-bit register using tracked I2C access.
+  Status readRegister16(uint8_t reg, uint16_t& value);
+  /// Write a 16-bit register using tracked I2C access.
+  Status writeRegister16(uint8_t reg, uint16_t value);
+
   // === Utility ===
   static float shuntRawToMv(int16_t raw);
   static float busRawToVolts(int16_t raw);
@@ -152,8 +182,6 @@ private:
   Status _i2cWriteTracked(const uint8_t* buf, size_t len);
 
   // === Register Access ===
-  Status readRegister16(uint8_t reg, uint16_t& value);
-  Status writeRegister16(uint8_t reg, uint16_t value);
   Status _readRegister16Raw(uint8_t reg, uint16_t& value);
 
   // === Health Tracking ===

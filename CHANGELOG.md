@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - 2025-06-01
+## [Unreleased]
+
+## [1.0.0] - 2026-04-05
 
 ### Added
 - Initial driver implementation for INA3221 triple-channel power monitor.
@@ -25,3 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native Unity tests (`test/test_basic.cpp`) with Arduino/Wire stubs.
 - Interactive CLI bringup example (`examples/01_basic_bringup_cli/`).
 - Example helpers: `BoardConfig.h`, `I2cTransport.h`, `I2cScanner.h`, `Log.h`, `BusDiag.h`, `CliShell.h`, `HealthView.h`.
+- Public lifecycle/config introspection helpers: `isInitialized()` and `getConfig()`.
+- Public tracked raw-register helpers: `readRegister16()` and `writeRegister16()`.
+- Cross-library conversion-time naming aliases: `setVbusConvTime()` / `getVbusConvTime()` and `setVshuntConvTime()` / `getVshuntConvTime()`.
+- `Err::MEASUREMENT_NOT_READY` alias for cross-library uniformity.
+- Bringup CLI register diagnostics plus richer `stress` / `stress_mix` reporting.
+
+### Changed
+- `end()` now best-effort powers the monitor down before clearing runtime state.
+- `recover()` now re-validates manufacturer / die IDs, clears conversion state, and reapplies cached configuration.
+
+[Unreleased]: https://github.com/janhavelka/INA3221/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/janhavelka/INA3221/releases/tag/v1.0.0

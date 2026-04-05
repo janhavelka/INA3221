@@ -18,6 +18,7 @@ enum class Err : uint8_t {
   MANUFACTURER_ID_MISMATCH,  ///< Manufacturer ID != 0x5449
   DIE_ID_MISMATCH,           ///< Die ID != 0x3220
   CONVERSION_NOT_READY,      ///< Conversion not yet complete
+  MEASUREMENT_NOT_READY = CONVERSION_NOT_READY, ///< Alias for cross-library uniformity
   BUSY,                      ///< Device is busy with conversion
   IN_PROGRESS,               ///< Operation scheduled; call tick() to complete
   I2C_NACK_ADDR,             ///< I2C address phase was not acknowledged

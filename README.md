@@ -116,6 +116,29 @@ void loop() {
 }
 ```
 
+## API Overview
+
+### Lifecycle And Diagnostics
+
+| Method | Description |
+|--------|-------------|
+| `begin(config)` | Initialize with injected transport and verify manufacturer / die ID |
+| `tick(nowMs)` | Process bounded conversion polling work |
+| `end()` | Best-effort power the monitor down and clear cached conversion state |
+| `isInitialized()` | True after successful `begin()` until `end()` |
+| `getConfig()` | Return the driver's cached configuration snapshot |
+| `probe()` | Check device presence without updating health counters |
+| `recover()` | Re-validate IDs, clear conversion state, and re-apply cached config |
+
+### Raw Access And Compatibility Aliases
+
+| Method | Description |
+|--------|-------------|
+| `readRegister16(reg, value)` | Read a tracked 16-bit register |
+| `writeRegister16(reg, value)` | Write a tracked 16-bit register |
+| `setVbusConvTime()` / `getVbusConvTime()` | Cross-library naming aliases for the bus conversion-time API |
+| `setVshuntConvTime()` / `getVshuntConvTime()` | Cross-library naming aliases for the shunt conversion-time API |
+
 ## Configuration
 
 | Field | Default | Description |
@@ -162,6 +185,7 @@ void loop() {
 ## Examples
 
 - `examples/01_basic_bringup_cli/` — interactive CLI for all INA3221 features
+- CLI diagnostics now include `reg <addr>` / `wreg <addr> <val>` for tracked raw register access plus richer `stress` and `stress_mix` summaries with per-channel statistics and health deltas. Raw register writes are intended for diagnostics and can desync cached config until `recover()` or `begin()` reapplies it.
 
 ### Example Helpers (`examples/common/`)
 

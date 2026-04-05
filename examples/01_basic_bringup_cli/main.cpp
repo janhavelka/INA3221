@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <cstdlib>
+#include <limits>
 
 #include "examples/common/BoardConfig.h"
 #include "examples/common/BusDiag.h"
@@ -19,6 +20,37 @@
 
 INA3221::INA3221 device;
 bool verboseMode = false;
+
+struct ChannelStressStats {
+  bool enabled = false;
+  bool hasSample = false;
+  float minVshuntMv = 0.0f;
+  float maxVshuntMv = 0.0f;
+  float minVbusV = 0.0f;
+  float maxVbusV = 0.0f;
+  float minCurrentMa = 0.0f;
+  float maxCurrentMa = 0.0f;
+  float minPowerMw = 0.0f;
+  float maxPowerMw = 0.0f;
+  double sumVshuntMv = 0.0;
+  double sumVbusV = 0.0;
+  double sumCurrentMa = 0.0;
+  double sumPowerMw = 0.0;
+};
+
+struct StressStats {
+  bool active = false;
+  uint32_t startMs = 0;
+  uint32_t endMs = 0;
+  int target = 0;
+  int attempts = 0;
+  int success = 0;
+  uint32_t errors = 0;
+  ChannelStressStats channels[3];
+  INA3221::Status lastError = INA3221::Status::Ok();
+};
+
+StressStats stressStats;
 
 // ============================================================================
 // Helper Functions
@@ -85,6 +117,147 @@ const char* successRateColor(float pct) {
 
 const char* staleTimeColor(bool isErrorTimestamp) {
   return isErrorTimestamp ? LOG_COLOR_GREEN : LOG_COLOR_YELLOW;
+}
+
+void printPrompt() {
+  Serial.print("> ");
+  Serial.flush();
+}
+
+void resetStressStats(int target) {
+  stressStats.active = true;
+  stressStats.startMs = millis();
+  stressStats.endMs = 0;
+  stressStats.target = target;
+  stressStats.attempts = 0;
+  stressStats.success = 0;
+  stressStats.errors = 0;
+  stressStats.lastError = INA3221::Status::Ok();
+
+  for (int ch = 0; ch < 3; ++ch) {
+    ChannelStressStats& stats = stressStats.channels[ch];
+    stats.enabled = device.getChannelEnable(static_cast<INA3221::Channel>(ch));
+    stats.hasSample = false;
+    stats.minVshuntMv = std::numeric_limits<float>::max();
+    stats.maxVshuntMv = std::numeric_limits<float>::lowest();
+    stats.minVbusV = std::numeric_limits<float>::max();
+    stats.maxVbusV = std::numeric_limits<float>::lowest();
+    stats.minCurrentMa = std::numeric_limits<float>::max();
+    stats.maxCurrentMa = std::numeric_limits<float>::lowest();
+    stats.minPowerMw = std::numeric_limits<float>::max();
+    stats.maxPowerMw = std::numeric_limits<float>::lowest();
+    stats.sumVshuntMv = 0.0;
+    stats.sumVbusV = 0.0;
+    stats.sumCurrentMa = 0.0;
+    stats.sumPowerMw = 0.0;
+  }
+}
+
+void noteStressError(const INA3221::Status& st) {
+  stressStats.errors++;
+  stressStats.lastError = st;
+}
+
+void updateChannelStressStats(ChannelStressStats& stats,
+                              const INA3221::ChannelMeasurement& measurement) {
+  if (!stats.hasSample) {
+    stats.minVshuntMv = measurement.shuntVoltage_mV;
+    stats.maxVshuntMv = measurement.shuntVoltage_mV;
+    stats.minVbusV = measurement.busVoltage_V;
+    stats.maxVbusV = measurement.busVoltage_V;
+    stats.minCurrentMa = measurement.current_mA;
+    stats.maxCurrentMa = measurement.current_mA;
+    stats.minPowerMw = measurement.power_mW;
+    stats.maxPowerMw = measurement.power_mW;
+    stats.hasSample = true;
+  } else {
+    if (measurement.shuntVoltage_mV < stats.minVshuntMv) stats.minVshuntMv = measurement.shuntVoltage_mV;
+    if (measurement.shuntVoltage_mV > stats.maxVshuntMv) stats.maxVshuntMv = measurement.shuntVoltage_mV;
+    if (measurement.busVoltage_V < stats.minVbusV) stats.minVbusV = measurement.busVoltage_V;
+    if (measurement.busVoltage_V > stats.maxVbusV) stats.maxVbusV = measurement.busVoltage_V;
+    if (measurement.current_mA < stats.minCurrentMa) stats.minCurrentMa = measurement.current_mA;
+    if (measurement.current_mA > stats.maxCurrentMa) stats.maxCurrentMa = measurement.current_mA;
+    if (measurement.power_mW < stats.minPowerMw) stats.minPowerMw = measurement.power_mW;
+    if (measurement.power_mW > stats.maxPowerMw) stats.maxPowerMw = measurement.power_mW;
+  }
+
+  stats.sumVshuntMv += measurement.shuntVoltage_mV;
+  stats.sumVbusV += measurement.busVoltage_V;
+  stats.sumCurrentMa += measurement.current_mA;
+  stats.sumPowerMw += measurement.power_mW;
+}
+
+void updateStressStats(const INA3221::ChannelMeasurement* ch1,
+                       const INA3221::ChannelMeasurement* ch2,
+                       const INA3221::ChannelMeasurement* ch3) {
+  const INA3221::ChannelMeasurement* measurements[3] = {ch1, ch2, ch3};
+  for (int ch = 0; ch < 3; ++ch) {
+    if (measurements[ch] == nullptr) {
+      continue;
+    }
+    updateChannelStressStats(stressStats.channels[ch], *measurements[ch]);
+  }
+  stressStats.success++;
+}
+
+void printStressChannelSummary(int chNum, const ChannelStressStats& stats, int successCount) {
+  if (!stats.enabled) {
+    Serial.printf("  CH%d: disabled\n", chNum);
+    return;
+  }
+  if (!stats.hasSample || successCount <= 0) {
+    Serial.printf("  CH%d: no valid samples\n", chNum);
+    return;
+  }
+
+  const float avgVshunt = static_cast<float>(stats.sumVshuntMv / successCount);
+  const float avgVbus = static_cast<float>(stats.sumVbusV / successCount);
+  const float avgCurrent = static_cast<float>(stats.sumCurrentMa / successCount);
+  const float avgPower = static_cast<float>(stats.sumPowerMw / successCount);
+
+  Serial.printf("  CH%d Vshunt mV: min=%.3f avg=%.3f max=%.3f\n",
+                chNum, stats.minVshuntMv, avgVshunt, stats.maxVshuntMv);
+  Serial.printf("  CH%d Vbus V:    min=%.3f avg=%.3f max=%.3f\n",
+                chNum, stats.minVbusV, avgVbus, stats.maxVbusV);
+  Serial.printf("  CH%d Current mA:min=%.3f avg=%.3f max=%.3f\n",
+                chNum, stats.minCurrentMa, avgCurrent, stats.maxCurrentMa);
+  Serial.printf("  CH%d Power mW:  min=%.3f avg=%.3f max=%.3f\n",
+                chNum, stats.minPowerMw, avgPower, stats.maxPowerMw);
+}
+
+void finishStressStats() {
+  stressStats.active = false;
+  stressStats.endMs = millis();
+  const uint32_t durationMs = stressStats.endMs - stressStats.startMs;
+
+  Serial.println("=== Stress Summary ===");
+  Serial.printf("  Target: %d\n", stressStats.target);
+  Serial.printf("  Attempts: %d\n", stressStats.attempts);
+  Serial.printf("  Success: %s%d%s\n",
+                goodIfNonZeroColor(static_cast<uint32_t>(stressStats.success)),
+                stressStats.success,
+                LOG_COLOR_RESET);
+  Serial.printf("  Errors: %s%lu%s\n",
+                goodIfZeroColor(stressStats.errors),
+                static_cast<unsigned long>(stressStats.errors),
+                LOG_COLOR_RESET);
+  Serial.printf("  Duration: %lu ms\n", static_cast<unsigned long>(durationMs));
+  if (durationMs > 0U) {
+    const float rate = 1000.0f * static_cast<float>(stressStats.attempts) /
+                       static_cast<float>(durationMs);
+    Serial.printf("  Rate: %.2f samples/s\n", rate);
+  }
+
+  for (int ch = 0; ch < 3; ++ch) {
+    printStressChannelSummary(ch + 1, stressStats.channels[ch], stressStats.success);
+  }
+
+  if (!stressStats.lastError.ok()) {
+    Serial.printf("  Last error: %s\n", errToStr(stressStats.lastError.code));
+    if (stressStats.lastError.msg && stressStats.lastError.msg[0]) {
+      Serial.printf("  Message: %s\n", stressStats.lastError.msg);
+    }
+  }
 }
 
 void printStatus(const INA3221::Status& st) {
@@ -212,6 +385,10 @@ void printHelp() {
   helpItem("config", "Dump config register");
   helpItem("config write <hex>", "Write full config register");
   helpItem("reset", "Software reset");
+
+  helpSection("Registers");
+  helpItem("reg <addr>", "Read 16-bit register (hex address)");
+  helpItem("wreg <addr> <val>", "Write 16-bit register (diagnostic only; may desync cached config)");
 
   helpSection("Alerts");
   helpItem("alerts", "Read alert flags");
@@ -354,6 +531,7 @@ void readAllChannels() {
   if (p1) printChannelMeasurement(1, ch1);
   if (p2) printChannelMeasurement(2, ch2);
   if (p3) printChannelMeasurement(3, ch3);
+  Serial.flush();
 }
 
 void printConfig() {
@@ -487,80 +665,152 @@ void runSelfTest() {
 }
 
 void runStressMix(int count) {
-  LOGI("Starting stress_mix test: %d cycles", count);
-  int ok = 0;
-  int fail = 0;
-  bool hasFailure = false;
-  INA3221::Status firstFailure = INA3221::Status::Ok();
-  INA3221::Status lastFailure = INA3221::Status::Ok();
-
-  auto note = [&](const INA3221::Status& st) {
-    if (st.ok()) {
-      ok++;
-    } else {
-      fail++;
-      if (!hasFailure) {
-        firstFailure = st;
-        hasFailure = true;
-      }
-      lastFailure = st;
-      if (verboseMode) {
-        printStatus(st);
-      }
-    }
+  struct OpStats {
+    const char* name;
+    uint32_t ok;
+    uint32_t fail;
   };
+  OpStats stats[] = {
+      {"readBlocking", 0, 0},
+      {"readConfig",   0, 0},
+      {"mfgId",        0, 0},
+      {"shuntCh1",     0, 0},
+      {"busCh2",       0, 0},
+      {"alerts",       0, 0},
+  };
+  const int opCount = static_cast<int>(sizeof(stats) / sizeof(stats[0]));
+  const uint32_t successBefore = device.totalSuccess();
+  const uint32_t failBefore = device.totalFailures();
+  const uint32_t startMs = millis();
 
   for (int i = 0; i < count; ++i) {
     // readBlocking all channels
     INA3221::ChannelMeasurement ch1, ch2, ch3;
-    note(device.readBlocking(&ch1, &ch2, &ch3));
+    INA3221::ChannelMeasurement* p1 = device.getChannelEnable(INA3221::Channel::CH1) ? &ch1 : nullptr;
+    INA3221::ChannelMeasurement* p2 = device.getChannelEnable(INA3221::Channel::CH2) ? &ch2 : nullptr;
+    INA3221::ChannelMeasurement* p3 = device.getChannelEnable(INA3221::Channel::CH3) ? &ch3 : nullptr;
+
+    INA3221::Status st = device.readBlocking(p1, p2, p3);
+    if (st.ok()) {
+      stats[0].ok++;
+    } else {
+      stats[0].fail++;
+      if (verboseMode) {
+        Serial.printf("  [%d] %s failed: %s\n", i, stats[0].name, errToStr(st.code));
+      }
+    }
 
     // Read config register
     uint16_t cfg = 0;
-    note(device.readConfig(cfg));
+    st = device.readConfig(cfg);
+    if (st.ok()) {
+      stats[1].ok++;
+    } else {
+      stats[1].fail++;
+      if (verboseMode) {
+        Serial.printf("  [%d] %s failed: %s\n", i, stats[1].name, errToStr(st.code));
+      }
+    }
 
     // Read manufacturer ID
     uint16_t mfgId = 0;
-    note(device.readManufacturerId(mfgId));
+    st = device.readManufacturerId(mfgId);
+    if (st.ok()) {
+      stats[2].ok++;
+    } else {
+      stats[2].fail++;
+      if (verboseMode) {
+        Serial.printf("  [%d] %s failed: %s\n", i, stats[2].name, errToStr(st.code));
+      }
+    }
 
     // Read individual channel shunt voltage
     float shuntMv = 0.0f;
-    note(device.readShuntVoltage(INA3221::Channel::CH1, shuntMv));
+    st = device.readShuntVoltage(INA3221::Channel::CH1, shuntMv);
+    if (st.ok()) {
+      stats[3].ok++;
+    } else {
+      stats[3].fail++;
+      if (verboseMode) {
+        Serial.printf("  [%d] %s failed: %s\n", i, stats[3].name, errToStr(st.code));
+      }
+    }
 
     // Read individual channel bus voltage
     float busV = 0.0f;
-    note(device.readBusVoltage(INA3221::Channel::CH2, busV));
+    st = device.readBusVoltage(INA3221::Channel::CH2, busV);
+    if (st.ok()) {
+      stats[4].ok++;
+    } else {
+      stats[4].fail++;
+      if (verboseMode) {
+        Serial.printf("  [%d] %s failed: %s\n", i, stats[4].name, errToStr(st.code));
+      }
+    }
 
     // Read alert flags
     INA3221::AlertFlags flags;
-    note(device.readAlertFlags(flags));
-
-    LOGV(verboseMode, "  %d/%d: ok=%d fail=%d", i + 1, count, ok, fail);
+    st = device.readAlertFlags(flags);
+    if (st.ok()) {
+      stats[5].ok++;
+    } else {
+      stats[5].fail++;
+      if (verboseMode) {
+        Serial.printf("  [%d] %s failed: %s\n", i, stats[5].name, errToStr(st.code));
+      }
+    }
   }
 
-  const int total = ok + fail;
-  const float pct = (total > 0) ? (100.0f * static_cast<float>(ok) / static_cast<float>(total)) : 0.0f;
-  Serial.printf("  Stress_mix results: %s%d ok%s, %s%d failed%s (%s%.2f%%%s) [%d ops in %d cycles]\n",
-                goodIfNonZeroColor(static_cast<uint32_t>(ok)),
-                ok,
+  const uint32_t elapsed = millis() - startMs;
+  uint32_t okTotal = 0;
+  uint32_t failTotal = 0;
+  for (int i = 0; i < opCount; ++i) {
+    okTotal += stats[i].ok;
+    failTotal += stats[i].fail;
+  }
+
+  Serial.println("=== stress_mix summary ===");
+  const float pct =
+      ((okTotal + failTotal) > 0U)
+          ? (100.0f * static_cast<float>(okTotal) /
+             static_cast<float>(okTotal + failTotal))
+          : 0.0f;
+  Serial.printf("  Total: %sok=%lu%s %sfail=%lu%s (%s%.2f%%%s)\n",
+                goodIfNonZeroColor(okTotal),
+                static_cast<unsigned long>(okTotal),
                 LOG_COLOR_RESET,
-                goodIfZeroColor(static_cast<uint32_t>(fail)),
-                fail,
+                goodIfZeroColor(failTotal),
+                static_cast<unsigned long>(failTotal),
                 LOG_COLOR_RESET,
                 successRateColor(pct),
                 pct,
-                LOG_COLOR_RESET,
-                total,
-                count);
-  if (hasFailure) {
-    Serial.println("  Failure details:");
-    Serial.println("  First failure:");
-    printStatus(firstFailure);
-    if (fail > 1) {
-      Serial.println("  Last failure:");
-      printStatus(lastFailure);
-    }
+                LOG_COLOR_RESET);
+  Serial.printf("  Duration: %lu ms\n", static_cast<unsigned long>(elapsed));
+  if (elapsed > 0U) {
+    const uint32_t totalOps = okTotal + failTotal;
+    Serial.printf("  Rate: %.2f ops/s\n",
+                  (1000.0f * static_cast<float>(totalOps)) /
+                      static_cast<float>(elapsed));
   }
+  for (int i = 0; i < opCount; ++i) {
+    Serial.printf("  %-12s %sok=%lu%s %sfail=%lu%s\n",
+                  stats[i].name,
+                  goodIfNonZeroColor(stats[i].ok),
+                  static_cast<unsigned long>(stats[i].ok),
+                  LOG_COLOR_RESET,
+                  goodIfZeroColor(stats[i].fail),
+                  static_cast<unsigned long>(stats[i].fail),
+                  LOG_COLOR_RESET);
+  }
+  const uint32_t successDelta = device.totalSuccess() - successBefore;
+  const uint32_t failDelta = device.totalFailures() - failBefore;
+  Serial.printf("  Health delta: %ssuccess +%lu%s, %sfailures +%lu%s\n",
+                goodIfNonZeroColor(successDelta),
+                static_cast<unsigned long>(successDelta),
+                LOG_COLOR_RESET,
+                goodIfZeroColor(failDelta),
+                static_cast<unsigned long>(failDelta),
+                LOG_COLOR_RESET);
 }
 
 // ============================================================================
@@ -864,6 +1114,39 @@ void processCommand(const String& cmdLine) {
     LOGI("Performing software reset...");
     auto st = device.softReset();
     printStatus(st);
+  } else if (cmd.startsWith("wreg ")) {
+    String args = cmd.substring(5);
+    args.trim();
+    int split = args.indexOf(' ');
+    if (split < 0) {
+      LOGW("Usage: wreg <addr> <val>");
+      return;
+    }
+    uint32_t addr = 0;
+    uint32_t value = 0;
+    if (!parseU32(args.substring(0, split), addr) ||
+        !parseU32(args.substring(split + 1), value) ||
+        addr > 0xFFu || value > 0xFFFFu) {
+      LOGW("Usage: wreg <addr> <val>");
+      return;
+    }
+    printStatus(device.writeRegister16(static_cast<uint8_t>(addr), static_cast<uint16_t>(value)));
+  } else if (cmd.startsWith("reg ")) {
+    uint32_t addr = 0;
+    if (!parseU32(cmd.substring(4), addr) || addr > 0xFFu) {
+      LOGW("Usage: reg <addr>");
+      return;
+    }
+    uint16_t value = 0;
+    auto st = device.readRegister16(static_cast<uint8_t>(addr), value);
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
+    Serial.printf("  Reg 0x%02lX = 0x%04X (%u)\n",
+                  static_cast<unsigned long>(addr),
+                  value,
+                  value);
   } else if (cmd == "alerts") {
     INA3221::AlertFlags flags;
     auto st = device.readAlertFlags(flags);
@@ -1047,53 +1330,37 @@ void processCommand(const String& cmdLine) {
       LOGW("Invalid count (1-100000)");
       return;
     }
-    int ok = 0;
-    int fail = 0;
-    bool hasFailure = false;
-    INA3221::Status firstFailure = INA3221::Status::Ok();
-    INA3221::Status lastFailure = INA3221::Status::Ok();
+    resetStressStats(count);
     for (int i = 0; i < count; ++i) {
       INA3221::ChannelMeasurement ch1, ch2, ch3;
-      auto st = device.readBlocking(&ch1, &ch2, &ch3);
+      INA3221::ChannelMeasurement* p1 = device.getChannelEnable(INA3221::Channel::CH1) ? &ch1 : nullptr;
+      INA3221::ChannelMeasurement* p2 = device.getChannelEnable(INA3221::Channel::CH2) ? &ch2 : nullptr;
+      INA3221::ChannelMeasurement* p3 = device.getChannelEnable(INA3221::Channel::CH3) ? &ch3 : nullptr;
+      auto st = device.readBlocking(p1, p2, p3);
+      stressStats.attempts++;
       if (st.ok()) {
-        ok++;
-        LOGV(verboseMode, "  %d: CH1=%.1fmA CH2=%.1fmA CH3=%.1fmA",
-             i + 1,
-             static_cast<double>(ch1.current_mA),
-             static_cast<double>(ch2.current_mA),
-             static_cast<double>(ch3.current_mA));
-      } else {
-        fail++;
-        if (!hasFailure) {
-          firstFailure = st;
-          hasFailure = true;
+        updateStressStats(p1, p2, p3);
+        if (verboseMode) {
+          Serial.printf("  [%d]", i + 1);
+          if (p1) {
+            Serial.printf(" CH1=%.1fmA", static_cast<double>(ch1.current_mA));
+          }
+          if (p2) {
+            Serial.printf(" CH2=%.1fmA", static_cast<double>(ch2.current_mA));
+          }
+          if (p3) {
+            Serial.printf(" CH3=%.1fmA", static_cast<double>(ch3.current_mA));
+          }
+          Serial.println();
         }
-        lastFailure = st;
+      } else {
+        noteStressError(st);
         if (verboseMode) {
           printStatus(st);
         }
       }
     }
-    const float pct = (count > 0) ? (100.0f * static_cast<float>(ok) / static_cast<float>(count)) : 0.0f;
-    Serial.printf("  Stress results: %s%d ok%s, %s%d failed%s (%s%.2f%%%s)\n",
-                  goodIfNonZeroColor(static_cast<uint32_t>(ok)),
-                  ok,
-                  LOG_COLOR_RESET,
-                  goodIfZeroColor(static_cast<uint32_t>(fail)),
-                  fail,
-                  LOG_COLOR_RESET,
-                  successRateColor(pct),
-                  pct,
-                  LOG_COLOR_RESET);
-    if (hasFailure) {
-      Serial.println("  Failure details:");
-      Serial.println("  First failure:");
-      printStatus(firstFailure);
-      if (fail > 1) {
-        Serial.println("  Last failure:");
-        printStatus(lastFailure);
-      }
-    }
+    finishStressStats();
   } else if (cmd.startsWith("convert shunt ")) {
     int32_t raw = 0;
     if (!parseI32(cmd.substring(14), raw) || raw < -32768 || raw > 32767) {
@@ -1155,7 +1422,7 @@ void setup() {
   printDriverHealth();
 
   Serial.println("\nType 'help' for commands");
-  Serial.print("> ");
+  printPrompt();
 }
 
 void loop() {
@@ -1169,7 +1436,7 @@ void loop() {
       if (inputBuffer.length() > 0) {
         processCommand(inputBuffer);
         inputBuffer = "";
-        Serial.print("> ");
+        printPrompt();
       }
     } else if (inputBuffer.length() < kMaxInputLen) {
       inputBuffer += c;

@@ -162,10 +162,24 @@ void INA3221::tick(uint32_t nowMs) {
 }
 
 void INA3221::end() {
+  if (_initialized) {
+    uint16_t configReg = _buildConfigRegister();
+    configReg &= static_cast<uint16_t>(~cmd::MASK_MODE);
+    configReg |= (static_cast<uint16_t>(Mode::POWER_DOWN) << cmd::BIT_MODE) & cmd::MASK_MODE;
+
+    const uint8_t tx[3] = {
+      cmd::REG_CONFIG,
+      static_cast<uint8_t>((configReg >> 8) & 0xFF),
+      static_cast<uint8_t>(configReg & 0xFF)
+    };
+    (void)_i2cWriteRaw(tx, sizeof(tx));
+  }
+
   _initialized = false;
   _driverState = DriverState::UNINIT;
   _conversionStarted = false;
   _conversionReady = false;
+  _conversionStartMs = 0;
 }
 
 // ============================================================================
@@ -207,8 +221,36 @@ Status INA3221::recover() {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
 
-  uint16_t configReg = 0;
-  return readRegister16(cmd::REG_CONFIG, configReg);
+  uint16_t mfgId = 0;
+  Status st = readRegister16(cmd::REG_MANUFACTURER_ID, mfgId);
+  if (!st.ok()) {
+    return st;
+  }
+  if (mfgId != cmd::MANUFACTURER_ID_VALUE) {
+    return Status::Error(Err::MANUFACTURER_ID_MISMATCH, "Manufacturer ID mismatch",
+                         static_cast<int32_t>(mfgId));
+  }
+
+  uint16_t dieId = 0;
+  st = readRegister16(cmd::REG_DIE_ID, dieId);
+  if (!st.ok()) {
+    return st;
+  }
+  if (dieId != cmd::DIE_ID_VALUE) {
+    return Status::Error(Err::DIE_ID_MISMATCH, "Die ID mismatch",
+                         static_cast<int32_t>(dieId));
+  }
+
+  _conversionStarted = false;
+  _conversionReady = false;
+  _conversionStartMs = 0;
+
+  st = _applyConfig();
+  if (!st.ok()) {
+    return st;
+  }
+
+  return Status::Ok();
 }
 
 // ============================================================================
