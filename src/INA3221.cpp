@@ -59,6 +59,24 @@ uint32_t convTimeUs(ConvTime ct) {
   return table[idx];
 }
 
+uint32_t averagingSampleCount(Averaging avg) {
+  static constexpr uint32_t table[] = {
+    1,     // AVG_1
+    4,     // AVG_4
+    16,    // AVG_16
+    64,    // AVG_64
+    128,   // AVG_128
+    256,   // AVG_256
+    512,   // AVG_512
+    1024   // AVG_1024
+  };
+  uint8_t idx = static_cast<uint8_t>(avg);
+  if (idx >= sizeof(table) / sizeof(table[0])) {
+    idx = static_cast<uint8_t>(Averaging::AVG_1);
+  }
+  return table[idx];
+}
+
 /// Get shunt register address for channel
 uint8_t shuntRegAddr(Channel ch) {
   return cmd::SHUNT_REG_BASE + static_cast<uint8_t>(ch) * cmd::CHANNEL_STRIDE;
@@ -411,6 +429,12 @@ Status INA3221::startConversion() {
   if (_isContinuousMode()) {
     return Status::Error(Err::BUSY, "Continuous mode active");
   }
+  if (!_isTriggeredMode()) {
+    return Status::Error(Err::INVALID_CONFIG, "Triggered mode required");
+  }
+  if (_enabledChannelCount() == 0) {
+    return Status::Error(Err::INVALID_CONFIG, "At least one channel must be enabled");
+  }
   if (_conversionStarted) {
     return Status::Error(Err::BUSY, "Conversion already in progress");
   }
@@ -434,6 +458,9 @@ Status INA3221::startConversion(Mode mode) {
   }
   if (!isTriggeredMode(mode)) {
     return Status::Error(Err::INVALID_PARAM, "Must be a triggered mode");
+  }
+  if (_enabledChannelCount() == 0) {
+    return Status::Error(Err::INVALID_CONFIG, "At least one channel must be enabled");
   }
   if (_conversionStarted) {
     return Status::Error(Err::BUSY, "Conversion already in progress");
@@ -934,7 +961,8 @@ uint32_t INA3221::getConversionTimeUs() const {
 }
 
 uint32_t INA3221::getCycleTimeUs() const {
-  return getConversionTimeUs() * _enabledChannelCount();
+  return getConversionTimeUs() * _enabledChannelCount() *
+         averagingSampleCount(_config.averaging);
 }
 
 // ============================================================================
@@ -987,6 +1015,20 @@ Status INA3221::_i2cWriteTracked(const uint8_t* buf, size_t len) {
 // ============================================================================
 
 Status INA3221::readRegister16(uint8_t reg, uint16_t& value) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  return _readRegister16Tracked(reg, value);
+}
+
+Status INA3221::writeRegister16(uint8_t reg, uint16_t value) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  return _writeRegister16Tracked(reg, value);
+}
+
+Status INA3221::_readRegister16Tracked(uint8_t reg, uint16_t& value) {
   uint8_t rx[2] = {0, 0};
   Status st = _i2cWriteReadTracked(&reg, 1, rx, sizeof(rx));
   if (!st.ok()) {
@@ -996,7 +1038,7 @@ Status INA3221::readRegister16(uint8_t reg, uint16_t& value) {
   return Status::Ok();
 }
 
-Status INA3221::writeRegister16(uint8_t reg, uint16_t value) {
+Status INA3221::_writeRegister16Tracked(uint8_t reg, uint16_t value) {
   uint8_t tx[3] = {
     reg,
     static_cast<uint8_t>((value >> 8) & 0xFF),
@@ -1060,7 +1102,7 @@ Status INA3221::_updateHealth(const Status& st) {
 // ============================================================================
 
 Status INA3221::_applyConfig() {
-  return writeRegister16(cmd::REG_CONFIG, _buildConfigRegister());
+  return _writeRegister16Tracked(cmd::REG_CONFIG, _buildConfigRegister());
 }
 
 uint16_t INA3221::_buildConfigRegister() const {

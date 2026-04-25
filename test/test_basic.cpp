@@ -471,6 +471,31 @@ void test_cycle_time_us() {
   TEST_ASSERT_EQUAL_UINT32(6600u, dev.getCycleTimeUs());
 }
 
+void test_cycle_time_includes_averaging() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.averaging = Averaging::AVG_1024;
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  TEST_ASSERT_EQUAL_UINT32(2200u, dev.getConversionTimeUs());
+  TEST_ASSERT_EQUAL_UINT32(6758400u, dev.getCycleTimeUs());
+}
+
+void test_start_conversion_rejects_power_down_mode() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::POWER_DOWN;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  Status st = dev.startConversion();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(dev._conversionStarted);
+}
+
 // ============================================================================
 // Transport Wrapper Tests
 // ============================================================================
@@ -500,6 +525,30 @@ void test_raw_transport_rejects_invalid_buffers() {
 
   st = dev._i2cWriteReadRaw(&byte, 1, &rx, 0);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM), static_cast<uint8_t>(st.code));
+}
+
+void test_register_access_after_end_does_not_touch_bus() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint32_t writesAfterBegin = bus.writeCalls;
+  const uint32_t readsAfterBegin = bus.readCalls;
+
+  dev.end();
+  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  uint16_t value = 0;
+  Status st = dev.readRegister16(cmd::REG_CONFIG, value);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  st = dev.writeRegister16(cmd::REG_CONFIG, cmd::CONFIG_DEFAULT);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
 }
 
 // ============================================================================
@@ -568,9 +617,12 @@ int main() {
   RUN_TEST(test_volts_to_bus_raw);
   RUN_TEST(test_conversion_time_us);
   RUN_TEST(test_cycle_time_us);
+  RUN_TEST(test_cycle_time_includes_averaging);
+  RUN_TEST(test_start_conversion_rejects_power_down_mode);
 
   // Transport
   RUN_TEST(test_raw_transport_rejects_invalid_buffers);
+  RUN_TEST(test_register_access_after_end_does_not_touch_bus);
 
   // Config register
   RUN_TEST(test_build_config_register);
