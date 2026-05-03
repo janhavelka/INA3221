@@ -13,6 +13,9 @@ namespace {
 
 constexpr uint8_t kMinAddress = 0x40;
 constexpr uint8_t kMaxAddress = 0x43;
+constexpr uint16_t kMaskEnableWritable =
+    cmd::MASK_SCC1 | cmd::MASK_SCC2 | cmd::MASK_SCC3 |
+    cmd::MASK_WEN | cmd::MASK_CEN;
 
 bool isValidChannel(Channel ch) {
   return static_cast<uint8_t>(ch) <= static_cast<uint8_t>(Channel::CH3);
@@ -30,6 +33,10 @@ bool isValidMode(Mode mode) {
   return static_cast<uint8_t>(mode) <= static_cast<uint8_t>(Mode::SHUNT_BUS_CONT);
 }
 
+bool isPowerDownMode(Mode mode) {
+  return mode == Mode::POWER_DOWN || mode == Mode::POWER_DOWN_ALT;
+}
+
 bool isTriggeredMode(Mode mode) {
   return mode == Mode::SHUNT_TRIG || mode == Mode::BUS_TRIG ||
          mode == Mode::SHUNT_BUS_TRIG;
@@ -38,6 +45,57 @@ bool isTriggeredMode(Mode mode) {
 bool isContinuousMode(Mode mode) {
   return mode == Mode::SHUNT_CONT || mode == Mode::BUS_CONT ||
          mode == Mode::SHUNT_BUS_CONT;
+}
+
+bool isValidRegister(uint8_t reg) {
+  return reg <= cmd::REG_PV_LOWER_LIMIT ||
+         reg == cmd::REG_MANUFACTURER_ID ||
+         reg == cmd::REG_DIE_ID;
+}
+
+bool isPositiveFinite(float value) {
+  return std::isfinite(value) && value > 0.0f;
+}
+
+uint8_t enabledChannelCount(const Config& config) {
+  uint8_t count = 0;
+  if (config.ch1Enable) count++;
+  if (config.ch2Enable) count++;
+  if (config.ch3Enable) count++;
+  return count;
+}
+
+bool modeAllowsNoChannels(Mode mode) {
+  return isPowerDownMode(mode);
+}
+
+bool configHasRequiredChannels(const Config& config) {
+  return modeAllowsNoChannels(config.mode) || enabledChannelCount(config) > 0;
+}
+
+int16_t signExtendField(uint16_t raw, uint8_t shift, uint8_t width) {
+  const uint16_t fieldMask = static_cast<uint16_t>((1u << width) - 1u);
+  uint16_t value = static_cast<uint16_t>((raw >> shift) & fieldMask);
+  const uint16_t signBit = static_cast<uint16_t>(1u << (width - 1u));
+  if ((value & signBit) != 0U) {
+    value = static_cast<uint16_t>(value | static_cast<uint16_t>(~fieldMask));
+  }
+  return static_cast<int16_t>(value);
+}
+
+int16_t encodeSignedField(float value, float lsb, int32_t minValue,
+                          int32_t maxValue, uint8_t shift) {
+  if (!std::isfinite(value)) {
+    value = 0.0f;
+  }
+  long scaled = lrintf(value / lsb);
+  if (scaled < minValue) {
+    scaled = minValue;
+  } else if (scaled > maxValue) {
+    scaled = maxValue;
+  }
+  const uint16_t encoded = static_cast<uint16_t>(static_cast<int16_t>(scaled));
+  return static_cast<int16_t>(encoded << shift);
 }
 
 /// Conversion time in microseconds per CT setting
@@ -133,9 +191,12 @@ Status INA3221::begin(const Config& config) {
       !isValidMode(_config.mode)) {
     return Status::Error(Err::INVALID_CONFIG, "Invalid config enum value");
   }
+  if (!configHasRequiredChannels(_config)) {
+    return Status::Error(Err::INVALID_CONFIG, "At least one channel must be enabled");
+  }
   for (int i = 0; i < 3; ++i) {
-    if (_config.shuntResistance[i] <= 0.0f) {
-      return Status::Error(Err::INVALID_CONFIG, "Shunt resistance must be > 0");
+    if (!isPositiveFinite(_config.shuntResistance[i])) {
+      return Status::Error(Err::INVALID_CONFIG, "Shunt resistance must be finite and > 0");
     }
   }
   if (_config.offlineThreshold == 0) {
@@ -156,6 +217,7 @@ Status INA3221::begin(const Config& config) {
 
   _initialized = true;
   _driverState = DriverState::READY;
+  _handleConfigWriteSideEffects();
   return Status::Ok();
 }
 
@@ -165,17 +227,8 @@ void INA3221::tick(uint32_t nowMs) {
   }
 
   if (_isTriggeredMode() && _conversionStarted && !_conversionReady) {
-    uint32_t cycleUs = getCycleTimeUs();
-    uint32_t cycleMs = (cycleUs + 999) / 1000 + 1;  // round up + margin
-    if ((nowMs - _conversionStartMs) >= cycleMs) {
-      // Check CVRF
-      uint16_t maskEn = 0;
-      Status st = readRegister16(cmd::REG_MASK_ENABLE, maskEn);
-      if (st.ok() && (maskEn & cmd::MASK_CVRF)) {
-        _conversionStarted = false;
-        _conversionReady = true;
-      }
-    }
+    bool ready = false;
+    (void)_readConversionReadyAt(nowMs, ready);
   }
 }
 
@@ -198,6 +251,7 @@ void INA3221::end() {
   _conversionStarted = false;
   _conversionReady = false;
   _conversionStartMs = 0;
+  _maskEnableWritableCache = 0;
 }
 
 // ============================================================================
@@ -245,8 +299,9 @@ Status INA3221::recover() {
     return st;
   }
   if (mfgId != cmd::MANUFACTURER_ID_VALUE) {
-    return Status::Error(Err::MANUFACTURER_ID_MISMATCH, "Manufacturer ID mismatch",
-                         static_cast<int32_t>(mfgId));
+    return _recordFailure(Status::Error(Err::MANUFACTURER_ID_MISMATCH,
+                                        "Manufacturer ID mismatch",
+                                        static_cast<int32_t>(mfgId)));
   }
 
   uint16_t dieId = 0;
@@ -255,8 +310,9 @@ Status INA3221::recover() {
     return st;
   }
   if (dieId != cmd::DIE_ID_VALUE) {
-    return Status::Error(Err::DIE_ID_MISMATCH, "Die ID mismatch",
-                         static_cast<int32_t>(dieId));
+    return _recordFailure(Status::Error(Err::DIE_ID_MISMATCH,
+                                        "Die ID mismatch",
+                                        static_cast<int32_t>(dieId)));
   }
 
   _conversionStarted = false;
@@ -264,6 +320,13 @@ Status INA3221::recover() {
   _conversionStartMs = 0;
 
   st = _applyConfig();
+  if (!st.ok()) {
+    return st;
+  }
+  _handleConfigWriteSideEffects();
+
+  st = writeRegister16(cmd::REG_MASK_ENABLE,
+                       static_cast<uint16_t>(_maskEnableWritableCache & kMaskEnableWritable));
   if (!st.ok()) {
     return st;
   }
@@ -282,6 +345,10 @@ Status INA3221::readShuntRaw(Channel ch, int16_t& raw) {
   if (!isValidChannel(ch)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid channel");
   }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
+  }
 
   uint16_t regVal = 0;
   Status st = readRegister16(shuntRegAddr(ch), regVal);
@@ -298,6 +365,10 @@ Status INA3221::readBusRaw(Channel ch, int16_t& raw) {
   }
   if (!isValidChannel(ch)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid channel");
+  }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
   }
 
   uint16_t regVal = 0;
@@ -370,6 +441,10 @@ Status INA3221::readChannel(Channel ch, ChannelMeasurement& out) {
   if (!isValidChannel(ch)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid channel");
   }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
+  }
 
   int16_t shuntRaw = 0;
   Status st = readShuntRaw(ch, shuntRaw);
@@ -397,6 +472,10 @@ Status INA3221::readShuntSumRaw(int16_t& raw) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status readyStatus = _ensureMeasurementReadyForRead();
+  if (!readyStatus.ok()) {
+    return readyStatus;
+  }
   uint16_t regVal = 0;
   Status st = readRegister16(cmd::REG_SHUNT_SUM, regVal);
   if (!st.ok()) {
@@ -412,8 +491,10 @@ Status INA3221::readShuntSumVoltage(float& mV) {
   if (!st.ok()) {
     return st;
   }
-  // Sum register: data in bits [15:1], bit 0 reserved. LSB = 40µV
-  int16_t dataValue = raw >> cmd::SUM_DATA_SHIFT;
+  // Sum register: data in bits [15:1], bit 0 reserved. LSB = 40 uV.
+  int16_t dataValue = signExtendField(static_cast<uint16_t>(raw),
+                                      cmd::SUM_DATA_SHIFT,
+                                      15);
   mV = dataValue * cmd::SHUNT_LSB_MV;
   return Status::Ok();
 }
@@ -482,42 +563,14 @@ Status INA3221::startConversion(Mode mode) {
   return Status{Err::IN_PROGRESS, 0, "Conversion started"};
 }
 
+Status INA3221::readConversionReady(bool& ready) {
+  return _readConversionReadyAt(_nowMs(), ready);
+}
+
 bool INA3221::conversionReady() {
-  if (!_initialized) {
-    return false;
-  }
-  if (_isContinuousMode()) {
-    return true;
-  }
-  if (_conversionReady) {
-    return true;
-  }
-  if (!_conversionStarted) {
-    return false;
-  }
-
-  uint32_t cycleUs = getCycleTimeUs();
-  uint32_t cycleMs = (cycleUs + 999) / 1000 + 1;
-  uint32_t nowMs = _nowMs();
-  if ((nowMs - _conversionStartMs) < cycleMs) {
-    return false;
-  }
-
-  // Check CVRF in Mask/Enable register
-  // NOTE: reading Mask/Enable clears CVRF and alert flags
-  uint16_t maskEn = 0;
-  Status st = readRegister16(cmd::REG_MASK_ENABLE, maskEn);
-  if (!st.ok()) {
-    return false;
-  }
-
-  if (maskEn & cmd::MASK_CVRF) {
-    _conversionStarted = false;
-    _conversionReady = true;
-    return true;
-  }
-
-  return false;
+  bool ready = false;
+  Status st = readConversionReady(ready);
+  return st.ok() && ready;
 }
 
 Status INA3221::readBlocking(ChannelMeasurement* ch1,
@@ -542,14 +595,23 @@ Status INA3221::readBlocking(ChannelMeasurement* ch1,
     return st;
   }
 
-  const uint32_t nowMs = _nowMs();
-  const uint32_t deadlineMs = nowMs + timeoutMs;
+  const uint32_t startMs = _nowMs();
+  const uint32_t deadlineMs = startMs + timeoutMs;
+  const uint32_t minCycleMs = (getCycleTimeUs() + 999) / 1000 + 1;
+  const uint32_t maxPolls = timeoutMs + minCycleMs + 2U;
+  uint32_t polls = 0;
 
   // Wait for conversion ready
-  while (static_cast<int32_t>(_nowMs() - deadlineMs) < 0) {
-    if (conversionReady()) {
+  while (static_cast<int32_t>(_nowMs() - deadlineMs) < 0 && polls < maxPolls) {
+    bool ready = false;
+    st = readConversionReady(ready);
+    if (!st.ok()) {
+      return st;
+    }
+    if (ready) {
       break;
     }
+    polls++;
     _cooperativeYield();
   }
 
@@ -579,10 +641,29 @@ Status INA3221::setMode(Mode mode) {
   if (!isValidMode(mode)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid mode");
   }
+  if (!modeAllowsNoChannels(mode) && _enabledChannelCount() == 0) {
+    return Status::Error(Err::INVALID_CONFIG, "At least one channel must be enabled");
+  }
+  const Config prevConfig = _config;
+  const bool prevStarted = _conversionStarted;
+  const bool prevReady = _conversionReady;
+  const uint32_t prevStartMs = _conversionStartMs;
   _config.mode = mode;
   _conversionStarted = false;
   _conversionReady = false;
-  return _applyConfig();
+  Status st = _applyConfig();
+  if (!st.ok()) {
+    _config = prevConfig;
+    _conversionStarted = prevStarted;
+    _conversionReady = prevReady;
+    _conversionStartMs = prevStartMs;
+    return st;
+  }
+  _handleConfigWriteSideEffects();
+  if (_isTriggeredMode()) {
+    return Status{Err::IN_PROGRESS, 0, "Conversion started"};
+  }
+  return Status::Ok();
 }
 
 Status INA3221::setAveraging(Averaging avg) {
@@ -592,8 +673,21 @@ Status INA3221::setAveraging(Averaging avg) {
   if (!isValidAveraging(avg)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid averaging");
   }
+  const Config prevConfig = _config;
+  const bool prevStarted = _conversionStarted;
+  const bool prevReady = _conversionReady;
+  const uint32_t prevStartMs = _conversionStartMs;
   _config.averaging = avg;
-  return _applyConfig();
+  Status st = _applyConfig();
+  if (!st.ok()) {
+    _config = prevConfig;
+    _conversionStarted = prevStarted;
+    _conversionReady = prevReady;
+    _conversionStartMs = prevStartMs;
+    return st;
+  }
+  _handleConfigWriteSideEffects();
+  return Status::Ok();
 }
 
 Status INA3221::setVBusConvTime(ConvTime ct) {
@@ -603,8 +697,21 @@ Status INA3221::setVBusConvTime(ConvTime ct) {
   if (!isValidConvTime(ct)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid conversion time");
   }
+  const Config prevConfig = _config;
+  const bool prevStarted = _conversionStarted;
+  const bool prevReady = _conversionReady;
+  const uint32_t prevStartMs = _conversionStartMs;
   _config.vBusCt = ct;
-  return _applyConfig();
+  Status st = _applyConfig();
+  if (!st.ok()) {
+    _config = prevConfig;
+    _conversionStarted = prevStarted;
+    _conversionReady = prevReady;
+    _conversionStartMs = prevStartMs;
+    return st;
+  }
+  _handleConfigWriteSideEffects();
+  return Status::Ok();
 }
 
 Status INA3221::setVShuntConvTime(ConvTime ct) {
@@ -614,8 +721,21 @@ Status INA3221::setVShuntConvTime(ConvTime ct) {
   if (!isValidConvTime(ct)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid conversion time");
   }
+  const Config prevConfig = _config;
+  const bool prevStarted = _conversionStarted;
+  const bool prevReady = _conversionReady;
+  const uint32_t prevStartMs = _conversionStartMs;
   _config.vShCt = ct;
-  return _applyConfig();
+  Status st = _applyConfig();
+  if (!st.ok()) {
+    _config = prevConfig;
+    _conversionStarted = prevStarted;
+    _conversionReady = prevReady;
+    _conversionStartMs = prevStartMs;
+    return st;
+  }
+  _handleConfigWriteSideEffects();
+  return Status::Ok();
 }
 
 Status INA3221::setChannelEnable(Channel ch, bool enable) {
@@ -625,12 +745,34 @@ Status INA3221::setChannelEnable(Channel ch, bool enable) {
   if (!isValidChannel(ch)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid channel");
   }
+  Config nextConfig = _config;
+  switch (ch) {
+    case Channel::CH1: nextConfig.ch1Enable = enable; break;
+    case Channel::CH2: nextConfig.ch2Enable = enable; break;
+    case Channel::CH3: nextConfig.ch3Enable = enable; break;
+  }
+  if (!configHasRequiredChannels(nextConfig)) {
+    return Status::Error(Err::INVALID_CONFIG, "At least one channel must be enabled");
+  }
+  const Config prevConfig = _config;
+  const bool prevStarted = _conversionStarted;
+  const bool prevReady = _conversionReady;
+  const uint32_t prevStartMs = _conversionStartMs;
   switch (ch) {
     case Channel::CH1: _config.ch1Enable = enable; break;
     case Channel::CH2: _config.ch2Enable = enable; break;
     case Channel::CH3: _config.ch3Enable = enable; break;
   }
-  return _applyConfig();
+  Status st = _applyConfig();
+  if (!st.ok()) {
+    _config = prevConfig;
+    _conversionStarted = prevStarted;
+    _conversionReady = prevReady;
+    _conversionStartMs = prevStartMs;
+    return st;
+  }
+  _handleConfigWriteSideEffects();
+  return Status::Ok();
 }
 
 bool INA3221::getChannelEnable(Channel ch) const {
@@ -646,8 +788,8 @@ Status INA3221::setShuntResistance(Channel ch, float ohms) {
   if (!isValidChannel(ch)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid channel");
   }
-  if (ohms <= 0.0f) {
-    return Status::Error(Err::INVALID_PARAM, "Shunt resistance must be > 0");
+  if (!isPositiveFinite(ohms)) {
+    return Status::Error(Err::INVALID_PARAM, "Shunt resistance must be finite and > 0");
   }
   _config.shuntResistance[static_cast<uint8_t>(ch)] = ohms;
   return Status::Ok();
@@ -671,22 +813,27 @@ Status INA3221::writeConfig(uint16_t config) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Config nextConfig = _config;
+  nextConfig.ch1Enable = (config & cmd::MASK_CH1EN) != 0;
+  nextConfig.ch2Enable = (config & cmd::MASK_CH2EN) != 0;
+  nextConfig.ch3Enable = (config & cmd::MASK_CH3EN) != 0;
+  nextConfig.averaging = static_cast<Averaging>((config & cmd::MASK_AVG) >> cmd::BIT_AVG);
+  nextConfig.vBusCt = static_cast<ConvTime>((config & cmd::MASK_VBUSCT) >> cmd::BIT_VBUSCT);
+  nextConfig.vShCt = static_cast<ConvTime>((config & cmd::MASK_VSHCT) >> cmd::BIT_VSHCT);
+  nextConfig.mode = static_cast<Mode>((config & cmd::MASK_MODE) >> cmd::BIT_MODE);
+  if (!configHasRequiredChannels(nextConfig)) {
+    return Status::Error(Err::INVALID_PARAM, "At least one channel must be enabled");
+  }
+
   Status st = writeRegister16(cmd::REG_CONFIG, config);
   if (!st.ok()) {
     return st;
   }
 
   // Sync config struct from register value
-  _config.ch1Enable = (config & cmd::MASK_CH1EN) != 0;
-  _config.ch2Enable = (config & cmd::MASK_CH2EN) != 0;
-  _config.ch3Enable = (config & cmd::MASK_CH3EN) != 0;
-  _config.averaging = static_cast<Averaging>((config & cmd::MASK_AVG) >> cmd::BIT_AVG);
-  _config.vBusCt = static_cast<ConvTime>((config & cmd::MASK_VBUSCT) >> cmd::BIT_VBUSCT);
-  _config.vShCt = static_cast<ConvTime>((config & cmd::MASK_VSHCT) >> cmd::BIT_VSHCT);
-  _config.mode = static_cast<Mode>((config & cmd::MASK_MODE) >> cmd::BIT_MODE);
+  _config = nextConfig;
 
-  _conversionStarted = false;
-  _conversionReady = false;
+  _handleConfigWriteSideEffects();
   return Status::Ok();
 }
 
@@ -710,6 +857,8 @@ Status INA3221::softReset() {
   _config.mode = Mode::SHUNT_BUS_CONT;
   _conversionStarted = false;
   _conversionReady = false;
+  _conversionStartMs = 0;
+  _maskEnableWritableCache = 0;
 
   return Status::Ok();
 }
@@ -856,6 +1005,11 @@ Status INA3221::readAlertFlags(AlertFlags& flags) {
   flags.timingControl   = (regVal & cmd::MASK_TCF)  != 0;
   flags.conversionReady = (regVal & cmd::MASK_CVRF) != 0;
 
+  if (flags.conversionReady && _isTriggeredMode()) {
+    _conversionStarted = false;
+    _conversionReady = true;
+  }
+
   return Status::Ok();
 }
 
@@ -864,19 +1018,17 @@ Status INA3221::setSummationChannels(bool ch1, bool ch2, bool ch3) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
 
-  uint16_t regVal = 0;
-  Status st = readRegister16(cmd::REG_MASK_ENABLE, regVal);
-  if (!st.ok()) {
-    return st;
-  }
-
-  // Clear SCC bits and set new values
-  regVal &= ~(cmd::MASK_SCC1 | cmd::MASK_SCC2 | cmd::MASK_SCC3);
+  uint16_t regVal = static_cast<uint16_t>(_maskEnableWritableCache & kMaskEnableWritable);
+  regVal &= static_cast<uint16_t>(~(cmd::MASK_SCC1 | cmd::MASK_SCC2 | cmd::MASK_SCC3));
   if (ch1) regVal |= cmd::MASK_SCC1;
   if (ch2) regVal |= cmd::MASK_SCC2;
   if (ch3) regVal |= cmd::MASK_SCC3;
 
-  return writeRegister16(cmd::REG_MASK_ENABLE, regVal);
+  Status st = writeRegister16(cmd::REG_MASK_ENABLE, regVal);
+  if (st.ok()) {
+    _maskEnableWritableCache = regVal;
+  }
+  return st;
 }
 
 Status INA3221::setAlertLatchEnable(bool warningLatch, bool criticalLatch) {
@@ -884,17 +1036,16 @@ Status INA3221::setAlertLatchEnable(bool warningLatch, bool criticalLatch) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
 
-  uint16_t regVal = 0;
-  Status st = readRegister16(cmd::REG_MASK_ENABLE, regVal);
-  if (!st.ok()) {
-    return st;
-  }
-
+  uint16_t regVal = static_cast<uint16_t>(_maskEnableWritableCache & kMaskEnableWritable);
   regVal &= ~(cmd::MASK_WEN | cmd::MASK_CEN);
   if (warningLatch) regVal |= cmd::MASK_WEN;
   if (criticalLatch) regVal |= cmd::MASK_CEN;
 
-  return writeRegister16(cmd::REG_MASK_ENABLE, regVal);
+  Status st = writeRegister16(cmd::REG_MASK_ENABLE, regVal);
+  if (st.ok()) {
+    _maskEnableWritableCache = regVal;
+  }
+  return st;
 }
 
 // ============================================================================
@@ -920,24 +1071,26 @@ Status INA3221::readDieId(uint16_t& id) {
 // ============================================================================
 
 float INA3221::shuntRawToMv(int16_t raw) {
-  // Data in bits [15:3], arithmetic right shift to get 13-bit signed value
-  int16_t dataValue = raw >> cmd::DATA_SHIFT;
+  // Data in bits [15:3]; explicitly sign extend the 13-bit value.
+  int16_t dataValue = signExtendField(static_cast<uint16_t>(raw),
+                                      cmd::DATA_SHIFT,
+                                      13);
   return dataValue * cmd::SHUNT_LSB_MV;
 }
 
 float INA3221::busRawToVolts(int16_t raw) {
-  int16_t dataValue = raw >> cmd::DATA_SHIFT;
+  int16_t dataValue = signExtendField(static_cast<uint16_t>(raw),
+                                      cmd::DATA_SHIFT,
+                                      13);
   return dataValue * cmd::BUS_LSB_V;
 }
 
 int16_t INA3221::mvToShuntRaw(float mV) {
-  int16_t dataValue = static_cast<int16_t>(lrintf(mV / cmd::SHUNT_LSB_MV));
-  return static_cast<int16_t>(dataValue << cmd::DATA_SHIFT);
+  return encodeSignedField(mV, cmd::SHUNT_LSB_MV, -4096, 4095, cmd::DATA_SHIFT);
 }
 
 int16_t INA3221::voltsToBusRaw(float volts) {
-  int16_t dataValue = static_cast<int16_t>(lrintf(volts / cmd::BUS_LSB_V));
-  return static_cast<int16_t>(dataValue << cmd::DATA_SHIFT);
+  return encodeSignedField(volts, cmd::BUS_LSB_V, -4096, 4095, cmd::DATA_SHIFT);
 }
 
 uint32_t INA3221::getConversionTimeUs() const {
@@ -1018,12 +1171,18 @@ Status INA3221::readRegister16(uint8_t reg, uint16_t& value) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  if (!isValidRegister(reg)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid register address");
+  }
   return _readRegister16Tracked(reg, value);
 }
 
 Status INA3221::writeRegister16(uint8_t reg, uint16_t value) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  if (!isValidRegister(reg)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid register address");
   }
   return _writeRegister16Tracked(reg, value);
 }
@@ -1097,12 +1256,116 @@ Status INA3221::_updateHealth(const Status& st) {
   return st;
 }
 
+Status INA3221::_recordFailure(const Status& st) {
+  if (st.ok() || st.inProgress()) {
+    return st;
+  }
+
+  uint32_t nowMs = _nowMs();
+  _lastErrorMs = nowMs;
+  _lastError = st;
+
+  if (_consecutiveFailures < UINT8_MAX) {
+    _consecutiveFailures++;
+  }
+  if (_totalFailures < UINT32_MAX) {
+    _totalFailures++;
+  }
+
+  if (_initialized) {
+    if (_consecutiveFailures >= _config.offlineThreshold) {
+      _driverState = DriverState::OFFLINE;
+    } else {
+      _driverState = DriverState::DEGRADED;
+    }
+  }
+
+  return st;
+}
+
 // ============================================================================
 // Internal
 // ============================================================================
 
 Status INA3221::_applyConfig() {
   return _writeRegister16Tracked(cmd::REG_CONFIG, _buildConfigRegister());
+}
+
+Status INA3221::_readConversionReadyAt(uint32_t nowMs, bool& ready) {
+  ready = false;
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+
+  if (_conversionReady) {
+    ready = true;
+    return Status::Ok();
+  }
+
+  if (_isTriggeredMode()) {
+    if (!_conversionStarted) {
+      return Status::Ok();
+    }
+
+    const uint32_t cycleUs = getCycleTimeUs();
+    const uint32_t cycleMs = (cycleUs + 999) / 1000 + 1;
+    if ((nowMs - _conversionStartMs) < cycleMs) {
+      return Status::Ok();
+    }
+  }
+
+  if (!_isTriggeredMode() && !_isContinuousMode()) {
+    return Status::Ok();
+  }
+
+  uint16_t maskEn = 0;
+  Status st = readRegister16(cmd::REG_MASK_ENABLE, maskEn);
+  if (!st.ok()) {
+    return st;
+  }
+
+  if ((maskEn & cmd::MASK_CVRF) != 0U) {
+    ready = true;
+    if (_isTriggeredMode()) {
+      _conversionStarted = false;
+      _conversionReady = true;
+    }
+  }
+
+  return Status::Ok();
+}
+
+Status INA3221::_ensureMeasurementReadyForRead() {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  if (!_isTriggeredMode()) {
+    return Status::Ok();
+  }
+
+  bool ready = false;
+  Status st = _readConversionReadyAt(_nowMs(), ready);
+  if (!st.ok()) {
+    return st;
+  }
+  if (!ready) {
+    return Status::Error(Err::CONVERSION_NOT_READY, "Conversion not ready");
+  }
+  return Status::Ok();
+}
+
+void INA3221::_handleConfigWriteSideEffects() {
+  if (_isTriggeredMode()) {
+    _conversionStarted = true;
+    _conversionReady = false;
+    _conversionStartMs = _nowMs();
+    return;
+  }
+
+  _conversionStarted = false;
+  _conversionReady = false;
+  _conversionStartMs = 0;
+  _maskEnableWritableCache = 0;
 }
 
 uint16_t INA3221::_buildConfigRegister() const {

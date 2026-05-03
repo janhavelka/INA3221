@@ -10,6 +10,7 @@
 #include "examples/common/BusDiag.h"
 #include "examples/common/I2cScanner.h"
 #include "examples/common/I2cTransport.h"
+#include "examples/common/CliStyle.h"
 #include "examples/common/Log.h"
 
 #include "INA3221/INA3221.h"
@@ -71,6 +72,10 @@ const char* errToStr(INA3221::Err err) {
     case Err::CONVERSION_NOT_READY:     return "CONVERSION_NOT_READY";
     case Err::BUSY:                     return "BUSY";
     case Err::IN_PROGRESS:              return "IN_PROGRESS";
+    case Err::I2C_NACK_ADDR:            return "I2C_NACK_ADDR";
+    case Err::I2C_NACK_DATA:            return "I2C_NACK_DATA";
+    case Err::I2C_TIMEOUT:              return "I2C_TIMEOUT";
+    case Err::I2C_BUS:                  return "I2C_BUS";
     default:                            return "UNKNOWN";
   }
 }
@@ -120,7 +125,7 @@ const char* staleTimeColor(bool isErrorTimestamp) {
 }
 
 void printPrompt() {
-  Serial.print("> ");
+  cli::printPrompt();
   Serial.flush();
 }
 
@@ -345,73 +350,66 @@ void printDriverHealth() {
 }
 
 void printHelp() {
-  auto helpSection = [](const char* title) {
-    Serial.printf("\n%s[%s]%s\n", LOG_COLOR_GREEN, title, LOG_COLOR_RESET);
-  };
-  auto helpItem = [](const char* cmd, const char* desc) {
-    Serial.printf("  %s%-32s%s - %s\n", LOG_COLOR_CYAN, cmd, LOG_COLOR_RESET, desc);
-  };
-
   Serial.println();
-  Serial.printf("%s=== INA3221 CLI Help ===%s\n", LOG_COLOR_CYAN, LOG_COLOR_RESET);
-  helpSection("Common");
-  helpItem("help / ?", "Show this help");
-  helpItem("version / ver", "Print firmware and library version info");
-  helpItem("scan", "Scan I2C bus");
-  helpItem("read", "Read all enabled channels (blocking)");
-  helpItem("read N", "Read N measurements");
-  helpItem("ch <1|2|3>", "Read single channel");
-  helpItem("shunt <1|2|3>", "Read shunt voltage (mV)");
-  helpItem("bus <1|2|3>", "Read bus voltage (V)");
-  helpItem("current <1|2|3>", "Read current (mA)");
-  helpItem("power <1|2|3>", "Read power (mW)");
-  helpItem("sum", "Read shunt-voltage sum (mV)");
-  helpItem("shuntraw <1|2|3>", "Read raw shunt register value");
-  helpItem("busraw <1|2|3>", "Read raw bus register value");
-  helpItem("sumraw", "Read raw shunt sum register value");
-  helpItem("ids", "Read manufacturer and die IDs");
-  helpItem("timing", "Show conversion time and cycle timing");
-  helpItem("start", "Start single-shot conversion");
-  helpItem("start <mode>", "Start with triggered mode (strig/btrig/sbtrig)");
-  helpItem("poll", "Check if conversion is ready");
+  cli::printHelpHeader("INA3221 CLI Help");
+  cli::printHelpSection("Common");
+  cli::printHelpItem("help / ?", "Show this help");
+  cli::printHelpItem("version / ver", "Print firmware and library version info");
+  cli::printHelpItem("scan", "Scan I2C bus");
+  cli::printHelpItem("read", "Read all enabled channels (blocking)");
+  cli::printHelpItem("read N", "Read N measurements");
+  cli::printHelpItem("ch <1|2|3>", "Read single channel");
+  cli::printHelpItem("shunt <1|2|3>", "Read shunt voltage (mV)");
+  cli::printHelpItem("bus <1|2|3>", "Read bus voltage (V)");
+  cli::printHelpItem("current <1|2|3>", "Read current (mA)");
+  cli::printHelpItem("power <1|2|3>", "Read power (mW)");
+  cli::printHelpItem("sum", "Read shunt-voltage sum (mV)");
+  cli::printHelpItem("shuntraw <1|2|3>", "Read raw shunt register value");
+  cli::printHelpItem("busraw <1|2|3>", "Read raw bus register value");
+  cli::printHelpItem("sumraw", "Read raw shunt sum register value");
+  cli::printHelpItem("ids", "Read manufacturer and die IDs");
+  cli::printHelpItem("timing", "Show conversion time and cycle timing");
+  cli::printHelpItem("start", "Start single-shot conversion");
+  cli::printHelpItem("start <mode>", "Start with triggered mode (strig/btrig/sbtrig)");
+  cli::printHelpItem("poll", "Check if conversion is ready");
 
-  helpSection("Configuration");
-  helpItem("mode [pd|strig|btrig|sbtrig|sc|bc|sbc]", "Set/show operating mode");
-  helpItem("avg [0..7]", "Set/show averaging (0=1,...,7=1024)");
-  helpItem("vbusct [0..7]", "Set/show bus voltage conv time");
-  helpItem("vshct [0..7]", "Set/show shunt voltage conv time");
-  helpItem("chen <1|2|3> <0|1>", "Enable/disable channel");
-  helpItem("rshunt <1|2|3> <ohms>", "Set shunt resistance");
-  helpItem("config", "Dump config register");
-  helpItem("config write <hex>", "Write full config register");
-  helpItem("reset", "Software reset");
+  cli::printHelpSection("Configuration");
+  cli::printHelpItem("mode [pd|strig|btrig|sbtrig|sc|bc|sbc]", "Set/show operating mode");
+  cli::printHelpItem("avg [0..7]", "Set/show averaging (0=1,...,7=1024)");
+  cli::printHelpItem("vbusct [0..7]", "Set/show bus voltage conv time");
+  cli::printHelpItem("vshct [0..7]", "Set/show shunt voltage conv time");
+  cli::printHelpItem("chen <1|2|3> <0|1>", "Enable/disable channel");
+  cli::printHelpItem("rshunt <1|2|3> <ohms>", "Set shunt resistance");
+  cli::printHelpItem("config", "Dump config register");
+  cli::printHelpItem("config write <hex>", "Write full config register");
+  cli::printHelpItem("reset", "Software reset");
 
-  helpSection("Registers");
-  helpItem("reg <addr>", "Read 16-bit register (hex address)");
-  helpItem("wreg <addr> <val>", "Write 16-bit register (diagnostic only; may desync cached config)");
+  cli::printHelpSection("Registers");
+  cli::printHelpItem("reg <addr>", "Read 16-bit register (hex address)");
+  cli::printHelpItem("wreg <addr> <val>", "Write 16-bit register (diagnostic only; may desync cached config)");
 
-  helpSection("Alerts");
-  helpItem("alerts", "Read alert flags");
-  helpItem("crit <1|2|3> [raw]", "Get/set critical alert limit");
-  helpItem("warn <1|2|3> [raw]", "Get/set warning alert limit");
-  helpItem("sumlim [raw]", "Get/set shunt sum limit");
-  helpItem("pvhi [raw]", "Get/set power valid upper limit");
-  helpItem("pvlo [raw]", "Get/set power valid lower limit");
-  helpItem("sumch <1|2|3> <0|1>", "Enable/disable channel in summation");
-  helpItem("latch <warn> <crit>", "Set alert latch enable (0|1 0|1)");
+  cli::printHelpSection("Alerts");
+  cli::printHelpItem("alerts", "Read alert flags");
+  cli::printHelpItem("crit <1|2|3> [raw]", "Get/set critical alert limit");
+  cli::printHelpItem("warn <1|2|3> [raw]", "Get/set warning alert limit");
+  cli::printHelpItem("sumlim [raw]", "Get/set shunt sum limit");
+  cli::printHelpItem("pvhi [raw]", "Get/set power valid upper limit");
+  cli::printHelpItem("pvlo [raw]", "Get/set power valid lower limit");
+  cli::printHelpItem("sumch <1|2|3> <0|1>", "Enable/disable channel in summation");
+  cli::printHelpItem("latch <warn> <crit>", "Set alert latch enable (0|1 0|1)");
 
-  helpSection("Diagnostics");
-  helpItem("drv", "Show driver state and health");
-  helpItem("probe", "Probe device (no health tracking)");
-  helpItem("recover", "Manual recovery attempt");
-  helpItem("online", "Show online state");
-  helpItem("cfg / settings", "Print active configuration snapshot");
-  helpItem("verbose [0|1]", "Enable/disable verbose output");
-  helpItem("stress [N]", "Run N measurement cycles");
-  helpItem("stress_mix [N]", "Run N mixed-operation stress cycles");
-  helpItem("selftest", "Run safe command self-test report");
-  helpItem("convert shunt <raw>", "Convert shunt raw to mV");
-  helpItem("convert bus <raw>", "Convert bus raw to V");
+  cli::printHelpSection("Diagnostics");
+  cli::printHelpItem("drv", "Show driver state and health");
+  cli::printHelpItem("probe", "Probe device (no health tracking)");
+  cli::printHelpItem("recover", "Manual recovery attempt");
+  cli::printHelpItem("online", "Show online state");
+  cli::printHelpItem("cfg / settings", "Print active configuration snapshot");
+  cli::printHelpItem("verbose [0|1]", "Enable/disable verbose output");
+  cli::printHelpItem("stress [N]", "Run N measurement cycles");
+  cli::printHelpItem("stress_mix [N]", "Run N mixed-operation stress cycles");
+  cli::printHelpItem("selftest", "Run safe command self-test report");
+  cli::printHelpItem("convert shunt <raw>", "Convert shunt raw to mV");
+  cli::printHelpItem("convert bus <raw>", "Convert bus raw to V");
 }
 
 void printVersionInfo() {
@@ -991,8 +989,13 @@ void processCommand(const String& cmdLine) {
     auto st = device.startConversion(mode);
     printStatus(st);
   } else if (cmd == "poll") {
-    bool ready = device.conversionReady();
-    LOGI("Conversion ready: %s%s%s", yesNoColor(ready), ready ? "YES" : "NO", LOG_COLOR_RESET);
+    bool ready = false;
+    auto st = device.readConversionReady(ready);
+    if (st.ok()) {
+      LOGI("Conversion ready: %s%s%s", yesNoColor(ready), ready ? "YES" : "NO", LOG_COLOR_RESET);
+    } else {
+      printStatus(st);
+    }
   } else if (cmd == "ids") {
     uint16_t mfgId = 0;
     uint16_t dieId = 0;

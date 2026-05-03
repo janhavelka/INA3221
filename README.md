@@ -10,7 +10,7 @@ ESP32-S2 / ESP32-S3 (Arduino framework, PlatformIO).
 - Triple-channel shunt and bus voltage measurement
 - Current and power calculation from configurable shunt resistance
 - Shunt-voltage summation register readout
-- Single-shot and continuous conversion modes
+- Tracked single-shot and continuous conversion modes
 - Configurable averaging (1–1024 samples), conversion time (140 µs–8.244 ms)
 - Alert support: critical/warning limits, power-valid window, summation alert
 - Manufacturer ID (0x5449) and Die ID (0x3220) verification
@@ -128,14 +128,29 @@ void loop() {
 | `isInitialized()` | True after successful `begin()` until `end()` |
 | `getConfig()` | Return the driver's cached configuration snapshot |
 | `probe()` | Check device presence without updating health counters |
-| `recover()` | Re-validate IDs, clear conversion state, and re-apply cached config |
+| `recover()` | Re-validate IDs, clear conversion state, and re-apply cached config / mask settings |
+
+### Measurement And Conversion API
+
+| Method | Description |
+|--------|-------------|
+| `readShuntRaw()` / `readBusRaw()` | Read raw per-channel voltage registers |
+| `readShuntVoltage()` / `readBusVoltage()` | Read scaled shunt mV and bus V |
+| `readCurrent()` / `readPower()` | Calculate current and power from configured shunt resistance |
+| `readChannel()` | Read shunt, bus, current, and power for one channel |
+| `readShuntSumRaw()` / `readShuntSumVoltage()` | Read shunt-voltage summation register |
+| `startConversion()` | Trigger a single-shot conversion in the configured triggered mode |
+| `startConversion(mode)` | Trigger a single-shot conversion using `SHUNT_TRIG`, `BUS_TRIG`, or `SHUNT_BUS_TRIG` |
+| `readConversionReady(ready)` | Read CVRF with Status propagation |
+| `conversionReady()` | Convenience bool wrapper that returns false on errors |
+| `readBlocking()` | Bounded helper that starts/waits/reads without using `delay()` |
 
 ### Raw Access And Compatibility Aliases
 
 | Method | Description |
 |--------|-------------|
-| `readRegister16(reg, value)` | Read a tracked 16-bit register |
-| `writeRegister16(reg, value)` | Write a tracked 16-bit register |
+| `readRegister16(reg, value)` | Read a tracked 16-bit register; valid addresses are `0x00`-`0x11`, `0xFE`, `0xFF` |
+| `writeRegister16(reg, value)` | Write a tracked 16-bit register; invalid addresses are rejected before I2C |
 | `setVbusConvTime()` / `getVbusConvTime()` | Cross-library naming aliases for the bus conversion-time API |
 | `setVshuntConvTime()` / `getVshuntConvTime()` | Cross-library naming aliases for the shunt conversion-time API |
 
@@ -163,6 +178,12 @@ void loop() {
 | `SHUNT_CONT` | Continuous shunt voltage only |
 | `BUS_CONT` | Continuous bus voltage only |
 | `SHUNT_BUS_CONT` | Continuous shunt + bus (default) |
+
+Writing a triggered mode to the Configuration register starts a hardware single-shot conversion. The driver tracks that side effect: `begin()` with a triggered mode, `setMode()` to a triggered mode, `writeConfig()` with triggered mode bits, and `startConversion()` all mark the conversion in progress. Measurement APIs return `CONVERSION_NOT_READY` until the configured conversion/averaging time has elapsed and CVRF is observed.
+
+`readConversionReady()` and `readAlertFlags()` read the Mask/Enable register. Per INA3221 register semantics, that read clears CVRF and latched alert flags. The driver caches a ready triggered conversion before CVRF is cleared so subsequent measurement reads are still allowed.
+
+Configuration setters update the cached `Config` only after their I2C write succeeds. On a failed write, the previous cached mode, conversion settings, channel enables, and conversion state are restored.
 
 ### Conversion Times
 

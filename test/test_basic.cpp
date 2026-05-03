@@ -6,6 +6,8 @@
 #include "Arduino.h"
 #include "Wire.h"
 
+#include <limits>
+
 SerialClass Serial;
 TwoWire Wire;
 
@@ -23,6 +25,9 @@ struct FakeBus {
   uint32_t nowMs = 1234;
   uint32_t writeCalls = 0;
   uint32_t readCalls = 0;
+  uint32_t yieldCalls = 0;
+  uint8_t lastWriteReg = 0;
+  uint16_t lastWriteValue = 0;
 
   // Register values returned on read (keyed by register address)
   // Default: manufacturer ID, die ID, config register
@@ -44,10 +49,19 @@ struct FakeBus {
   }
 };
 
-Status fakeWrite(uint8_t, const uint8_t*, size_t, uint32_t, void* user) {
+Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user) {
   FakeBus* bus = static_cast<FakeBus*>(user);
   bus->writeCalls++;
-  return bus->writeStatus;
+  if (!bus->writeStatus.ok()) {
+    return bus->writeStatus;
+  }
+  if (data != nullptr && len >= 3) {
+    bus->lastWriteReg = data[0];
+    bus->lastWriteValue = (static_cast<uint16_t>(data[1]) << 8) | data[2];
+    bus->registerData[data[0]][0] = data[1];
+    bus->registerData[data[0]][1] = data[2];
+  }
+  return Status::Ok();
 }
 
 Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxData,
@@ -78,12 +92,17 @@ uint32_t fakeNowMs(void* user) {
   return static_cast<FakeBus*>(user)->nowMs;
 }
 
+void fakeYield(void* user) {
+  static_cast<FakeBus*>(user)->yieldCalls++;
+}
+
 Config makeConfig(FakeBus& bus) {
   Config cfg;
   cfg.i2cWrite = fakeWrite;
   cfg.i2cWriteRead = fakeWriteRead;
   cfg.i2cUser = &bus;
   cfg.nowMs = fakeNowMs;
+  cfg.cooperativeYield = fakeYield;
   cfg.timeUser = &bus;
   cfg.offlineThreshold = 3;
   cfg.i2cTimeoutMs = 10;
@@ -172,6 +191,27 @@ void test_begin_rejects_zero_shunt_resistance() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG), static_cast<uint8_t>(st.code));
 }
 
+void test_begin_rejects_nan_shunt_resistance() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.shuntResistance[0] = std::numeric_limits<float>::quiet_NaN();
+  Status st = dev.begin(cfg);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG), static_cast<uint8_t>(st.code));
+}
+
+void test_begin_rejects_active_mode_with_all_channels_disabled() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.ch1Enable = false;
+  cfg.ch2Enable = false;
+  cfg.ch3Enable = false;
+  cfg.mode = Mode::SHUNT_BUS_CONT;
+  Status st = dev.begin(cfg);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG), static_cast<uint8_t>(st.code));
+}
+
 void test_begin_success_sets_ready_and_counters() {
   FakeBus bus;
   INA3221::INA3221 dev;
@@ -249,6 +289,22 @@ void test_recover_failure_updates_health() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
                           static_cast<uint8_t>(dev.lastError().code));
   TEST_ASSERT_EQUAL_UINT32(bus.nowMs, dev.lastErrorMs());
+}
+
+void test_recover_wrong_die_id_updates_health() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.registerData[0xFF][0] = 0x00;
+  bus.registerData[0xFF][1] = 0x00;
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DIE_ID_MISMATCH),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(1u, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT8(1u, dev.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::DEGRADED),
+                          static_cast<uint8_t>(dev.state()));
 }
 
 void test_recover_success_returns_ready() {
@@ -364,6 +420,34 @@ void test_read_channel_full() {
   TEST_ASSERT_FLOAT_WITHIN(0.5f, 60.0f, m.power_mW);
 }
 
+void test_triggered_read_is_gated_until_conversion_ready() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  TEST_ASSERT_TRUE(dev._conversionStarted);
+
+  ChannelMeasurement m;
+  Status st = dev.readChannel(Channel::CH1, m);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CONVERSION_NOT_READY),
+                          static_cast<uint8_t>(st.code));
+
+  bus.registerData[0x01][0] = 0x01;
+  bus.registerData[0x01][1] = 0x90;
+  bus.registerData[0x02][0] = 0x17;
+  bus.registerData[0x02][1] = 0x70;
+  bus.registerData[0x0F][0] = 0x00;
+  bus.registerData[0x0F][1] = 0x01;
+  bus.nowMs += 10;
+
+  st = dev.readChannel(Channel::CH1, m);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(dev._conversionReady);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 2.0f, m.shuntVoltage_mV);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 6.0f, m.busVoltage_V);
+}
+
 void test_read_not_initialized() {
   INA3221::INA3221 dev;
   int16_t raw = 0;
@@ -381,9 +465,25 @@ void test_set_mode() {
   TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
 
   Status st = dev.setMode(Mode::SHUNT_TRIG);
-  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(st.inProgress());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SHUNT_TRIG),
                           static_cast<uint8_t>(dev.getMode()));
+  TEST_ASSERT_TRUE(dev._conversionStarted);
+  TEST_ASSERT_FALSE(dev._conversionReady);
+}
+
+void test_set_mode_rolls_back_cached_config_on_write_failure() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.writeStatus = Status::Error(Err::I2C_BUS, "forced write failure", -2);
+  Status st = dev.setMode(Mode::BUS_CONT);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SHUNT_BUS_CONT),
+                          static_cast<uint8_t>(dev.getMode()));
+  TEST_ASSERT_FALSE(dev._conversionStarted);
 }
 
 void test_set_averaging() {
@@ -397,6 +497,19 @@ void test_set_averaging() {
                           static_cast<uint8_t>(dev.getAveraging()));
 }
 
+void test_set_averaging_rolls_back_cached_config_on_write_failure() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.writeStatus = Status::Error(Err::I2C_TIMEOUT, "forced write timeout", -3);
+  Status st = dev.setAveraging(Averaging::AVG_1024);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Averaging::AVG_1),
+                          static_cast<uint8_t>(dev.getAveraging()));
+}
+
 void test_set_channel_enable() {
   FakeBus bus;
   INA3221::INA3221 dev;
@@ -407,6 +520,20 @@ void test_set_channel_enable() {
   TEST_ASSERT_FALSE(dev.getChannelEnable(Channel::CH2));
   TEST_ASSERT_TRUE(dev.getChannelEnable(Channel::CH1));
   TEST_ASSERT_TRUE(dev.getChannelEnable(Channel::CH3));
+}
+
+void test_set_channel_enable_rejects_disabling_last_active_channel() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.ch2Enable = false;
+  cfg.ch3Enable = false;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  Status st = dev.setChannelEnable(Channel::CH1, false);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.getChannelEnable(Channel::CH1));
 }
 
 void test_set_shunt_resistance() {
@@ -426,6 +553,17 @@ void test_set_shunt_resistance_rejects_zero() {
 
   Status st = dev.setShuntResistance(Channel::CH1, 0.0f);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM), static_cast<uint8_t>(st.code));
+}
+
+void test_set_shunt_resistance_rejects_nan() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Status st = dev.setShuntResistance(Channel::CH1,
+                                     std::numeric_limits<float>::quiet_NaN());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
 }
 
 // ============================================================================
@@ -496,6 +634,36 @@ void test_start_conversion_rejects_power_down_mode() {
   TEST_ASSERT_FALSE(dev._conversionStarted);
 }
 
+void test_read_conversion_ready_propagates_i2c_error() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.nowMs += 10;
+  bus.readStatus = Status::Error(Err::I2C_TIMEOUT, "forced ready timeout", -4);
+  bool ready = true;
+  Status st = dev.readConversionReady(ready);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FALSE(ready);
+}
+
+void test_read_blocking_times_out_with_stalled_clock() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  ChannelMeasurement m;
+  Status st = dev.readBlocking(&m, nullptr, nullptr, 5);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(bus.yieldCalls > 0);
+}
+
 // ============================================================================
 // Transport Wrapper Tests
 // ============================================================================
@@ -551,6 +719,25 @@ void test_register_access_after_end_does_not_touch_bus() {
   TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
 }
 
+void test_invalid_raw_register_address_does_not_touch_bus() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  const uint32_t readsBefore = bus.readCalls;
+  const uint32_t writesBefore = bus.writeCalls;
+
+  uint16_t value = 0;
+  Status st = dev.readRegister16(0x12, value);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+
+  st = dev.writeRegister16(0x12, 0x1234);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+}
+
 // ============================================================================
 // Build Config Register Test
 // ============================================================================
@@ -586,6 +773,8 @@ int main() {
   RUN_TEST(test_begin_rejects_missing_callbacks);
   RUN_TEST(test_begin_rejects_invalid_address);
   RUN_TEST(test_begin_rejects_zero_shunt_resistance);
+  RUN_TEST(test_begin_rejects_nan_shunt_resistance);
+  RUN_TEST(test_begin_rejects_active_mode_with_all_channels_disabled);
   RUN_TEST(test_begin_success_sets_ready_and_counters);
 
   // Probe / Recover
@@ -593,6 +782,7 @@ int main() {
   RUN_TEST(test_probe_detects_wrong_manufacturer_id);
   RUN_TEST(test_probe_detects_wrong_die_id);
   RUN_TEST(test_recover_failure_updates_health);
+  RUN_TEST(test_recover_wrong_die_id_updates_health);
   RUN_TEST(test_recover_success_returns_ready);
   RUN_TEST(test_recover_reaches_offline_when_threshold_is_one);
 
@@ -601,14 +791,19 @@ int main() {
   RUN_TEST(test_read_bus_voltage);
   RUN_TEST(test_read_current);
   RUN_TEST(test_read_channel_full);
+  RUN_TEST(test_triggered_read_is_gated_until_conversion_ready);
   RUN_TEST(test_read_not_initialized);
 
   // Configuration
   RUN_TEST(test_set_mode);
+  RUN_TEST(test_set_mode_rolls_back_cached_config_on_write_failure);
   RUN_TEST(test_set_averaging);
+  RUN_TEST(test_set_averaging_rolls_back_cached_config_on_write_failure);
   RUN_TEST(test_set_channel_enable);
+  RUN_TEST(test_set_channel_enable_rejects_disabling_last_active_channel);
   RUN_TEST(test_set_shunt_resistance);
   RUN_TEST(test_set_shunt_resistance_rejects_zero);
+  RUN_TEST(test_set_shunt_resistance_rejects_nan);
 
   // Utility
   RUN_TEST(test_shunt_raw_to_mv);
@@ -619,10 +814,13 @@ int main() {
   RUN_TEST(test_cycle_time_us);
   RUN_TEST(test_cycle_time_includes_averaging);
   RUN_TEST(test_start_conversion_rejects_power_down_mode);
+  RUN_TEST(test_read_conversion_ready_propagates_i2c_error);
+  RUN_TEST(test_read_blocking_times_out_with_stalled_clock);
 
   // Transport
   RUN_TEST(test_raw_transport_rejects_invalid_buffers);
   RUN_TEST(test_register_access_after_end_does_not_touch_bus);
+  RUN_TEST(test_invalid_raw_register_address_does_not_touch_bus);
 
   // Config register
   RUN_TEST(test_build_config_register);

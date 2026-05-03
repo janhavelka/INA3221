@@ -2,7 +2,7 @@
 # Generated and maintained for unified API documentation.
 
 PROJECT_NAME           = "INA3221"
-PROJECT_NUMBER         = "0.1.0"
+PROJECT_NUMBER         = "1.0.0"
 PROJECT_BRIEF          = "INA3221 triple-channel power monitor library API documentation"
 OUTPUT_DIRECTORY       = docs/doxygen
 CREATE_SUBDIRS         = NO

@@ -96,6 +96,11 @@ public:
   // === Single-Shot Conversion ===
   Status startConversion();
   Status startConversion(Mode mode);
+  /// Read conversion-ready state with Status propagation.
+  /// @note This reads Mask/Enable and therefore clears CVRF and latched alert flags
+  ///       per the INA3221 register semantics.
+  Status readConversionReady(bool& ready);
+  /// Convenience wrapper around readConversionReady(); returns false on errors.
   bool conversionReady();
   Status readBlocking(ChannelMeasurement* ch1 = nullptr,
                       ChannelMeasurement* ch2 = nullptr,
@@ -103,6 +108,8 @@ public:
                       uint32_t timeoutMs = 200);
 
   // === Configuration ===
+  /// Set operating mode.
+  /// @return IN_PROGRESS when a triggered mode write starts a single-shot conversion.
   Status setMode(Mode mode);
   Mode getMode() const { return _config.mode; }
 
@@ -130,10 +137,15 @@ public:
   Status setChannelEnable(Channel ch, bool enable);
   bool getChannelEnable(Channel ch) const;
 
+  /// Set host-side shunt resistance used for current/power calculations.
+  /// @param ch Channel whose shunt resistance is being configured.
+  /// @param ohms Must be finite and > 0.
   Status setShuntResistance(Channel ch, float ohms);
   float getShuntResistance(Channel ch) const;
 
   Status readConfig(uint16_t& config);
+  /// Write raw Configuration register and synchronize cached Config.
+  /// @note Triggered mode bits start and track a single-shot conversion.
   Status writeConfig(uint16_t config);
   Status softReset();
 
@@ -188,9 +200,13 @@ private:
 
   // === Health Tracking ===
   Status _updateHealth(const Status& st);
+  Status _recordFailure(const Status& st);
 
   // === Internal ===
   Status _applyConfig();
+  Status _readConversionReadyAt(uint32_t nowMs, bool& ready);
+  Status _ensureMeasurementReadyForRead();
+  void _handleConfigWriteSideEffects();
   uint16_t _buildConfigRegister() const;
   uint32_t _nowMs() const;
   void _cooperativeYield() const;
@@ -216,6 +232,7 @@ private:
   bool _conversionStarted = false;
   bool _conversionReady = false;
   uint32_t _conversionStartMs = 0;
+  uint16_t _maskEnableWritableCache = 0;
 };
 
 } // namespace INA3221

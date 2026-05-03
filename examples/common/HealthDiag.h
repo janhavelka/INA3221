@@ -48,6 +48,10 @@ inline const char* errToString(INA3221::Err err) {
     case INA3221::Err::CONVERSION_NOT_READY:      return "CONVERSION_NOT_READY";
     case INA3221::Err::BUSY:                      return "BUSY";
     case INA3221::Err::IN_PROGRESS:               return "IN_PROGRESS";
+    case INA3221::Err::I2C_NACK_ADDR:             return "I2C_NACK_ADDR";
+    case INA3221::Err::I2C_NACK_DATA:             return "I2C_NACK_DATA";
+    case INA3221::Err::I2C_TIMEOUT:               return "I2C_TIMEOUT";
+    case INA3221::Err::I2C_BUS:                   return "I2C_BUS";
     default:                                       return "UNKNOWN";
   }
 }
