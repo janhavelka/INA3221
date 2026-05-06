@@ -202,6 +202,7 @@ Configuration setters update the cached `Config` only after their I2C write succ
 3. **Resource ownership**: I2C bus is NOT owned by the library. Transport callbacks are injected via `Config`.
 4. **Memory**: All allocation happens in `begin()`. Zero heap allocation in steady state.
 5. **Error handling**: Every fallible API returns `Status`. Check with `status.ok()`.
+6. **Health**: `OFFLINE` is latched. Normal public I2C operations return `BUSY` with `Driver is offline; call recover()` without touching the bus until `recover()` succeeds.
 
 ## Examples
 

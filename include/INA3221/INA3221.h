@@ -185,6 +185,8 @@ public:
   uint32_t getCycleTimeUs() const;
 
 private:
+  class ScopedOfflineI2cAllowance;
+
   // === Transport Wrappers ===
   Status _i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
                           uint8_t* rxBuf, size_t rxLen);
@@ -201,6 +203,7 @@ private:
   // === Health Tracking ===
   Status _updateHealth(const Status& st);
   Status _recordFailure(const Status& st);
+  void _reassertOfflineLatch();
 
   // === Internal ===
   Status _applyConfig();
@@ -219,6 +222,7 @@ private:
   Config _config;
   bool _initialized = false;
   DriverState _driverState = DriverState::UNINIT;
+  bool _allowOfflineI2c = false;
 
   // === Health Counters ===
   uint32_t _lastOkMs = 0;

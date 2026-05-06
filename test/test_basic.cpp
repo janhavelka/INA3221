@@ -342,6 +342,73 @@ void test_recover_reaches_offline_when_threshold_is_one() {
   TEST_ASSERT_FALSE(dev.isOnline());
 }
 
+void test_offline_latches_normal_read_without_i2c_until_recover() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.offlineThreshold = 1;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.readStatus = Status::Error(Err::TIMEOUT, "forced timeout", -11);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(dev.recover().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                          static_cast<uint8_t>(dev.state()));
+
+  bus.readStatus = Status::Ok();
+  const uint32_t readsBefore = bus.readCalls;
+  int16_t raw = 0;
+  Status st = dev.readShuntRaw(Channel::CH1, raw);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_STRING("Driver is offline; call recover()", st.msg);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                          static_cast<uint8_t>(dev.state()));
+
+  TEST_ASSERT_TRUE(dev.recover().ok());
+  TEST_ASSERT_GREATER_THAN_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(dev.state()));
+}
+
+void test_failed_recover_from_offline_preserves_latch_after_partial_success() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.offlineThreshold = 3;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.readStatus = Status::Error(Err::TIMEOUT, "forced timeout", -12);
+  uint16_t reg = 0;
+  for (uint8_t i = 0; i < 3; ++i) {
+    Status st = dev.readRegister16(cmd::REG_CONFIG, reg);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                            static_cast<uint8_t>(st.code));
+  }
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT8(3u, dev.consecutiveFailures());
+
+  bus.readStatus = Status::Ok();
+  bus.registerData[cmd::REG_DIE_ID][0] = 0x00;
+  bus.registerData[cmd::REG_DIE_ID][1] = 0x00;
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DIE_ID_MISMATCH),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_TRUE(dev.consecutiveFailures() >= 3u);
+  TEST_ASSERT_FALSE(dev._allowOfflineI2c);
+
+  const uint32_t readsBefore = bus.readCalls;
+  int16_t raw = 0;
+  st = dev.readShuntRaw(Channel::CH1, raw);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::BUSY),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_STRING("Driver is offline; call recover()", st.msg);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+}
+
 // ============================================================================
 // Measurement Tests
 // ============================================================================
@@ -719,6 +786,26 @@ void test_register_access_after_end_does_not_touch_bus() {
   TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
 }
 
+void test_end_while_offline_does_not_touch_bus() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.offlineThreshold = 1;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.readStatus = Status::Error(Err::TIMEOUT, "forced timeout", -13);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
+                          static_cast<uint8_t>(dev.recover().code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::OFFLINE),
+                          static_cast<uint8_t>(dev.state()));
+
+  const uint32_t writesBefore = bus.writeCalls;
+  dev.end();
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
+                          static_cast<uint8_t>(dev.state()));
+}
+
 void test_invalid_raw_register_address_does_not_touch_bus() {
   FakeBus bus;
   INA3221::INA3221 dev;
@@ -785,6 +872,8 @@ int main() {
   RUN_TEST(test_recover_wrong_die_id_updates_health);
   RUN_TEST(test_recover_success_returns_ready);
   RUN_TEST(test_recover_reaches_offline_when_threshold_is_one);
+  RUN_TEST(test_offline_latches_normal_read_without_i2c_until_recover);
+  RUN_TEST(test_failed_recover_from_offline_preserves_latch_after_partial_success);
 
   // Measurements
   RUN_TEST(test_read_shunt_raw);
@@ -820,6 +909,7 @@ int main() {
   // Transport
   RUN_TEST(test_raw_transport_rejects_invalid_buffers);
   RUN_TEST(test_register_access_after_end_does_not_touch_bus);
+  RUN_TEST(test_end_while_offline_does_not_touch_bus);
   RUN_TEST(test_invalid_raw_register_address_does_not_touch_bus);
 
   // Config register

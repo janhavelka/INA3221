@@ -157,6 +157,33 @@ uint8_t warnRegAddr(Channel ch) {
 
 } // namespace
 
+class INA3221::ScopedOfflineI2cAllowance {
+public:
+  explicit ScopedOfflineI2cAllowance(INA3221& driver)
+    : _driver(driver),
+      _previousAllow(driver._allowOfflineI2c),
+      _startedOffline(driver._initialized &&
+                      driver._driverState == DriverState::OFFLINE) {
+    _driver._allowOfflineI2c = true;
+  }
+
+  ~ScopedOfflineI2cAllowance() {
+    _driver._allowOfflineI2c = _previousAllow;
+  }
+
+  Status finishRecovery(const Status& st) {
+    if (!st.ok() && !st.inProgress() && _startedOffline) {
+      _driver._reassertOfflineLatch();
+    }
+    return st;
+  }
+
+private:
+  INA3221& _driver;
+  bool _previousAllow;
+  bool _startedOffline;
+};
+
 // ============================================================================
 // Lifecycle
 // ============================================================================
@@ -233,7 +260,7 @@ void INA3221::tick(uint32_t nowMs) {
 }
 
 void INA3221::end() {
-  if (_initialized) {
+  if (_initialized && _driverState != DriverState::OFFLINE) {
     uint16_t configReg = _buildConfigRegister();
     configReg &= static_cast<uint16_t>(~cmd::MASK_MODE);
     configReg |= (static_cast<uint16_t>(Mode::POWER_DOWN) << cmd::BIT_MODE) & cmd::MASK_MODE;
@@ -293,26 +320,30 @@ Status INA3221::recover() {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
 
+  ScopedOfflineI2cAllowance allowOfflineI2c(*this);
+
   uint16_t mfgId = 0;
   Status st = readRegister16(cmd::REG_MANUFACTURER_ID, mfgId);
   if (!st.ok()) {
-    return st;
+    return allowOfflineI2c.finishRecovery(st);
   }
   if (mfgId != cmd::MANUFACTURER_ID_VALUE) {
-    return _recordFailure(Status::Error(Err::MANUFACTURER_ID_MISMATCH,
-                                        "Manufacturer ID mismatch",
-                                        static_cast<int32_t>(mfgId)));
+    st = _recordFailure(Status::Error(Err::MANUFACTURER_ID_MISMATCH,
+                                      "Manufacturer ID mismatch",
+                                      static_cast<int32_t>(mfgId)));
+    return allowOfflineI2c.finishRecovery(st);
   }
 
   uint16_t dieId = 0;
   st = readRegister16(cmd::REG_DIE_ID, dieId);
   if (!st.ok()) {
-    return st;
+    return allowOfflineI2c.finishRecovery(st);
   }
   if (dieId != cmd::DIE_ID_VALUE) {
-    return _recordFailure(Status::Error(Err::DIE_ID_MISMATCH,
-                                        "Die ID mismatch",
-                                        static_cast<int32_t>(dieId)));
+    st = _recordFailure(Status::Error(Err::DIE_ID_MISMATCH,
+                                      "Die ID mismatch",
+                                      static_cast<int32_t>(dieId)));
+    return allowOfflineI2c.finishRecovery(st);
   }
 
   _conversionStarted = false;
@@ -321,17 +352,17 @@ Status INA3221::recover() {
 
   st = _applyConfig();
   if (!st.ok()) {
-    return st;
+    return allowOfflineI2c.finishRecovery(st);
   }
   _handleConfigWriteSideEffects();
 
   st = writeRegister16(cmd::REG_MASK_ENABLE,
                        static_cast<uint16_t>(_maskEnableWritableCache & kMaskEnableWritable));
   if (!st.ok()) {
-    return st;
+    return allowOfflineI2c.finishRecovery(st);
   }
 
-  return Status::Ok();
+  return allowOfflineI2c.finishRecovery(Status::Ok());
 }
 
 // ============================================================================
@@ -1148,6 +1179,10 @@ Status INA3221::_i2cWriteRaw(const uint8_t* buf, size_t len) {
 
 Status INA3221::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
                                      uint8_t* rxBuf, size_t rxLen) {
+  if (_initialized && _driverState == DriverState::OFFLINE && !_allowOfflineI2c) {
+    return Status::Error(Err::BUSY, "Driver is offline; call recover()");
+  }
+
   Status st = _i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen);
   if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
     return st;
@@ -1156,6 +1191,10 @@ Status INA3221::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
 }
 
 Status INA3221::_i2cWriteTracked(const uint8_t* buf, size_t len) {
+  if (_initialized && _driverState == DriverState::OFFLINE && !_allowOfflineI2c) {
+    return Status::Error(Err::BUSY, "Driver is offline; call recover()");
+  }
+
   Status st = _i2cWriteRaw(buf, len);
   if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
     return st;
@@ -1281,6 +1320,14 @@ Status INA3221::_recordFailure(const Status& st) {
   }
 
   return st;
+}
+
+void INA3221::_reassertOfflineLatch() {
+  _driverState = DriverState::OFFLINE;
+  const uint8_t threshold = _config.offlineThreshold == 0 ? 1 : _config.offlineThreshold;
+  if (_consecutiveFailures < threshold) {
+    _consecutiveFailures = threshold;
+  }
 }
 
 // ============================================================================
