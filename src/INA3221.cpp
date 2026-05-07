@@ -155,34 +155,25 @@ uint8_t warnRegAddr(Channel ch) {
   return cmd::WARN_REG_BASE + static_cast<uint8_t>(ch) * cmd::CHANNEL_STRIDE;
 }
 
-} // namespace
-
-class INA3221::ScopedOfflineI2cAllowance {
+class ScopedOfflineI2cAllowance {
 public:
-  explicit ScopedOfflineI2cAllowance(INA3221& driver)
-    : _driver(driver),
-      _previousAllow(driver._allowOfflineI2c),
-      _startedOffline(driver._initialized &&
-                      driver._driverState == DriverState::OFFLINE) {
-    _driver._allowOfflineI2c = true;
+  explicit ScopedOfflineI2cAllowance(bool& flag, bool allow) : _flag(flag), _old(flag) {
+    _flag = allow;
   }
 
   ~ScopedOfflineI2cAllowance() {
-    _driver._allowOfflineI2c = _previousAllow;
+    _flag = _old;
   }
 
-  Status finishRecovery(const Status& st) {
-    if (!st.ok() && !st.inProgress() && _startedOffline) {
-      _driver._reassertOfflineLatch();
-    }
-    return st;
-  }
+  ScopedOfflineI2cAllowance(const ScopedOfflineI2cAllowance&) = delete;
+  ScopedOfflineI2cAllowance& operator=(const ScopedOfflineI2cAllowance&) = delete;
 
 private:
-  INA3221& _driver;
-  bool _previousAllow;
-  bool _startedOffline;
+  bool& _flag;
+  bool _old;
 };
+
+} // namespace
 
 // ============================================================================
 // Lifecycle
@@ -320,49 +311,53 @@ Status INA3221::recover() {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
 
-  ScopedOfflineI2cAllowance allowOfflineI2c(*this);
+  const bool startedOffline = (_driverState == DriverState::OFFLINE);
+  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
+  Status result = [&]() -> Status {
+    uint16_t mfgId = 0;
+    Status st = readRegister16(cmd::REG_MANUFACTURER_ID, mfgId);
+    if (!st.ok()) {
+      return st;
+    }
+    if (mfgId != cmd::MANUFACTURER_ID_VALUE) {
+      return _recordFailure(Status::Error(Err::MANUFACTURER_ID_MISMATCH,
+                                          "Manufacturer ID mismatch",
+                                          static_cast<int32_t>(mfgId)));
+    }
 
-  uint16_t mfgId = 0;
-  Status st = readRegister16(cmd::REG_MANUFACTURER_ID, mfgId);
-  if (!st.ok()) {
-    return allowOfflineI2c.finishRecovery(st);
-  }
-  if (mfgId != cmd::MANUFACTURER_ID_VALUE) {
-    st = _recordFailure(Status::Error(Err::MANUFACTURER_ID_MISMATCH,
-                                      "Manufacturer ID mismatch",
-                                      static_cast<int32_t>(mfgId)));
-    return allowOfflineI2c.finishRecovery(st);
-  }
+    uint16_t dieId = 0;
+    st = readRegister16(cmd::REG_DIE_ID, dieId);
+    if (!st.ok()) {
+      return st;
+    }
+    if (dieId != cmd::DIE_ID_VALUE) {
+      return _recordFailure(Status::Error(Err::DIE_ID_MISMATCH,
+                                          "Die ID mismatch",
+                                          static_cast<int32_t>(dieId)));
+    }
 
-  uint16_t dieId = 0;
-  st = readRegister16(cmd::REG_DIE_ID, dieId);
-  if (!st.ok()) {
-    return allowOfflineI2c.finishRecovery(st);
-  }
-  if (dieId != cmd::DIE_ID_VALUE) {
-    st = _recordFailure(Status::Error(Err::DIE_ID_MISMATCH,
-                                      "Die ID mismatch",
-                                      static_cast<int32_t>(dieId)));
-    return allowOfflineI2c.finishRecovery(st);
-  }
+    _conversionStarted = false;
+    _conversionReady = false;
+    _conversionStartMs = 0;
 
-  _conversionStarted = false;
-  _conversionReady = false;
-  _conversionStartMs = 0;
+    st = _applyConfig();
+    if (!st.ok()) {
+      return st;
+    }
+    _handleConfigWriteSideEffects();
 
-  st = _applyConfig();
-  if (!st.ok()) {
-    return allowOfflineI2c.finishRecovery(st);
+    st = writeRegister16(cmd::REG_MASK_ENABLE,
+                         static_cast<uint16_t>(_maskEnableWritableCache & kMaskEnableWritable));
+    if (!st.ok()) {
+      return st;
+    }
+
+    return Status::Ok();
+  }();
+  if (startedOffline && !result.ok() && !result.inProgress()) {
+    _reassertOfflineLatch();
   }
-  _handleConfigWriteSideEffects();
-
-  st = writeRegister16(cmd::REG_MASK_ENABLE,
-                       static_cast<uint16_t>(_maskEnableWritableCache & kMaskEnableWritable));
-  if (!st.ok()) {
-    return allowOfflineI2c.finishRecovery(st);
-  }
-
-  return allowOfflineI2c.finishRecovery(Status::Ok());
+  return result;
 }
 
 // ============================================================================
