@@ -1,4 +1,4 @@
-=== SOURCE: datasheet_INA3221.pdf ===
+=== SOURCE: INA3221_datasheet.pdf ===
 === PAGES: 50 ===
 
 

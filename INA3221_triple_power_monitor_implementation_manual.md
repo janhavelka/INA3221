@@ -6,7 +6,7 @@
 
 | # | Filename | Description | Pages | Size |
 |---|----------|-------------|-------|------|
-| 1 | `datasheet_INA3221.pdf` | INA3221 26V, Triple Channel, 13-Bit, I2C Output Current and Voltage Monitor With Alerts — SBOS576C, May 2012, Rev. Sep 2025 | 50 | ~113 KB |
+| 1 | `INA3221_datasheet.pdf` | INA3221 26V, Triple Channel, 13-Bit, I2C Output Current and Voltage Monitor With Alerts — SBOS576C, May 2012, Rev. Sep 2025 | 50 | ~113 KB |
 | 2 | `current_sense_amplifiers.pdf` | Current Sense Amplifiers Guide 2021 — TI selection guide | 8 | small |
 | 3 | `current_sensing_application.pdf` | Current Sensing Applications in Communication Infrastructure Equipment — SBOA366C, Dec 2020, Rev. Aug 2023 | 4 | small |
 | 4 | `power_energy_monitoring.pdf` | Power and Energy Monitoring With Digital Current Sensors — SBOA194, Apr 2017 | 3 | small |
