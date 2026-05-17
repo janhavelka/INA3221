@@ -1,6 +1,6 @@
 {
   "name": "INA3221",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Production-grade INA3221 triple-channel power monitor driver",
   "keywords": [
     "ina3221",

@@ -9,6 +9,8 @@
 *.elf
 *.bin
 *.map
+*.tar.gz
+docs/doxygen/
 
 # Python (for scripts/)
 __pycache__/
@@ -36,6 +38,3 @@ wifi_credentials.h
 *.tmp
 *.bak
 *.log
-
-# Auto-generated files
-include/INA3221/Version.h

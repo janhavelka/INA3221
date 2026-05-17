@@ -212,7 +212,10 @@ device defaults.
 ## Examples
 
 - `examples/01_basic_bringup_cli/` — interactive CLI for all INA3221 features
-- CLI diagnostics now include `cfg` / `settings` for cached settings, `mask` for decoded Mask/Enable state, and `reg <addr>` / `wreg <addr> <val>` for tracked raw register access plus richer `stress` and `stress_mix` summaries with per-channel statistics and health deltas. Raw register writes are intended for diagnostics and can desync cached config until `recover()` or `begin()` reapplies it.
+- Startup and `scan` diagnostics identify INA3221 devices on `0x40`-`0x43` by reading Manufacturer ID `0x5449` and Die ID `0x3220`, including the corresponding A0 strap label.
+- CLI diagnostics include `cfg` / `settings` for cached settings, `mask` for decoded Mask/Enable state, and `reg <addr>` / `wreg <addr> <val>` for tracked raw register access. Bare `chen`, `rshunt`, `crit`, `warn`, `sumch`, and `latch` show current settings; adding arguments updates those settings.
+- `stress` reports per-channel measurement statistics. `stress_mix` reports high-level operation counts plus `Health delta (tracked I2C)`, which is the driver's tracked transport success/failure counter delta and can be larger than the high-level operation count.
+- CLI numeric and `0|1` arguments are parsed strictly; malformed input is rejected instead of silently becoming zero. Raw register writes are intended for diagnostics and can desync cached config until `recover()` or `begin()` reapplies it.
 
 ### Example Helpers (`examples/common/`)
 
@@ -224,7 +227,7 @@ Not part of the library. These simulate project-level glue and keep examples sel
 | `BuildConfig.h` | Compile-time `LOG_LEVEL` configuration |
 | `Log.h` | Serial logging macros (`LOGE`/`LOGW`/`LOGI`/`LOGD`/`LOGT`/`LOGV`) |
 | `I2cTransport.h` | Wire-based I2C transport adapter (`wireWrite`, `wireWriteRead`, `initWire`) |
-| `I2cScanner.h` | I2C bus scanner with table output |
+| `I2cScanner.h` | I2C bus scanner with table output and INA3221 identity recognition on `0x40`-`0x43` |
 | `BusDiag.h` | Bus diagnostics wrapper |
 | `CliShell.h` | Serial command-line shell with line editing |
 | `CommandHandler.h` | Command parsing helpers (`readLine`, `match`, `parseInt`) |

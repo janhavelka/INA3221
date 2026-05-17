@@ -7,15 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-17
+
 ### Added
 - Added `SettingsSnapshot` and `getSettings(SettingsSnapshot&)` for cache-only config, conversion, Mask/Enable, and health inspection.
 - Added `readConversionReady(bool&)` so conversion-ready polling can propagate I2C/status failures instead of collapsing them to `false`.
 - Added bring-up CLI `cfg` / `settings` cached-settings output and decoded `mask` command.
+- Added INA3221 identity recognition to the example I2C scanner by checking `0x40`-`0x43` for Manufacturer ID `0x5449` and Die ID `0x3220`.
+- Added no-argument show forms for bring-up CLI `chen`, `rshunt`, `crit`, `warn`, `sumch`, and `latch`.
 - Added native coverage for triggered conversion gating, stalled-clock timeout handling, setter rollback, invalid register rejection, semantic recovery failures, and finite shunt validation.
 - Added native coverage proving latched `OFFLINE` blocks normal I2C operations without touching the bus while `recover()` remains the explicit recovery path.
 
 ### Changed
+- Updated release metadata to `1.1.0` in `library.json`, generated `Version.h`, and Doxygen project metadata.
 - Doxyfile project metadata now matches `library.json`.
+- Bring-up CLI numeric and boolean arguments now use strict parsing instead of `String::toInt()` fallbacks for `verbose`, `read`, `avg`, conversion-time setters, channel enable, summation channel, latch, and stress commands.
+- `stress_mix` now labels health deltas as tracked I2C transactions to distinguish them from high-level operation counts.
 - Explicit recovery bypass internals now use the shared `ScopedOfflineI2cAllowance` / `_reassertOfflineLatch()` procedure so failed recovery attempts that begin from `OFFLINE` keep the latch asserted.
 - Reference documentation now uses human-readable vendor PDF names and separates compact power-monitor notes from full PDF/application-note extractions under `docs/extracted-md/` and `docs/pdf-extracted-md/`.
 - Completed Doxygen parameter documentation for shunt-resistance configuration.
@@ -33,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed implementation-defined signed right shifts when converting INA3221 13-bit and summation register fields.
 - Fixed `recover()` so manufacturer/die ID mismatches update health counters and state.
 - Avoided read-modify-write of Mask/Enable settings for latch/summation configuration, preventing configuration helpers from clearing alert/CVRF flags just to update writable mask bits.
+- Fixed bring-up CLI help/dispatch mismatches that reported advertised bare commands as unknown.
+- Fixed clean-checkout packaging by committing generated `Version.h` instead of ignoring the public header required by `INA3221.h`.
 
 ## [1.0.0] - 2026-04-05
 
@@ -64,5 +73,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `end()` now best-effort powers the monitor down before clearing runtime state.
 - `recover()` now re-validates manufacturer / die IDs, clears conversion state, and reapplies cached configuration.
 
-[Unreleased]: https://github.com/janhavelka/INA3221/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/janhavelka/INA3221/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/janhavelka/INA3221/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/janhavelka/INA3221/releases/tag/v1.0.0
