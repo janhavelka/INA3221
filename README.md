@@ -127,6 +127,7 @@ void loop() {
 | `end()` | Best-effort power the monitor down and clear cached conversion state |
 | `isInitialized()` | True after successful `begin()` until `end()` |
 | `getConfig()` | Return the driver's cached configuration snapshot |
+| `getSettings(snap)` | Populate a `SettingsSnapshot` with cached config, conversion, Mask/Enable, and health state without I2C |
 | `probe()` | Check device presence without updating health counters |
 | `recover()` | Re-validate IDs, clear conversion state, and re-apply cached config / mask settings |
 
@@ -184,6 +185,10 @@ Writing a triggered mode to the Configuration register starts a hardware single-
 `readConversionReady()` and `readAlertFlags()` read the Mask/Enable register. Per INA3221 register semantics, that read clears CVRF and latched alert flags. The driver caches a ready triggered conversion before CVRF is cleared so subsequent measurement reads are still allowed.
 
 Configuration setters update the cached `Config` only after their I2C write succeeds. On a failed write, the previous cached mode, conversion settings, channel enables, and conversion state are restored.
+Alert-limit setters mask reserved bits before writing device registers. The
+Mask/Enable writable-bit cache is preserved across configuration writes, and
+`writeConfig()` with the reset bit set synchronizes cached settings back to the
+device defaults.
 
 ### Conversion Times
 
@@ -207,7 +212,7 @@ Configuration setters update the cached `Config` only after their I2C write succ
 ## Examples
 
 - `examples/01_basic_bringup_cli/` — interactive CLI for all INA3221 features
-- CLI diagnostics now include `reg <addr>` / `wreg <addr> <val>` for tracked raw register access plus richer `stress` and `stress_mix` summaries with per-channel statistics and health deltas. Raw register writes are intended for diagnostics and can desync cached config until `recover()` or `begin()` reapplies it.
+- CLI diagnostics now include `cfg` / `settings` for cached settings, `mask` for decoded Mask/Enable state, and `reg <addr>` / `wreg <addr> <val>` for tracked raw register access plus richer `stress` and `stress_mix` summaries with per-channel statistics and health deltas. Raw register writes are intended for diagnostics and can desync cached config until `recover()` or `begin()` reapplies it.
 
 ### Example Helpers (`examples/common/`)
 

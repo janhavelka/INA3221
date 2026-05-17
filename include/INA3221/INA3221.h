@@ -12,7 +12,7 @@
 
 namespace INA3221 {
 
-/// Driver state for health monitoring
+/// @brief Driver state for health monitoring.
 enum class DriverState : uint8_t {
   UNINIT,    ///< begin() not called or end() called
   READY,     ///< Operational, consecutiveFailures == 0
@@ -20,7 +20,7 @@ enum class DriverState : uint8_t {
   OFFLINE    ///< consecutiveFailures >= offlineThreshold
 };
 
-/// Per-channel measurement result
+/// @brief Per-channel converted measurement result.
 struct ChannelMeasurement {
   float shuntVoltage_mV = 0.0f;   ///< Shunt voltage in millivolts
   float busVoltage_V = 0.0f;      ///< Bus voltage in volts
@@ -28,7 +28,7 @@ struct ChannelMeasurement {
   float power_mW = 0.0f;          ///< Power in milliwatts (requires shunt resistance)
 };
 
-/// Alert flags snapshot from Mask/Enable register
+/// @brief Alert flags snapshot from Mask/Enable register.
 /// @note Reading Mask/Enable register clears CF1-CF3, SF, WF1-WF3, and CVRF.
 struct AlertFlags {
   bool criticalCh1 = false;     ///< CF1: Critical flag Ch1
@@ -43,7 +43,30 @@ struct AlertFlags {
   bool conversionReady = false; ///< CVRF: Conversion ready flag
 };
 
-/// INA3221 driver class
+/// @brief Snapshot of cached settings and runtime state without I2C access.
+struct SettingsSnapshot {
+  bool initialized = false;
+  DriverState state = DriverState::UNINIT;
+  uint8_t i2cAddress = 0x40;
+  uint32_t i2cTimeoutMs = 0;
+  uint8_t offlineThreshold = 0;
+  bool hasNowMsHook = false;
+  bool hasCooperativeYieldHook = false;
+  bool ch1Enable = true;
+  bool ch2Enable = true;
+  bool ch3Enable = true;
+  Averaging averaging = Averaging::AVG_1;
+  ConvTime vBusCt = ConvTime::CT_1100US;
+  ConvTime vShCt = ConvTime::CT_1100US;
+  Mode mode = Mode::SHUNT_BUS_CONT;
+  float shuntResistance[3] = {0.1f, 0.1f, 0.1f};
+  bool conversionStarted = false;
+  bool conversionReady = false;
+  uint32_t conversionStartMs = 0;
+  uint16_t maskEnableWritableCache = 0;
+};
+
+/// @brief Managed synchronous INA3221 driver.
 class INA3221 {
 public:
   // === Lifecycle ===
@@ -66,6 +89,9 @@ public:
 
   /// Re-validate IDs, clear conversion state, and re-apply cached configuration.
   Status recover();
+
+  /// Populate a cache-only settings snapshot without touching I2C.
+  Status getSettings(SettingsSnapshot& out) const;
 
   // === Driver State ===
   DriverState state() const { return _driverState; }
@@ -150,20 +176,78 @@ public:
   Status softReset();
 
   // === Alert Limits ===
+  /// @brief Set a critical shunt-voltage alert limit.
+  /// @param ch Channel.
+  /// @param raw Datasheet-format raw threshold; reserved bits are cleared before write.
+  /// @return Status from validation and register write.
   Status setCriticalAlertLimit(Channel ch, int16_t raw);
+
+  /// @brief Read a critical shunt-voltage alert limit.
+  /// @param ch Channel.
+  /// @param raw Raw threshold register value.
+  /// @return Status from validation and register read.
   Status getCriticalAlertLimit(Channel ch, int16_t& raw);
+
+  /// @brief Set a warning shunt-voltage alert limit.
+  /// @param ch Channel.
+  /// @param raw Datasheet-format raw threshold; reserved bits are cleared before write.
+  /// @return Status from validation and register write.
   Status setWarningAlertLimit(Channel ch, int16_t raw);
+
+  /// @brief Read a warning shunt-voltage alert limit.
+  /// @param ch Channel.
+  /// @param raw Raw threshold register value.
+  /// @return Status from validation and register read.
   Status getWarningAlertLimit(Channel ch, int16_t& raw);
+
+  /// @brief Set shunt-voltage summation alert limit.
+  /// @param raw Datasheet-format raw threshold; reserved bit 0 is cleared before write.
+  /// @return Status from register write.
   Status setShuntSumLimit(int16_t raw);
+
+  /// @brief Read shunt-voltage summation alert limit.
+  /// @param raw Raw threshold register value.
+  /// @return Status from register read.
   Status getShuntSumLimit(int16_t& raw);
+
+  /// @brief Set power-valid upper bus-voltage limit.
+  /// @param raw Datasheet-format raw threshold; reserved bits are cleared before write.
+  /// @return Status from register write.
   Status setPowerValidUpperLimit(int16_t raw);
+
+  /// @brief Read power-valid upper bus-voltage limit.
+  /// @param raw Raw threshold register value.
+  /// @return Status from register read.
   Status getPowerValidUpperLimit(int16_t& raw);
+
+  /// @brief Set power-valid lower bus-voltage limit.
+  /// @param raw Datasheet-format raw threshold; reserved bits are cleared before write.
+  /// @return Status from register write.
   Status setPowerValidLowerLimit(int16_t raw);
+
+  /// @brief Read power-valid lower bus-voltage limit.
+  /// @param raw Raw threshold register value.
+  /// @return Status from register read.
   Status getPowerValidLowerLimit(int16_t& raw);
 
   // === Mask/Enable Register ===
+  /// @brief Read and decode Mask/Enable alert flags.
+  /// @param flags Decoded alert flags.
+  /// @return Status from register read.
+  /// @note Reading Mask/Enable clears latched alert and conversion-ready flags.
   Status readAlertFlags(AlertFlags& flags);
+
+  /// @brief Configure channels included in shunt-voltage summation.
+  /// @param ch1 Include channel 1.
+  /// @param ch2 Include channel 2.
+  /// @param ch3 Include channel 3.
+  /// @return Status from register write.
   Status setSummationChannels(bool ch1, bool ch2, bool ch3);
+
+  /// @brief Configure warning and critical alert latch behavior.
+  /// @param warningLatch true latches warning alerts.
+  /// @param criticalLatch true latches critical alerts.
+  /// @return Status from register write.
   Status setAlertLatchEnable(bool warningLatch, bool criticalLatch);
 
   // === Device Identification ===

@@ -8,7 +8,7 @@
 
 namespace INA3221 {
 
-/// I2C write callback signature
+/// @brief I2C write callback signature.
 /// @param addr     I2C device address (7-bit)
 /// @param data     Pointer to data to write
 /// @param len      Number of bytes to write
@@ -18,7 +18,7 @@ namespace INA3221 {
 using I2cWriteFn = Status (*)(uint8_t addr, const uint8_t* data, size_t len,
                               uint32_t timeoutMs, void* user);
 
-/// I2C write-then-read callback signature
+/// @brief I2C write-then-read callback signature.
 /// @param addr     I2C device address (7-bit)
 /// @param txData   Pointer to data to write
 /// @param txLen    Number of bytes to write
@@ -31,16 +31,16 @@ using I2cWriteReadFn = Status (*)(uint8_t addr, const uint8_t* txData, size_t tx
                                   uint8_t* rxData, size_t rxLen, uint32_t timeoutMs,
                                   void* user);
 
-/// Millisecond timestamp callback.
+/// @brief Millisecond timestamp callback.
 /// @param user User context pointer passed through from Config
 /// @return Current monotonic milliseconds
 using NowMsFn = uint32_t (*)(void* user);
 
-/// Cooperative yield callback.
+/// @brief Cooperative yield callback.
 /// @param user User context pointer passed through from Config
 using YieldFn = void (*)(void* user);
 
-/// Averaging mode (number of samples for recursive averaging)
+/// @brief Averaging mode (number of samples for recursive averaging).
 enum class Averaging : uint8_t {
   AVG_1    = 0,  ///< 1 sample (no averaging, default)
   AVG_4    = 1,  ///< 4 samples
@@ -52,7 +52,7 @@ enum class Averaging : uint8_t {
   AVG_1024 = 7   ///< 1024 samples
 };
 
-/// Conversion time for bus or shunt voltage
+/// @brief Conversion time for bus or shunt voltage.
 enum class ConvTime : uint8_t {
   CT_140US  = 0,  ///< 140 µs
   CT_204US  = 1,  ///< 204 µs
@@ -64,7 +64,7 @@ enum class ConvTime : uint8_t {
   CT_8244US = 7   ///< 8.244 ms
 };
 
-/// Operating mode
+/// @brief Operating mode.
 enum class Mode : uint8_t {
   POWER_DOWN      = 0,  ///< Power-down
   SHUNT_TRIG      = 1,  ///< Shunt voltage, single-shot
@@ -76,14 +76,14 @@ enum class Mode : uint8_t {
   SHUNT_BUS_CONT  = 7   ///< Shunt + bus, continuous (default)
 };
 
-/// Channel index (1-based to match datasheet)
+/// @brief Channel index.
 enum class Channel : uint8_t {
   CH1 = 0,  ///< Channel 1
   CH2 = 1,  ///< Channel 2
   CH3 = 2   ///< Channel 3
 };
 
-/// Configuration for INA3221 driver
+/// @brief Configuration for INA3221 driver.
 struct Config {
   // === I2C Transport (required) ===
   I2cWriteFn i2cWrite = nullptr;

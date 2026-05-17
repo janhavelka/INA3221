@@ -16,6 +16,9 @@ constexpr uint8_t kMaxAddress = 0x43;
 constexpr uint16_t kMaskEnableWritable =
     cmd::MASK_SCC1 | cmd::MASK_SCC2 | cmd::MASK_SCC3 |
     cmd::MASK_WEN | cmd::MASK_CEN;
+constexpr uint16_t kShuntLimitWritable = 0xFFF8;
+constexpr uint16_t kShuntSumLimitWritable = 0xFFFE;
+constexpr uint16_t kPowerValidLimitWritable = 0x7FF8;
 
 bool isValidChannel(Channel ch) {
   return static_cast<uint8_t>(ch) <= static_cast<uint8_t>(Channel::CH3);
@@ -180,12 +183,16 @@ private:
 // ============================================================================
 
 Status INA3221::begin(const Config& config) {
-  _config = config;
+  const Config requestedConfig = config;
+
+  _config = Config{};
   _initialized = false;
   _driverState = DriverState::UNINIT;
+  _allowOfflineI2c = false;
   _conversionStarted = false;
   _conversionReady = false;
   _conversionStartMs = 0;
+  _maskEnableWritableCache = 0;
 
   _lastOkMs = 0;
   _lastErrorMs = 0;
@@ -194,43 +201,55 @@ Status INA3221::begin(const Config& config) {
   _totalFailures = 0;
   _totalSuccess = 0;
 
-  if (_config.i2cWrite == nullptr || _config.i2cWriteRead == nullptr) {
+  if (requestedConfig.i2cWrite == nullptr || requestedConfig.i2cWriteRead == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C callbacks required");
   }
-  if (_config.i2cTimeoutMs == 0) {
+  if (requestedConfig.i2cTimeoutMs == 0) {
     return Status::Error(Err::INVALID_CONFIG, "Timeout must be > 0");
   }
-  if (_config.i2cAddress < kMinAddress || _config.i2cAddress > kMaxAddress) {
+  if (requestedConfig.i2cAddress < kMinAddress || requestedConfig.i2cAddress > kMaxAddress) {
     return Status::Error(Err::INVALID_CONFIG, "Invalid I2C address (0x40-0x43)");
   }
-  if (!isValidAveraging(_config.averaging) ||
-      !isValidConvTime(_config.vBusCt) ||
-      !isValidConvTime(_config.vShCt) ||
-      !isValidMode(_config.mode)) {
+  if (!isValidAveraging(requestedConfig.averaging) ||
+      !isValidConvTime(requestedConfig.vBusCt) ||
+      !isValidConvTime(requestedConfig.vShCt) ||
+      !isValidMode(requestedConfig.mode)) {
     return Status::Error(Err::INVALID_CONFIG, "Invalid config enum value");
   }
-  if (!configHasRequiredChannels(_config)) {
+  if (!configHasRequiredChannels(requestedConfig)) {
     return Status::Error(Err::INVALID_CONFIG, "At least one channel must be enabled");
   }
   for (int i = 0; i < 3; ++i) {
-    if (!isPositiveFinite(_config.shuntResistance[i])) {
+    if (!isPositiveFinite(requestedConfig.shuntResistance[i])) {
       return Status::Error(Err::INVALID_CONFIG, "Shunt resistance must be finite and > 0");
     }
   }
+
+  _config = requestedConfig;
   if (_config.offlineThreshold == 0) {
     _config.offlineThreshold = 1;
   }
 
+  auto failBeginAfterConfig = [this](const Status& failure) {
+    _config = Config{};
+    _allowOfflineI2c = false;
+    _conversionStarted = false;
+    _conversionReady = false;
+    _conversionStartMs = 0;
+    _maskEnableWritableCache = 0;
+    return failure;
+  };
+
   // Verify device identity
   Status st = probe();
   if (!st.ok()) {
-    return st;
+    return failBeginAfterConfig(st);
   }
 
   // Apply configuration
   st = _applyConfig();
   if (!st.ok()) {
-    return st;
+    return failBeginAfterConfig(st);
   }
 
   _initialized = true;
@@ -358,6 +377,31 @@ Status INA3221::recover() {
     _reassertOfflineLatch();
   }
   return result;
+}
+
+Status INA3221::getSettings(SettingsSnapshot& out) const {
+  out.initialized = _initialized;
+  out.state = _driverState;
+  out.i2cAddress = _config.i2cAddress;
+  out.i2cTimeoutMs = _config.i2cTimeoutMs;
+  out.offlineThreshold = _config.offlineThreshold;
+  out.hasNowMsHook = _config.nowMs != nullptr;
+  out.hasCooperativeYieldHook = _config.cooperativeYield != nullptr;
+  out.ch1Enable = _config.ch1Enable;
+  out.ch2Enable = _config.ch2Enable;
+  out.ch3Enable = _config.ch3Enable;
+  out.averaging = _config.averaging;
+  out.vBusCt = _config.vBusCt;
+  out.vShCt = _config.vShCt;
+  out.mode = _config.mode;
+  out.shuntResistance[0] = _config.shuntResistance[0];
+  out.shuntResistance[1] = _config.shuntResistance[1];
+  out.shuntResistance[2] = _config.shuntResistance[2];
+  out.conversionStarted = _conversionStarted;
+  out.conversionReady = _conversionReady;
+  out.conversionStartMs = _conversionStartMs;
+  out.maskEnableWritableCache = _maskEnableWritableCache;
+  return Status::Ok();
 }
 
 // ============================================================================
@@ -839,6 +883,27 @@ Status INA3221::writeConfig(uint16_t config) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+
+  if ((config & cmd::MASK_RST) != 0U) {
+    Status st = writeRegister16(cmd::REG_CONFIG, config);
+    if (!st.ok()) {
+      return st;
+    }
+
+    _config.ch1Enable = true;
+    _config.ch2Enable = true;
+    _config.ch3Enable = true;
+    _config.averaging = Averaging::AVG_1;
+    _config.vBusCt = ConvTime::CT_1100US;
+    _config.vShCt = ConvTime::CT_1100US;
+    _config.mode = Mode::SHUNT_BUS_CONT;
+    _conversionStarted = false;
+    _conversionReady = false;
+    _conversionStartMs = 0;
+    _maskEnableWritableCache = 0;
+    return Status::Ok();
+  }
+
   Config nextConfig = _config;
   nextConfig.ch1Enable = (config & cmd::MASK_CH1EN) != 0;
   nextConfig.ch2Enable = (config & cmd::MASK_CH2EN) != 0;
@@ -900,7 +965,8 @@ Status INA3221::setCriticalAlertLimit(Channel ch, int16_t raw) {
   if (!isValidChannel(ch)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid channel");
   }
-  return writeRegister16(critRegAddr(ch), static_cast<uint16_t>(raw));
+  return writeRegister16(critRegAddr(ch),
+                         static_cast<uint16_t>(raw) & kShuntLimitWritable);
 }
 
 Status INA3221::getCriticalAlertLimit(Channel ch, int16_t& raw) {
@@ -926,7 +992,8 @@ Status INA3221::setWarningAlertLimit(Channel ch, int16_t raw) {
   if (!isValidChannel(ch)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid channel");
   }
-  return writeRegister16(warnRegAddr(ch), static_cast<uint16_t>(raw));
+  return writeRegister16(warnRegAddr(ch),
+                         static_cast<uint16_t>(raw) & kShuntLimitWritable);
 }
 
 Status INA3221::getWarningAlertLimit(Channel ch, int16_t& raw) {
@@ -949,7 +1016,8 @@ Status INA3221::setShuntSumLimit(int16_t raw) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
-  return writeRegister16(cmd::REG_SHUNT_SUM_LIMIT, static_cast<uint16_t>(raw));
+  return writeRegister16(cmd::REG_SHUNT_SUM_LIMIT,
+                         static_cast<uint16_t>(raw) & kShuntSumLimitWritable);
 }
 
 Status INA3221::getShuntSumLimit(int16_t& raw) {
@@ -969,7 +1037,8 @@ Status INA3221::setPowerValidUpperLimit(int16_t raw) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
-  return writeRegister16(cmd::REG_PV_UPPER_LIMIT, static_cast<uint16_t>(raw));
+  return writeRegister16(cmd::REG_PV_UPPER_LIMIT,
+                         static_cast<uint16_t>(raw) & kPowerValidLimitWritable);
 }
 
 Status INA3221::getPowerValidUpperLimit(int16_t& raw) {
@@ -989,7 +1058,8 @@ Status INA3221::setPowerValidLowerLimit(int16_t raw) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
-  return writeRegister16(cmd::REG_PV_LOWER_LIMIT, static_cast<uint16_t>(raw));
+  return writeRegister16(cmd::REG_PV_LOWER_LIMIT,
+                         static_cast<uint16_t>(raw) & kPowerValidLimitWritable);
 }
 
 Status INA3221::getPowerValidLowerLimit(int16_t& raw) {
@@ -1255,18 +1325,20 @@ Status INA3221::_readRegister16Raw(uint8_t reg, uint16_t& value) {
 // ============================================================================
 
 Status INA3221::_updateHealth(const Status& st) {
+  if (!_initialized || st.inProgress()) {
+    return st;
+  }
+
   uint32_t nowMs = _nowMs();
 
-  if (st.ok() || st.inProgress()) {
+  if (st.ok()) {
     _lastOkMs = nowMs;
     _consecutiveFailures = 0;
     if (_totalSuccess < UINT32_MAX) {
       _totalSuccess++;
     }
 
-    if (_initialized) {
-      _driverState = DriverState::READY;
-    }
+    _driverState = DriverState::READY;
   } else {
     _lastErrorMs = nowMs;
     _lastError = st;
@@ -1278,12 +1350,10 @@ Status INA3221::_updateHealth(const Status& st) {
       _totalFailures++;
     }
 
-    if (_initialized) {
-      if (_consecutiveFailures >= _config.offlineThreshold) {
-        _driverState = DriverState::OFFLINE;
-      } else {
-        _driverState = DriverState::DEGRADED;
-      }
+    if (_consecutiveFailures >= _config.offlineThreshold) {
+      _driverState = DriverState::OFFLINE;
+    } else {
+      _driverState = DriverState::DEGRADED;
     }
   }
 
@@ -1407,7 +1477,6 @@ void INA3221::_handleConfigWriteSideEffects() {
   _conversionStarted = false;
   _conversionReady = false;
   _conversionStartMs = 0;
-  _maskEnableWritableCache = 0;
 }
 
 uint16_t INA3221::_buildConfigRegister() const {

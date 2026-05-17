@@ -390,6 +390,7 @@ void printHelp() {
 
   cli::printHelpSection("Alerts");
   cli::printHelpItem("alerts", "Read alert flags");
+  cli::printHelpItem("mask", "Read/decode Mask/Enable register");
   cli::printHelpItem("crit <1|2|3> [raw]", "Get/set critical alert limit");
   cli::printHelpItem("warn <1|2|3> [raw]", "Get/set warning alert limit");
   cli::printHelpItem("sumlim [raw]", "Get/set shunt sum limit");
@@ -553,6 +554,76 @@ void printConfig() {
                 static_cast<double>(device.getShuntResistance(INA3221::Channel::CH2)),
                 static_cast<double>(device.getShuntResistance(INA3221::Channel::CH3)));
   Serial.printf("  Cycle time: %lu us\n", static_cast<unsigned long>(device.getCycleTimeUs()));
+}
+
+void printSettingsSnapshot() {
+  INA3221::SettingsSnapshot snap;
+  INA3221::Status st = device.getSettings(snap);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+
+  Serial.println("=== Cached Settings ===");
+  Serial.printf("  Initialized: %s\n", snap.initialized ? "YES" : "NO");
+  Serial.printf("  State: %s\n", stateToStr(snap.state));
+  Serial.printf("  Address: 0x%02X\n", snap.i2cAddress);
+  Serial.printf("  I2C timeout: %lu ms\n", static_cast<unsigned long>(snap.i2cTimeoutMs));
+  Serial.printf("  Offline threshold: %u\n", static_cast<unsigned>(snap.offlineThreshold));
+  Serial.printf("  Hooks: nowMs=%s yield=%s\n",
+                snap.hasNowMsHook ? "YES" : "NO",
+                snap.hasCooperativeYieldHook ? "YES" : "NO");
+  Serial.printf("  Mode: %s\n", modeToStr(snap.mode));
+  Serial.printf("  Averaging: %s samples\n", avgToStr(snap.averaging));
+  Serial.printf("  VbusCT: %s\n", ctToStr(snap.vBusCt));
+  Serial.printf("  VshCT: %s\n", ctToStr(snap.vShCt));
+  Serial.printf("  Channels: CH1=%s  CH2=%s  CH3=%s\n",
+                snap.ch1Enable ? "ON" : "OFF",
+                snap.ch2Enable ? "ON" : "OFF",
+                snap.ch3Enable ? "ON" : "OFF");
+  Serial.printf("  Rshunt: CH1=%.4f  CH2=%.4f  CH3=%.4f ohm\n",
+                static_cast<double>(snap.shuntResistance[0]),
+                static_cast<double>(snap.shuntResistance[1]),
+                static_cast<double>(snap.shuntResistance[2]));
+  Serial.printf("  Conversion: started=%s ready=%s start=%lu ms\n",
+                snap.conversionStarted ? "YES" : "NO",
+                snap.conversionReady ? "YES" : "NO",
+                static_cast<unsigned long>(snap.conversionStartMs));
+  Serial.printf("  Mask/Enable writable cache: 0x%04X\n", snap.maskEnableWritableCache);
+  Serial.printf("  Cycle time: %lu us\n", static_cast<unsigned long>(device.getCycleTimeUs()));
+}
+
+void printMaskEnable() {
+  uint16_t raw = 0;
+  INA3221::Status st = device.readRegister16(INA3221::cmd::REG_MASK_ENABLE, raw);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+
+  Serial.println("=== Mask/Enable Register ===");
+  Serial.printf("  Raw: 0x%04X\n", raw);
+  Serial.printf("  Sum channels: CH1=%s  CH2=%s  CH3=%s\n",
+                (raw & INA3221::cmd::MASK_SCC1) ? "ON" : "OFF",
+                (raw & INA3221::cmd::MASK_SCC2) ? "ON" : "OFF",
+                (raw & INA3221::cmd::MASK_SCC3) ? "ON" : "OFF");
+  Serial.printf("  Latch: warning=%s  critical=%s\n",
+                (raw & INA3221::cmd::MASK_WEN) ? "ON" : "OFF",
+                (raw & INA3221::cmd::MASK_CEN) ? "ON" : "OFF");
+  Serial.printf("  Critical flags: CH1=%d  CH2=%d  CH3=%d\n",
+                (raw & INA3221::cmd::MASK_CF1) != 0,
+                (raw & INA3221::cmd::MASK_CF2) != 0,
+                (raw & INA3221::cmd::MASK_CF3) != 0);
+  Serial.printf("  Warning flags:  CH1=%d  CH2=%d  CH3=%d\n",
+                (raw & INA3221::cmd::MASK_WF1) != 0,
+                (raw & INA3221::cmd::MASK_WF2) != 0,
+                (raw & INA3221::cmd::MASK_WF3) != 0);
+  Serial.printf("  SF=%d  PVF=%d  TCF=%d  CVRF=%d\n",
+                (raw & INA3221::cmd::MASK_SF) != 0,
+                (raw & INA3221::cmd::MASK_PVF) != 0,
+                (raw & INA3221::cmd::MASK_TCF) != 0,
+                (raw & INA3221::cmd::MASK_CVRF) != 0);
+  Serial.println("  Note: reading this register clears latched alert and conversion-ready flags.");
 }
 
 void printTimingInfo() {
@@ -1111,8 +1182,10 @@ void processCommand(const String& cmdLine) {
     if (st.ok()) {
       printConfig();
     }
-  } else if (cmd == "config" || cmd == "cfg" || cmd == "settings") {
+  } else if (cmd == "config") {
     printConfig();
+  } else if (cmd == "cfg" || cmd == "settings") {
+    printSettingsSnapshot();
   } else if (cmd == "reset") {
     LOGI("Performing software reset...");
     auto st = device.softReset();
@@ -1164,6 +1237,8 @@ void processCommand(const String& cmdLine) {
                   flags.warningCh1, flags.warningCh2, flags.warningCh3);
     Serial.printf("  Summation=%d  PowerValid=%d  TimingCtl=%d  ConvReady=%d\n",
                   flags.summation, flags.powerValid, flags.timingControl, flags.conversionReady);
+  } else if (cmd == "mask") {
+    printMaskEnable();
   } else if (cmd.startsWith("crit ")) {
     String args = cmd.substring(5);
     args.trim();
@@ -1291,13 +1366,18 @@ void processCommand(const String& cmdLine) {
       LOGW("Invalid channel (1-3)");
       return;
     }
-    // Read-modify: enable/disable one channel in summation
-    // setSummationChannels expects all three at once, so we keep a simple approach
-    // For simplicity, set the requested channel and keep others as-is via a single call pattern.
-    // NOTE: this always sets all three; we pass the requested change.
-    bool ch1en = (ch == 0) ? (en != 0) : true;
-    bool ch2en = (ch == 1) ? (en != 0) : true;
-    bool ch3en = (ch == 2) ? (en != 0) : true;
+    uint16_t mask = 0;
+    auto st = device.readRegister16(INA3221::cmd::REG_MASK_ENABLE, mask);
+    if (!st.ok()) {
+      printStatus(st);
+      return;
+    }
+    bool ch1en = (mask & INA3221::cmd::MASK_SCC1) != 0;
+    bool ch2en = (mask & INA3221::cmd::MASK_SCC2) != 0;
+    bool ch3en = (mask & INA3221::cmd::MASK_SCC3) != 0;
+    if (ch == 0) ch1en = (en != 0);
+    if (ch == 1) ch2en = (en != 0);
+    if (ch == 2) ch3en = (en != 0);
     printStatus(device.setSummationChannels(ch1en, ch2en, ch3en));
   } else if (cmd.startsWith("latch ")) {
     String args = cmd.substring(6);
