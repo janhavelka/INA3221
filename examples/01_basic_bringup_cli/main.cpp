@@ -378,8 +378,8 @@ void printHelp() {
   cli::printHelpItem("avg [0..7]", "Set/show averaging (0=1,...,7=1024)");
   cli::printHelpItem("vbusct [0..7]", "Set/show bus voltage conv time");
   cli::printHelpItem("vshct [0..7]", "Set/show shunt voltage conv time");
-  cli::printHelpItem("chen <1|2|3> <0|1>", "Enable/disable channel");
-  cli::printHelpItem("rshunt <1|2|3> <ohms>", "Set shunt resistance");
+  cli::printHelpItem("chen [<1|2|3> <0|1>]", "Show or set channel enable");
+  cli::printHelpItem("rshunt [<1|2|3> <ohms>]", "Show or set shunt resistance");
   cli::printHelpItem("config", "Dump config register");
   cli::printHelpItem("config write <hex>", "Write full config register");
   cli::printHelpItem("reset", "Software reset");
@@ -391,13 +391,13 @@ void printHelp() {
   cli::printHelpSection("Alerts");
   cli::printHelpItem("alerts", "Read alert flags");
   cli::printHelpItem("mask", "Read/decode Mask/Enable register");
-  cli::printHelpItem("crit <1|2|3> [raw]", "Get/set critical alert limit");
-  cli::printHelpItem("warn <1|2|3> [raw]", "Get/set warning alert limit");
+  cli::printHelpItem("crit [<1|2|3> [raw]]", "Show or set critical alert limit");
+  cli::printHelpItem("warn [<1|2|3> [raw]]", "Show or set warning alert limit");
   cli::printHelpItem("sumlim [raw]", "Get/set shunt sum limit");
   cli::printHelpItem("pvhi [raw]", "Get/set power valid upper limit");
   cli::printHelpItem("pvlo [raw]", "Get/set power valid lower limit");
-  cli::printHelpItem("sumch <1|2|3> <0|1>", "Enable/disable channel in summation");
-  cli::printHelpItem("latch <warn> <crit>", "Set alert latch enable (0|1 0|1)");
+  cli::printHelpItem("sumch [<1|2|3> <0|1>]", "Show or set summation channels");
+  cli::printHelpItem("latch [<warn> <crit>]", "Show or set alert latch enable");
 
   cli::printHelpSection("Diagnostics");
   cli::printHelpItem("drv", "Show driver state and health");
@@ -499,12 +499,29 @@ bool parseFloat(const String& token, float& out) {
   return true;
 }
 
+bool parseBool01(const String& token, bool& out) {
+  String t = token;
+  t.trim();
+  if (t == "0") {
+    out = false;
+    return true;
+  }
+  if (t == "1") {
+    out = true;
+    return true;
+  }
+  return false;
+}
+
 int parseChannel(const String& token) {
-  int ch = token.toInt();
+  int32_t ch = 0;
+  if (!parseI32(token, ch)) {
+    return -1;
+  }
   if (ch < 1 || ch > 3) {
     return -1;
   }
-  return ch - 1;  // Convert to 0-based
+  return static_cast<int>(ch - 1);  // Convert to 0-based
 }
 
 void printChannelMeasurement(int chNum, const INA3221::ChannelMeasurement& m) {
@@ -554,6 +571,56 @@ void printConfig() {
                 static_cast<double>(device.getShuntResistance(INA3221::Channel::CH2)),
                 static_cast<double>(device.getShuntResistance(INA3221::Channel::CH3)));
   Serial.printf("  Cycle time: %lu us\n", static_cast<unsigned long>(device.getCycleTimeUs()));
+}
+
+void printChannelEnable() {
+  Serial.printf("  Channels: CH1=%s  CH2=%s  CH3=%s\n",
+                device.getChannelEnable(INA3221::Channel::CH1) ? "ON" : "OFF",
+                device.getChannelEnable(INA3221::Channel::CH2) ? "ON" : "OFF",
+                device.getChannelEnable(INA3221::Channel::CH3) ? "ON" : "OFF");
+}
+
+void printShuntResistance() {
+  Serial.printf("  Rshunt: CH1=%.4f  CH2=%.4f  CH3=%.4f ohm\n",
+                static_cast<double>(device.getShuntResistance(INA3221::Channel::CH1)),
+                static_cast<double>(device.getShuntResistance(INA3221::Channel::CH2)),
+                static_cast<double>(device.getShuntResistance(INA3221::Channel::CH3)));
+}
+
+void printCriticalAlertLimit(INA3221::Channel ch, int chNum) {
+  int16_t raw = 0;
+  INA3221::Status st = device.getCriticalAlertLimit(ch, raw);
+  if (st.ok()) {
+    Serial.printf("  CH%d critical limit: %d (%.3f mV)\n",
+                  chNum, raw,
+                  static_cast<double>(INA3221::INA3221::shuntRawToMv(raw)));
+  } else {
+    printStatus(st);
+  }
+}
+
+void printWarningAlertLimit(INA3221::Channel ch, int chNum) {
+  int16_t raw = 0;
+  INA3221::Status st = device.getWarningAlertLimit(ch, raw);
+  if (st.ok()) {
+    Serial.printf("  CH%d warning limit: %d (%.3f mV)\n",
+                  chNum, raw,
+                  static_cast<double>(INA3221::INA3221::shuntRawToMv(raw)));
+  } else {
+    printStatus(st);
+  }
+}
+
+void printCriticalAlertLimits() {
+  printCriticalAlertLimit(INA3221::Channel::CH1, 1);
+  printCriticalAlertLimit(INA3221::Channel::CH2, 2);
+  printCriticalAlertLimit(INA3221::Channel::CH3, 3);
+}
+
+void printWarningAlertLimits() {
+  printWarningAlertLimit(INA3221::Channel::CH1, 1);
+  printWarningAlertLimit(INA3221::Channel::CH2, 2);
+  printWarningAlertLimit(INA3221::Channel::CH3, 3);
 }
 
 void printSettingsSnapshot() {
@@ -873,7 +940,7 @@ void runStressMix(int count) {
   }
   const uint32_t successDelta = device.totalSuccess() - successBefore;
   const uint32_t failDelta = device.totalFailures() - failBefore;
-  Serial.printf("  Health delta: %ssuccess +%lu%s, %sfailures +%lu%s\n",
+  Serial.printf("  Health delta (tracked I2C): %ssuccess +%lu%s, %sfailures +%lu%s\n",
                 goodIfNonZeroColor(successDelta),
                 static_cast<unsigned long>(successDelta),
                 LOG_COLOR_RESET,
@@ -914,17 +981,26 @@ void processCommand(const String& cmdLine) {
   } else if (cmd == "verbose") {
     LOGI("Verbose mode: %s%s%s", onOffColor(verboseMode), verboseMode ? "ON" : "OFF", LOG_COLOR_RESET);
   } else if (cmd.startsWith("verbose ")) {
-    int val = cmd.substring(8).toInt();
-    verboseMode = (val != 0);
+    bool val = false;
+    if (!parseBool01(cmd.substring(8), val)) {
+      LOGW("Invalid verbose value (0|1)");
+      return;
+    }
+    verboseMode = val;
     LOGI("Verbose mode: %s%s%s", onOffColor(verboseMode), verboseMode ? "ON" : "OFF", LOG_COLOR_RESET);
   } else if (cmd == "read") {
     readAllChannels();
   } else if (cmd.startsWith("read ")) {
-    int count = cmd.substring(5).toInt();
-    if (count <= 0 || count > 10000) {
+    int32_t parsedCount = 0;
+    if (!parseI32(cmd.substring(5), parsedCount)) {
       LOGW("Invalid count (1-10000)");
       return;
     }
+    if (parsedCount <= 0 || parsedCount > 10000) {
+      LOGW("Invalid count (1-10000)");
+      return;
+    }
+    const int count = static_cast<int>(parsedCount);
     for (int i = 0; i < count; ++i) {
       Serial.printf("--- Reading %d/%d ---\n", i + 1, count);
       readAllChannels();
@@ -1109,7 +1185,11 @@ void processCommand(const String& cmdLine) {
   } else if (cmd == "avg") {
     Serial.printf("  Averaging: %s samples\n", avgToStr(device.getAveraging()));
   } else if (cmd.startsWith("avg ")) {
-    int val = cmd.substring(4).toInt();
+    int32_t val = 0;
+    if (!parseI32(cmd.substring(4), val)) {
+      LOGW("Invalid avg (0-7)");
+      return;
+    }
     if (val < 0 || val > 7) {
       LOGW("Invalid avg (0-7)");
       return;
@@ -1118,7 +1198,11 @@ void processCommand(const String& cmdLine) {
   } else if (cmd == "vbusct") {
     Serial.printf("  VbusCT: %s\n", ctToStr(device.getVBusConvTime()));
   } else if (cmd.startsWith("vbusct ")) {
-    int val = cmd.substring(7).toInt();
+    int32_t val = 0;
+    if (!parseI32(cmd.substring(7), val)) {
+      LOGW("Invalid conv time (0-7)");
+      return;
+    }
     if (val < 0 || val > 7) {
       LOGW("Invalid conv time (0-7)");
       return;
@@ -1127,12 +1211,18 @@ void processCommand(const String& cmdLine) {
   } else if (cmd == "vshct") {
     Serial.printf("  VshCT: %s\n", ctToStr(device.getVShuntConvTime()));
   } else if (cmd.startsWith("vshct ")) {
-    int val = cmd.substring(6).toInt();
+    int32_t val = 0;
+    if (!parseI32(cmd.substring(6), val)) {
+      LOGW("Invalid conv time (0-7)");
+      return;
+    }
     if (val < 0 || val > 7) {
       LOGW("Invalid conv time (0-7)");
       return;
     }
     printStatus(device.setVShuntConvTime(static_cast<INA3221::ConvTime>(val)));
+  } else if (cmd == "chen") {
+    printChannelEnable();
   } else if (cmd.startsWith("chen ")) {
     String args = cmd.substring(5);
     args.trim();
@@ -1142,12 +1232,18 @@ void processCommand(const String& cmdLine) {
       return;
     }
     int ch = parseChannel(args.substring(0, split));
-    int en = args.substring(split + 1).toInt();
+    bool en = false;
     if (ch < 0) {
       LOGW("Invalid channel (1-3)");
       return;
     }
-    printStatus(device.setChannelEnable(static_cast<INA3221::Channel>(ch), en != 0));
+    if (!parseBool01(args.substring(split + 1), en)) {
+      LOGW("Invalid enable value (0|1)");
+      return;
+    }
+    printStatus(device.setChannelEnable(static_cast<INA3221::Channel>(ch), en));
+  } else if (cmd == "rshunt") {
+    printShuntResistance();
   } else if (cmd.startsWith("rshunt ")) {
     String args = cmd.substring(7);
     args.trim();
@@ -1239,6 +1335,8 @@ void processCommand(const String& cmdLine) {
                   flags.summation, flags.powerValid, flags.timingControl, flags.conversionReady);
   } else if (cmd == "mask") {
     printMaskEnable();
+  } else if (cmd == "crit") {
+    printCriticalAlertLimits();
   } else if (cmd.startsWith("crit ")) {
     String args = cmd.substring(5);
     args.trim();
@@ -1250,15 +1348,7 @@ void processCommand(const String& cmdLine) {
         LOGW("Invalid channel (1-3)");
         return;
       }
-      int16_t raw = 0;
-      auto st = device.getCriticalAlertLimit(static_cast<INA3221::Channel>(ch), raw);
-      if (st.ok()) {
-        Serial.printf("  CH%d critical limit: %d (%.3f mV)\n",
-                      ch + 1, raw,
-                      static_cast<double>(INA3221::INA3221::shuntRawToMv(raw)));
-      } else {
-        printStatus(st);
-      }
+      printCriticalAlertLimit(static_cast<INA3221::Channel>(ch), ch + 1);
     } else {
       ch = parseChannel(args.substring(0, split));
       if (ch < 0) {
@@ -1272,6 +1362,8 @@ void processCommand(const String& cmdLine) {
       }
       printStatus(device.setCriticalAlertLimit(static_cast<INA3221::Channel>(ch), static_cast<int16_t>(raw)));
     }
+  } else if (cmd == "warn") {
+    printWarningAlertLimits();
   } else if (cmd.startsWith("warn ")) {
     String args = cmd.substring(5);
     args.trim();
@@ -1283,15 +1375,7 @@ void processCommand(const String& cmdLine) {
         LOGW("Invalid channel (1-3)");
         return;
       }
-      int16_t raw = 0;
-      auto st = device.getWarningAlertLimit(static_cast<INA3221::Channel>(ch), raw);
-      if (st.ok()) {
-        Serial.printf("  CH%d warning limit: %d (%.3f mV)\n",
-                      ch + 1, raw,
-                      static_cast<double>(INA3221::INA3221::shuntRawToMv(raw)));
-      } else {
-        printStatus(st);
-      }
+      printWarningAlertLimit(static_cast<INA3221::Channel>(ch), ch + 1);
     } else {
       ch = parseChannel(args.substring(0, split));
       if (ch < 0) {
@@ -1352,6 +1436,8 @@ void processCommand(const String& cmdLine) {
       return;
     }
     printStatus(device.setPowerValidLowerLimit(static_cast<int16_t>(raw)));
+  } else if (cmd == "sumch") {
+    printMaskEnable();
   } else if (cmd.startsWith("sumch ")) {
     String args = cmd.substring(6);
     args.trim();
@@ -1361,9 +1447,13 @@ void processCommand(const String& cmdLine) {
       return;
     }
     int ch = parseChannel(args.substring(0, split));
-    int en = args.substring(split + 1).toInt();
+    bool en = false;
     if (ch < 0) {
       LOGW("Invalid channel (1-3)");
+      return;
+    }
+    if (!parseBool01(args.substring(split + 1), en)) {
+      LOGW("Invalid enable value (0|1)");
       return;
     }
     uint16_t mask = 0;
@@ -1375,10 +1465,12 @@ void processCommand(const String& cmdLine) {
     bool ch1en = (mask & INA3221::cmd::MASK_SCC1) != 0;
     bool ch2en = (mask & INA3221::cmd::MASK_SCC2) != 0;
     bool ch3en = (mask & INA3221::cmd::MASK_SCC3) != 0;
-    if (ch == 0) ch1en = (en != 0);
-    if (ch == 1) ch2en = (en != 0);
-    if (ch == 2) ch3en = (en != 0);
+    if (ch == 0) ch1en = en;
+    if (ch == 1) ch2en = en;
+    if (ch == 2) ch3en = en;
     printStatus(device.setSummationChannels(ch1en, ch2en, ch3en));
+  } else if (cmd == "latch") {
+    printMaskEnable();
   } else if (cmd.startsWith("latch ")) {
     String args = cmd.substring(6);
     args.trim();
@@ -1387,9 +1479,14 @@ void processCommand(const String& cmdLine) {
       LOGW("Usage: latch <warn 0|1> <crit 0|1>");
       return;
     }
-    int warn = args.substring(0, split).toInt();
-    int crit = args.substring(split + 1).toInt();
-    printStatus(device.setAlertLatchEnable(warn != 0, crit != 0));
+    bool warn = false;
+    bool crit = false;
+    if (!parseBool01(args.substring(0, split), warn) ||
+        !parseBool01(args.substring(split + 1), crit)) {
+      LOGW("Invalid latch value (0|1 0|1)");
+      return;
+    }
+    printStatus(device.setAlertLatchEnable(warn, crit));
   } else if (cmd == "online") {
     bool online = device.isOnline();
     LOGI("Online: %s%s%s", yesNoColor(online), online ? "YES" : "NO", LOG_COLOR_RESET);
@@ -1398,21 +1495,30 @@ void processCommand(const String& cmdLine) {
   } else if (cmd == "stress_mix") {
     runStressMix(50);
   } else if (cmd.startsWith("stress_mix ")) {
-    int count = cmd.substring(11).toInt();
-    if (count <= 0 || count > 100000) {
+    int32_t parsedCount = 0;
+    if (!parseI32(cmd.substring(11), parsedCount)) {
       LOGW("Invalid count (1-100000)");
       return;
     }
+    if (parsedCount <= 0 || parsedCount > 100000) {
+      LOGW("Invalid count (1-100000)");
+      return;
+    }
+    const int count = static_cast<int>(parsedCount);
     runStressMix(count);
   } else if (cmd.startsWith("stress")) {
-    int count = 10;
+    int32_t parsedCount = 10;
     if (cmd.length() > 6) {
-      count = cmd.substring(7).toInt();
+      if (cmd.charAt(6) != ' ' || !parseI32(cmd.substring(7), parsedCount)) {
+        LOGW("Usage: stress [N]");
+        return;
+      }
     }
-    if (count <= 0 || count > 100000) {
+    if (parsedCount <= 0 || parsedCount > 100000) {
       LOGW("Invalid count (1-100000)");
       return;
     }
+    const int count = static_cast<int>(parsedCount);
     resetStressStats(count);
     for (int i = 0; i < count; ++i) {
       INA3221::ChannelMeasurement ch1, ch2, ch3;
