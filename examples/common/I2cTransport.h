@@ -11,58 +11,12 @@
 
 #pragma once
 
-#if defined(INA3221_EXAMPLE_PLATFORM_IDF)
-#include "Ina3221IdfI2cTransport.h"
-#else
 #include <Arduino.h>
 #include <Wire.h>
-#endif
 
 #include "INA3221/Status.h"
 
 namespace transport {
-
-#if defined(INA3221_EXAMPLE_PLATFORM_IDF)
-
-inline INA3221::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
-                                 uint32_t timeoutMs, void* user) {
-  return ina3221IdfI2cWrite(addr, data, len, timeoutMs, user);
-}
-
-inline INA3221::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLen,
-                                     uint8_t* rx, size_t rxLen, uint32_t timeoutMs,
-                                     void* user) {
-  return ina3221IdfI2cWriteRead(addr, tx, txLen, rx, rxLen, timeoutMs, user);
-}
-
-inline INA3221::Status wireWriteReadAt(uint8_t addr, const uint8_t* tx, size_t txLen,
-                                       uint8_t* rx, size_t rxLen, uint32_t timeoutMs) {
-  return ina3221IdfI2cWriteReadAt(addr, tx, txLen, rx, rxLen, timeoutMs,
-                                  &ina3221IdfTransportContext());
-}
-
-inline INA3221::Status probeAddress(uint8_t addr, uint16_t timeoutMs) {
-  return ina3221IdfProbeAddress(addr, timeoutMs);
-}
-
-inline uint32_t arduinoNowMs(void* user) {
-  return ina3221IdfNowMs(user);
-}
-
-inline void arduinoYield(void* user) {
-  ina3221IdfYield(user);
-}
-
-inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50,
-                     uint8_t address = 0x40) {
-  return ina3221IdfInitI2c(sda, scl, freq, timeoutMs, address);
-}
-
-inline void* configUser() {
-  return &ina3221IdfTransportContext();
-}
-
-#else
 
 /**
  * @brief Wire-based I2C write implementation.
@@ -254,7 +208,5 @@ inline void arduinoYield(void*) {
 inline void* configUser() {
   return &Wire;
 }
-
-#endif
 
 }  // namespace transport

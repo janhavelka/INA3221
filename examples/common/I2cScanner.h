@@ -7,13 +7,8 @@
 
 #pragma once
 
-#if defined(INA3221_EXAMPLE_PLATFORM_IDF)
-#include "Ina3221IdfI2cTransport.h"
-#include "examples/common/IdfArduinoCompat.h"
-#else
 #include <Arduino.h>
 #include <Wire.h>
-#endif
 
 #include "INA3221/CommandTable.h"
 #include "examples/common/Log.h"
@@ -43,22 +38,6 @@ inline const char* ina3221AddressStrap(uint8_t addr) {
   }
 }
 
-#if defined(INA3221_EXAMPLE_PLATFORM_IDF)
-
-inline bool readRegister16(Ina3221IdfI2c& transport, uint8_t addr, uint8_t reg,
-                           uint16_t& value) {
-  uint8_t rx[2] = {};
-  const INA3221::Status st =
-      ina3221IdfI2cWriteReadAt(addr, &reg, 1, rx, sizeof(rx), 50, &transport);
-  if (!st.ok()) {
-    return false;
-  }
-  value = static_cast<uint16_t>((static_cast<uint16_t>(rx[0]) << 8) | rx[1]);
-  return true;
-}
-
-#else
-
 inline bool readRegister16(TwoWire& wire, uint8_t addr, uint8_t reg, uint16_t& value) {
   wire.beginTransmission(addr);
   if (wire.write(reg) != 1U) {
@@ -84,8 +63,6 @@ inline bool readRegister16(TwoWire& wire, uint8_t addr, uint8_t reg, uint16_t& v
   return true;
 }
 
-#endif
-
 template <typename BusT>
 inline Ina3221Identity readIna3221Identity(BusT& bus, uint8_t addr) {
   Ina3221Identity identity;
@@ -104,101 +81,6 @@ inline bool isRecognizedIna3221(const Ina3221Identity& identity) {
          identity.manufacturerId == INA3221::cmd::MANUFACTURER_ID_VALUE &&
          identity.dieId == INA3221::cmd::DIE_ID_VALUE;
 }
-
-#if defined(INA3221_EXAMPLE_PLATFORM_IDF)
-
-inline void recoverBus(int sda, int scl) {
-  (void)sda;
-  (void)scl;
-  LOGW("I2C scanner recoverBus is Arduino-only; re-run initI2c for full bus reset");
-}
-
-inline void scan(Ina3221IdfI2c& transport, uint16_t timeoutMs = 50) {
-  LOGI("Scanning I2C bus (timeout=%dms)...", timeoutMs);
-  LOG_SERIAL.flush();
-
-  if (transport.bus == nullptr) {
-    LOGE("I2C scan skipped: bus is not initialized");
-    return;
-  }
-
-  LOGI("     0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F");
-  LOG_SERIAL.flush();
-
-  uint8_t count = 0;
-  uint8_t ina3221Count = 0;
-  for (uint8_t row = 0; row < 8; row++) {
-    LOG_SERIAL.printf("%02X: ", row * 16);
-    LOG_SERIAL.flush();
-
-    for (uint8_t col = 0; col < 16; col++) {
-      const uint8_t addr = static_cast<uint8_t>(row * 16 + col);
-      if (addr < 0x08 || addr > 0x77) {
-        LOG_SERIAL.print("   ");
-        continue;
-      }
-
-      const INA3221::Status st = ina3221IdfProbeAddress(addr, timeoutMs);
-      if (st.ok()) {
-        LOG_SERIAL.printf("%02X ", addr);
-        ++count;
-      } else if (st.code == INA3221::Err::I2C_TIMEOUT) {
-        LOG_SERIAL.print("TO ");
-      } else {
-        LOG_SERIAL.print("-- ");
-      }
-
-      yield();
-      delay(1);
-    }
-    LOG_SERIAL.println();
-    LOG_SERIAL.flush();
-  }
-
-  LOGI("Scan complete. Found %d device(s).", count);
-  LOG_SERIAL.flush();
-
-  if (count > 0) {
-    LOGI("Checking INA3221 identity registers on 0x40-0x43...");
-    for (uint8_t addr = INA3221_ADDR_MIN; addr <= INA3221_ADDR_MAX; ++addr) {
-      const INA3221::Status st = ina3221IdfProbeAddress(addr, timeoutMs);
-      if (!st.ok()) {
-        continue;
-      }
-
-      const Ina3221Identity identity = readIna3221Identity(transport, addr);
-      if (isRecognizedIna3221(identity)) {
-        LOGI("  0x%02X: INA3221 recognized (%s, mfg=0x%04X, die=0x%04X)",
-             addr,
-             ina3221AddressStrap(addr),
-             identity.manufacturerId,
-             identity.dieId);
-        ina3221Count++;
-      } else if (identity.readOk) {
-        LOGW("  0x%02X: responded, but not INA3221 (%s, mfg=0x%04X, die=0x%04X)",
-             addr,
-             ina3221AddressStrap(addr),
-             identity.manufacturerId,
-             identity.dieId);
-      } else {
-        LOGW("  0x%02X: responded, but identity registers could not be read (%s)",
-             addr,
-             ina3221AddressStrap(addr));
-      }
-    }
-    LOGI("INA3221 recognized: %d device(s).", ina3221Count);
-  }
-
-  if (count > 0) {
-    LOGI("Common addresses: 0x40-0x43=INA3221, 0x48-0x4B=ADS1115, 0x51=RV3032, 0x76/0x77=BME280");
-  }
-}
-
-inline void scanDefault(uint16_t timeoutMs = 50) {
-  scan(ina3221IdfTransportContext(), timeoutMs);
-}
-
-#else
 
 /**
  * @brief Attempt to recover a stuck I2C bus by toggling SCL.
@@ -318,7 +200,5 @@ inline void scan(TwoWire& wire, uint16_t timeoutMs = 50) {
 inline void scanDefault(uint16_t timeoutMs = 50) {
   scan(Wire, timeoutMs);
 }
-
-#endif
 
 }  // namespace i2c_scanner

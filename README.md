@@ -38,7 +38,8 @@ or component manager metadata, then provide `Config::i2cWrite`,
 `Config::i2cWriteRead`, `Config::nowMs`, and optionally
 `Config::cooperativeYield` from your application-owned adapter. The native
 example in `examples/esp_idf/basic` uses ESP-IDF `driver/i2c_master.h` glue and
-shares the full bring-up CLI with the Arduino example.
+implements the same bring-up CLI command surface natively with `app_main`,
+`esp_timer`, FreeRTOS waits, and fixed C buffers.
 
 ## Quick Start
 
@@ -217,7 +218,7 @@ device defaults.
 1. **Threading**: Single-threaded. Call `tick()` and all API from the same context.
 2. **Timing**: `tick()` does bounded work only (checks CVRF flag). All waits use deadline math, never `delay()`.
 3. **Resource ownership**: I2C bus is NOT owned by the library. Transport callbacks are injected via `Config`.
-4. **Framework boundary**: Core code does not call `Wire`, `Serial`, `delay()`, `yield()`, or `millis()` directly. Arduino examples provide those hooks externally.
+4. **Framework boundary**: Core code does not call `Wire`, `Serial`, `delay()`, `yield()`, `millis()`, or ESP-IDF peripheral APIs directly. Arduino examples and native ESP-IDF examples provide those hooks externally.
 5. **Memory**: All allocation happens in `begin()`. Zero heap allocation in steady state.
 6. **Error handling**: Every fallible API returns `Status`. Check with `status.ok()`.
 7. **Health**: `OFFLINE` is latched. Normal public I2C operations return `BUSY` with `Driver is offline; call recover()` without touching the bus until `recover()` succeeds.
@@ -225,8 +226,8 @@ device defaults.
 ## Examples
 
 - `examples/01_basic_bringup_cli/` - interactive CLI for all INA3221 features
-- `examples/esp_idf/basic/` - native ESP-IDF entry point sharing the full
-  bring-up CLI command surface.
+- `examples/esp_idf/basic/` - native ESP-IDF entry point with the full bring-up
+  CLI command surface implemented without Arduino compatibility facades.
 - Startup and `scan` diagnostics identify INA3221 devices on `0x40`-`0x43` by reading Manufacturer ID `0x5449` and Die ID `0x3220`, including the corresponding A0 strap label.
 - CLI diagnostics include `cfg` / `settings` for cached settings, `mask` for decoded Mask/Enable state, and `reg <addr>` / `wreg <addr> <val>` for tracked raw register access. Bare `chen`, `rshunt`, `crit`, `warn`, `sumch`, and `latch` show current settings; adding arguments updates those settings.
 - `stress` reports per-channel measurement statistics. `stress_mix` reports high-level operation counts plus `Health delta (tracked I2C)`, which is the driver's tracked transport success/failure counter delta and can be larger than the high-level operation count.
@@ -238,12 +239,11 @@ Not part of the library. These simulate project-level glue and keep examples sel
 
 | File | Purpose |
 |------|---------|
-| `BoardConfig.h` | Pin definitions and Arduino/ESP-IDF example I2C init |
+| `BoardConfig.h` | Arduino example pin definitions and I2C init |
 | `BuildConfig.h` | Compile-time `LOG_LEVEL` configuration |
 | `Log.h` | Serial logging macros (`LOGE`/`LOGW`/`LOGI`/`LOGD`/`LOGT`/`LOGV`) |
-| `I2cTransport.h` | Example transport selector for Arduino `Wire` or the ESP-IDF adapter |
-| `I2cScanner.h` | Arduino/ESP-IDF I2C bus scanner with table output and INA3221 identity recognition on `0x40`-`0x43` |
-| `IdfArduinoCompat.h` | ESP-IDF-only console, timing, yield, and fixed-buffer `String` shim for the shared CLI |
+| `I2cTransport.h` | Arduino `Wire` transport adapter |
+| `I2cScanner.h` | Arduino I2C bus scanner with table output and INA3221 identity recognition on `0x40`-`0x43` |
 | `BusDiag.h` | Bus diagnostics wrapper |
 | `CliShell.h` | Serial command-line shell with line editing |
 | `CommandHandler.h` | Command parsing helpers (`readLine`, `match`, `parseInt`) |

@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ESP-IDF component metadata, root `CMakeLists.txt`, and a native
   `examples/esp_idf/basic` application using the ESP-IDF new I2C master driver
   with the same user-visible CLI as the Arduino example.
-- Example-local ESP-IDF console, timing, yield, bus scan, identity-read, and
-  I2C adapter glue guarded by `INA3221_EXAMPLE_PLATFORM_IDF`.
+- Native ESP-IDF fixed-buffer command shell with IDF-owned timing, waits, bus
+  scan, identity-read, diagnostics, stress, self-test, and I2C adapter glue.
 - `tools/check_idf_example_contract.py` to guard ESP-IDF example structure,
   native-driver dependencies, and CLI parity.
 - IDF port implementation notes documenting the framework-neutral core boundary
@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measurements, conversion controls, alert limits, raw-register diagnostics,
   scanner identity checks, health, stress, and self-test workflows as the
   Arduino CLI.
+- `examples/common/` is Arduino-only example glue; ESP-IDF uses
+  `examples/esp_idf/basic/main/Ina3221IdfI2cTransport.*` directly.
+- `tools/check_idf_example_contract.py` now rejects Arduino compatibility
+  facades, Arduino CLI source inclusion, and Arduino framework tokens in IDF
+  example code.
+
+### Removed
+- Removed the ESP-IDF path's `IdfArduinoCompat.h` compatibility facade and
+  shared Arduino CLI-source inclusion.
 
 ## [1.1.0] - 2026-05-17
 

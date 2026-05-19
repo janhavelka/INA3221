@@ -14,15 +14,12 @@ REQUIRED_COMPONENTS = [
     "esp_driver_i2c",
     "esp_driver_gpio",
     "esp_timer",
-    "esp_rom",
     "freertos",
-    "log",
-    "vfs",
 ]
+FORBIDDEN_COMPONENTS = ["esp_rom", "log", "vfs"]
 REQUIRED_FILES = [
     "CMakeLists.txt",
     "idf_component.yml",
-    "examples/common/IdfArduinoCompat.h",
     "examples/esp_idf/basic/CMakeLists.txt",
     "examples/esp_idf/basic/main/CMakeLists.txt",
     "examples/esp_idf/basic/main/main.cpp",
@@ -77,6 +74,26 @@ MANDATORY_COMMANDS = [
     "selftest",
     "convert",
 ]
+FORBIDDEN_IDF_TOKENS = [
+    "Arduino.h",
+    "Wire.h",
+    "TwoWire",
+    "String",
+    "Serial",
+    "ArduinoCompat",
+    "IdfArduinoCompat",
+    CLI_SOURCE_INCLUDE,
+]
+NATIVE_IDF_TOKENS = [
+    'extern "C" void app_main(void)',
+    '#include "driver/i2c_master.h"',
+    "esp_timer_get_time",
+    "vTaskDelay",
+    "std::fgets",
+    "char line[MAX_LINE_LEN]",
+    "ina3221IdfProbeAddress",
+    "ina3221IdfI2cWriteReadAt",
+]
 
 
 def fail(msg: str) -> None:
@@ -89,13 +106,16 @@ def require_token(text: str, token: str, label: str) -> None:
         fail(f"{label} missing token '{token}'")
 
 
-def command_has_dispatch(cli: str, command: str) -> bool:
+def command_has_dispatch(text: str, command: str) -> bool:
     patterns = [
         rf'cmd\s*==\s*"{re.escape(command)}"',
+        rf'std::strcmp\(cmd,\s*"{re.escape(command)}"\)\s*==\s*0',
+        rf'argAfter\(cmd,\s*"{re.escape(command)}\s',
+        rf'argAfter\(cmd,\s*"{re.escape(command)}"\)',
         rf'cmd\.startsWith\("{re.escape(command)}\s',
         rf'cmd\.startsWith\("{re.escape(command)}"\)',
     ]
-    return any(re.search(pattern, cli) for pattern in patterns)
+    return any(re.search(pattern, text) for pattern in patterns)
 
 
 def main() -> int:
@@ -103,18 +123,21 @@ def main() -> int:
         if not (ROOT / rel).exists():
             fail(f"missing {rel}")
 
+    if (ROOT / "examples" / "common" / "IdfArduinoCompat.h").exists():
+        fail("examples/common/IdfArduinoCompat.h must not exist")
+
     idf_main = (ROOT / "examples" / "esp_idf" / "basic" / "main" / "main.cpp").read_text(
         encoding="utf-8", errors="replace"
     )
-    for token in (
-        f"#define {IDF_EXAMPLE_MACRO} 1",
-        '#include "examples/common/IdfArduinoCompat.h"',
-        CLI_SOURCE_INCLUDE,
-        'extern "C" void app_main(void)',
-        "setup();",
-        "loop();",
-    ):
+    if IDF_EXAMPLE_MACRO in idf_main:
+        fail(f"ESP-IDF main must not define/use {IDF_EXAMPLE_MACRO}")
+    for token in FORBIDDEN_IDF_TOKENS:
+        if token in idf_main:
+            fail(f"ESP-IDF main uses forbidden token '{token}'")
+    for token in NATIVE_IDF_TOKENS:
         require_token(idf_main, token, "ESP-IDF main")
+    if "setup();" in idf_main or "loop();" in idf_main:
+        fail("ESP-IDF main must not call setup()/loop()")
 
     cmake = (
         ROOT / "examples" / "esp_idf" / "basic" / "main" / "CMakeLists.txt"
@@ -122,19 +145,9 @@ def main() -> int:
     for component in REQUIRED_COMPONENTS:
         if re.search(rf"\b{re.escape(component)}\b", cmake) is None:
             fail(f"ESP-IDF CMake missing required component '{component}'")
-
-    compat = (ROOT / "examples" / "common" / "IdfArduinoCompat.h").read_text(
-        encoding="utf-8", errors="replace"
-    )
-    for token in (
-        "class IdfConsole",
-        "class String",
-        "charAt",
-        "esp_timer_get_time",
-        "esp_rom_delay_us",
-        "fcntl",
-    ):
-        require_token(compat, token, "IdfArduinoCompat.h")
+    for component in FORBIDDEN_COMPONENTS:
+        if re.search(rf"\b{re.escape(component)}\b", cmake) is not None:
+            fail(f"ESP-IDF CMake should not require stale component '{component}'")
 
     transport = (
         (ROOT / "examples" / "esp_idf" / "basic" / "main" / "Ina3221IdfI2cTransport.cpp")
@@ -150,17 +163,26 @@ def main() -> int:
         "i2c_master_transmit_receive",
     ):
         require_token(transport, token, "ESP-IDF transport")
+    for token in FORBIDDEN_IDF_TOKENS:
+        if token in transport:
+            fail(f"ESP-IDF transport uses forbidden token '{token}'")
 
     cli = (ROOT / "examples" / "01_basic_bringup_cli" / "main.cpp").read_text(
         encoding="utf-8", errors="replace"
     )
-    require_token(cli, f"defined({IDF_EXAMPLE_MACRO})", "shared CLI")
-    require_token(cli, "transport::configUser()", "shared CLI")
+    if f"defined({IDF_EXAMPLE_MACRO})" in cli:
+        fail("Arduino CLI source must not have an IDF compatibility branch")
+    if CLI_SOURCE_INCLUDE in idf_main:
+        fail("ESP-IDF main must not include Arduino CLI source")
     for command in MANDATORY_COMMANDS:
         if f'printHelpItem("{command}' not in cli:
-            fail(f"CLI missing help item '{command}'")
+            fail(f"Arduino CLI missing help item '{command}'")
         if not command_has_dispatch(cli, command):
-            fail(f"CLI missing dispatch '{command}'")
+            fail(f"Arduino CLI missing dispatch '{command}'")
+        if f'printHelpItem("{command}' not in idf_main:
+            fail(f"native IDF CLI missing help item '{command}'")
+        if not command_has_dispatch(idf_main, command):
+            fail(f"native IDF CLI missing dispatch '{command}'")
 
     manifest = (ROOT / "idf_component.yml").read_text(encoding="utf-8", errors="replace")
     for token in ("esp32s2", "esp32s3", "idf:"):
