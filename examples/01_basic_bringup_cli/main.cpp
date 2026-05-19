@@ -2,9 +2,14 @@
 /// @brief INA3221 basic bringup example
 /// @note This is an EXAMPLE, not part of the library
 
-#include <Arduino.h>
 #include <cstdlib>
 #include <limits>
+
+#if defined(INA3221_EXAMPLE_PLATFORM_IDF)
+#include "examples/common/IdfArduinoCompat.h"
+#else
+#include <Arduino.h>
+#endif
 
 #include "examples/common/BoardConfig.h"
 #include "examples/common/BusDiag.h"
@@ -1600,10 +1605,10 @@ void setup() {
   INA3221::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cUser = &Wire;
-  cfg.nowMs = exampleNowMs;
-  cfg.cooperativeYield = exampleYield;
-  cfg.i2cAddress = 0x40;
+  cfg.i2cUser = transport::configUser();
+  cfg.nowMs = transport::arduinoNowMs;
+  cfg.cooperativeYield = transport::arduinoYield;
+  cfg.i2cAddress = board::INA3221_I2C_ADDR;
   cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
   cfg.offlineThreshold = 5;
   cfg.shuntResistance[0] = 0.1f;

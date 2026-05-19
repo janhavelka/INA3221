@@ -36,8 +36,9 @@ Copy `include/INA3221/` and `src/` into your project.
 The repository root is an ESP-IDF component. Add it through `EXTRA_COMPONENT_DIRS`
 or component manager metadata, then provide `Config::i2cWrite`,
 `Config::i2cWriteRead`, `Config::nowMs`, and optionally
-`Config::cooperativeYield` from your application-owned adapter. A basic
-new-driver example is in `examples/esp_idf/basic`.
+`Config::cooperativeYield` from your application-owned adapter. The native
+example in `examples/esp_idf/basic` uses ESP-IDF `driver/i2c_master.h` glue and
+shares the full bring-up CLI with the Arduino example.
 
 ## Quick Start
 
@@ -223,7 +224,9 @@ device defaults.
 
 ## Examples
 
-- `examples/01_basic_bringup_cli/` — interactive CLI for all INA3221 features
+- `examples/01_basic_bringup_cli/` - interactive CLI for all INA3221 features
+- `examples/esp_idf/basic/` - native ESP-IDF entry point sharing the full
+  bring-up CLI command surface.
 - Startup and `scan` diagnostics identify INA3221 devices on `0x40`-`0x43` by reading Manufacturer ID `0x5449` and Die ID `0x3220`, including the corresponding A0 strap label.
 - CLI diagnostics include `cfg` / `settings` for cached settings, `mask` for decoded Mask/Enable state, and `reg <addr>` / `wreg <addr> <val>` for tracked raw register access. Bare `chen`, `rshunt`, `crit`, `warn`, `sumch`, and `latch` show current settings; adding arguments updates those settings.
 - `stress` reports per-channel measurement statistics. `stress_mix` reports high-level operation counts plus `Health delta (tracked I2C)`, which is the driver's tracked transport success/failure counter delta and can be larger than the high-level operation count.
@@ -235,17 +238,32 @@ Not part of the library. These simulate project-level glue and keep examples sel
 
 | File | Purpose |
 |------|---------|
-| `BoardConfig.h` | Pin definitions and Wire init for supported boards |
+| `BoardConfig.h` | Pin definitions and Arduino/ESP-IDF example I2C init |
 | `BuildConfig.h` | Compile-time `LOG_LEVEL` configuration |
 | `Log.h` | Serial logging macros (`LOGE`/`LOGW`/`LOGI`/`LOGD`/`LOGT`/`LOGV`) |
-| `I2cTransport.h` | Wire-based I2C transport adapter (`wireWrite`, `wireWriteRead`, `initWire`) |
-| `I2cScanner.h` | I2C bus scanner with table output and INA3221 identity recognition on `0x40`-`0x43` |
+| `I2cTransport.h` | Example transport selector for Arduino `Wire` or the ESP-IDF adapter |
+| `I2cScanner.h` | Arduino/ESP-IDF I2C bus scanner with table output and INA3221 identity recognition on `0x40`-`0x43` |
+| `IdfArduinoCompat.h` | ESP-IDF-only console, timing, yield, and fixed-buffer `String` shim for the shared CLI |
 | `BusDiag.h` | Bus diagnostics wrapper |
 | `CliShell.h` | Serial command-line shell with line editing |
 | `CommandHandler.h` | Command parsing helpers (`readLine`, `match`, `parseInt`) |
 | `HealthView.h` | Compact health status display |
 | `HealthDiag.h` | Verbose health diagnostics with color, snapshots, and `HealthMonitor` |
 | `TransportAdapter.h` | Transport function pointer adapter |
+
+## Validation
+
+```bash
+python tools/check_cli_contract.py
+python tools/check_idf_example_contract.py
+python tools/check_core_timing_guard.py
+python scripts/generate_version.py check
+pio test -e native
+pio run -e esp32s3dev
+pio run -e esp32s2dev
+idf.py -C examples/esp_idf/basic set-target esp32s3 build
+idf.py -C examples/esp_idf/basic set-target esp32s2 build
+```
 
 ## Documentation
 

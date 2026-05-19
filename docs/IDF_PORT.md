@@ -1,12 +1,14 @@
 # INA3221 ESP-IDF v6.0.1 Port Audit
 
-Last audited: 2026-05-17
+Last audited: 2026-05-19
 
-This started as a readiness audit and now records the ESP-IDF implementation
-target for branch `idf-port`. See `docs/IDF_PORT_IMPLEMENTATION.md` for the
-implemented file-level summary and validation notes.
+This started as a readiness audit and now records the ESP-IDF implementation on
+branch `idf-port`. The driver core is framework-neutral, and the native ESP-IDF
+example exposes the same user-visible CLI as the Arduino example. See
+`docs/IDF_PORT_IMPLEMENTATION.md` for the implemented file-level summary and
+validation notes.
 
-Official ESP-IDF references for the future port:
+Official ESP-IDF references:
 - I2C master driver: https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/i2c.html
 - ESP-IDF v6.0 peripheral migration guide: https://docs.espressif.com/projects/esp-idf/en/stable/esp32c6/migration-guides/release-6.x/6.0/peripherals.html
 
@@ -31,36 +33,37 @@ Official ESP-IDF references for the future port:
   `millis()` or `yield()` from `_nowMs()` / `_cooperativeYield()`; applications
   should provide timing/yield hooks when needed.
 - Arduino-only glue lives in `examples/common/I2cTransport.h`,
-  `I2cScanner.h`, `BoardConfig.h`, and the CLI example.
+  `I2cScanner.h`, `BoardConfig.h`, and the CLI example; those files select
+  ESP-IDF-native shims when `INA3221_EXAMPLE_PLATFORM_IDF` is defined.
 
-Readiness verdict: the driver core is framework-neutral and IDF component/example
-scaffolding is present. Final readiness still requires an ESP-IDF 6.0.1 build
-and hardware validation.
+Readiness verdict: the driver core is framework-neutral and the ESP-IDF example
+uses the new I2C master driver plus the full bring-up CLI. Final readiness still
+requires an ESP-IDF 6.0.1 build and hardware validation.
 
 ## Portability Blockers
 
 - ESP-IDF compilation has not been verified in this shell because `idf.py` was
   unavailable.
 - Hardware validation remains outstanding.
-- Arduino examples use `Serial`, `String`, `Wire`, `millis()`, `delay()`, and
-  `yield()`; keep them Arduino-only.
+- `examples/01_basic_bringup_cli/main.cpp` is shared by Arduino and ESP-IDF.
+  Arduino builds use `Serial`, `String`, `Wire`, `millis()`, `delay()`, and
+  `yield()`; the ESP-IDF example uses example-local console/String/timing and
+  I2C shims.
 - `readConversionReady()` reads the Mask/Enable register, which clears CVRF and
   latched alert flags. IDF examples and tests must call this deliberately.
 - IDF v6.0.1 warning profiles can expose implicit conversion, signed/unsigned,
   and unused-variable warnings.
 
-## Exact Files/APIs To Change Later
+## Exact Files/APIs Changed
 
 - `src/INA3221.cpp`
-  - Remove the unconditional `#include <Arduino.h>`.
+  - Removed the unconditional `#include <Arduino.h>`.
   - Keep `_i2cWriteReadRaw()`, `_i2cWriteRaw()`,
     `_i2cWriteReadTracked()`, and `_i2cWriteTracked()` as the only transport
     path.
-  - Replace `_nowMs()` and `_cooperativeYield()` fallbacks with a small
-    portability boundary:
-    - Arduino build: may call `millis()` and `yield()`.
-    - ESP-IDF build: use `Config::nowMs` and `Config::cooperativeYield`, or
-      guarded defaults using `esp_timer_get_time()` and `taskYIELD()`.
+  - `_nowMs()` and `_cooperativeYield()` no longer call framework fallbacks;
+    applications provide `Config::nowMs` and `Config::cooperativeYield` when
+    timestamps, blocking helpers, or cooperative scheduling matter.
   - Do not add direct `i2c_master_*` calls to measurement or register helpers.
 - `include/INA3221/Config.h`
   - Preserve the current callback signatures; they are already ESP-IDF
@@ -70,18 +73,20 @@ and hardware validation.
 - `include/INA3221/INA3221.h`
   - Preserve namespace, class name, enums, `Status`, channel APIs, alert APIs,
     and health APIs.
-- Add root `CMakeLists.txt`.
-- Add IDF-only adapter/example files under a new path such as
-  `examples/esp_idf/basic/`.
-- Do not edit Arduino examples or common `Wire` helpers except for separate
-  Arduino regression fixes during the implementation PR.
+- Added root `CMakeLists.txt`.
+- Added IDF-only adapter/example files under `examples/esp_idf/basic/`.
+- Added `examples/common/IdfArduinoCompat.h` and guarded example common files
+  so the Arduino CLI source can be reused by the ESP-IDF entry point.
 
 ## Proposed Architecture Preserving Arduino Compatibility
 
 - Keep the INA3221 core callback-based and framework-neutral.
-- Keep the Arduino `Wire` adapter in `examples/common/I2cTransport.h`.
-- Add an IDF I2C adapter outside the driver core. It owns IDF bus/device
-  handles and supplies callbacks to `INA3221::Config`.
+- Keep `examples/common/I2cTransport.h` as the Arduino `Wire` adapter in
+  Arduino builds and as a selector for the ESP-IDF adapter when
+  `INA3221_EXAMPLE_PLATFORM_IDF` is defined.
+- Keep the IDF adapter outside the driver core. It owns IDF bus/device handles,
+  supports address-window identity reads for the scanner, and supplies callbacks
+  to `INA3221::Config`.
 - Keep I2C bus configuration in the application/example: SDA, SCL, clock speed,
   pull-ups, and lifetime.
 - Preserve health behavior:
@@ -89,7 +94,8 @@ and hardware validation.
   - public register/measurement helpers use tracked wrappers;
   - invalid config/params and `NOT_INITIALIZED` are not transport failures;
   - `recover()` uses tracked operations.
-- Keep Arduino and IDF examples separate.
+- Share the CLI implementation through small example-local shims so command
+  behavior cannot drift between frameworks.
 
 ## IDF Transport Adapter Contract
 
@@ -157,38 +163,37 @@ Core-only component:
 idf_component_register(
   SRCS "src/INA3221.cpp"
   INCLUDE_DIRS "include"
-  REQUIRES esp_timer freertos
 )
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)
 ```
 
 If an IDF adapter is shipped inside the component, include its source and add
-`PRIV_REQUIRES esp_driver_i2c esp_timer freertos`. If the adapter lives only in
-the example, put `esp_driver_i2c` in the example component requirements instead.
+`PRIV_REQUIRES esp_driver_i2c esp_driver_gpio esp_timer esp_rom freertos log vfs`.
+The adapter currently lives only in the example, so those dependencies are
+declared by the example component.
 
 ## Example Plan
 
-- Keep the existing Arduino CLI example as the Arduino reference.
-- Add `examples/esp_idf/basic`:
-  - create an I2C master bus with `i2c_new_master_bus()`;
-  - add the INA3221 device with `i2c_master_bus_add_device()`;
-  - fill `INA3221::Config` with IDF callbacks, `nowMs`, `cooperativeYield`,
-    channel enables, conversion times, averaging, and shunt resistances;
-  - call `begin()`;
-  - log manufacturer ID, die ID, one measurement from each channel, shunt sum,
-    and health counters.
-- Add a second IDF example only after basic success:
-  - configure warning/critical limits;
-  - demonstrate that reading Mask/Enable clears relevant latched flags;
-  - demonstrate single-shot conversion with `tick(nowMs)`.
+- Keep the existing Arduino CLI example building with PlatformIO for ESP32-S2
+  and ESP32-S3.
+- `examples/esp_idf/basic/main/main.cpp` defines `INA3221_EXAMPLE_PLATFORM_IDF`,
+  includes the example-local compatibility layer, and then includes
+  `examples/01_basic_bringup_cli/main.cpp`.
+- The ESP-IDF CLI exposes the same help grouping, color output, scanner
+  identity checks, three-channel measurements, conversion controls, alert
+  limits, raw registers, health, probe/recover, stress, and self-test flows as
+  the Arduino CLI.
 
 ## Test/Validation Plan
 
 - Static checks:
+  - `python tools/check_cli_contract.py`
+  - `python tools/check_idf_example_contract.py`
+  - `python tools/check_core_timing_guard.py`
   - `rg "<Arduino.h>|<Wire.h>|millis\\(|delay\\(|yield\\(" include src`
     should find no unguarded Arduino dependencies in the ESP-IDF build path.
-  - `rg "driver/i2c.h|i2c_cmd_link|i2c_driver_install" .` should not find
-    legacy I2C driver usage in IDF code.
+  - `rg "driver/i2c.h|i2c_cmd_link|i2c_driver_install" include src examples CMakeLists.txt`
+    should not find legacy I2C driver usage in IDF code.
 - Arduino regression:
   - `pio test -e native`
   - `pio run -e esp32s3dev`
@@ -221,18 +226,17 @@ the example, put `esp_driver_i2c` in the example component requirements instead.
 
 ## Ordered Implementation Checklist
 
-1. Add the root `CMakeLists.txt` for the core component.
-2. Remove or compile-guard the Arduino include and timing/yield fallbacks in
+1. Done: add the root `CMakeLists.txt` for the core component.
+2. Done: remove the Arduino include and timing/yield fallbacks in
    `src/INA3221.cpp`.
-3. Build the core component under IDF with callback stubs.
-4. Add the IDF I2C adapter using `<driver/i2c_master.h>`.
-5. Add `examples/esp_idf/basic` and build for ESP32-S3.
-6. Build the same example for ESP32-S2.
-7. Run PlatformIO native and Arduino example builds as regression checks only.
-8. Validate identity, three-channel measurements, conversion-ready behavior,
+3. Done: add the IDF I2C adapter using `<driver/i2c_master.h>`.
+4. Done: add `examples/esp_idf/basic` with the shared full CLI.
+5. Done: add static Arduino/IDF CLI contract checks.
+6. Pending local ESP-IDF toolchain: build `examples/esp_idf/basic` for ESP32-S3.
+7. Pending local ESP-IDF toolchain: build `examples/esp_idf/basic` for ESP32-S2.
+8. Done: run PlatformIO native and Arduino example builds as regression checks.
+9. Validate identity, three-channel measurements, conversion-ready behavior,
    and alert APIs on hardware.
-9. Inject I2C failures and verify status/health/recovery behavior.
-10. Add final `espidf` metadata/build matrix coverage and keep generated
+10. Inject I2C failures and verify status/health/recovery behavior.
+11. Add final `espidf` metadata/build matrix coverage and keep generated
     `Version.h` synchronized with `library.json`.
-11. Add optional IDF component manifest only after both Arduino and IDF builds
-    pass.
