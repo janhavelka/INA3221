@@ -1,11 +1,12 @@
 # INA3221 Driver Library
 
 Production-grade INA3221 triple-channel power monitor I2C driver for
-ESP32-S2 / ESP32-S3 (Arduino framework, PlatformIO).
+ESP32-S2 / ESP32-S3 (Arduino framework, PlatformIO, and ESP-IDF component use).
 
 ## Features
 
 - Injected I2C transport (no Wire dependency in library code)
+- Framework-neutral core (`include/` and `src/` do not include Arduino or ESP-IDF driver headers)
 - Health monitoring with READY / DEGRADED / OFFLINE states
 - Triple-channel shunt and bus voltage measurement
 - Current and power calculation from configurable shunt resistance
@@ -29,6 +30,14 @@ lib_deps =
 ### Manual
 
 Copy `include/INA3221/` and `src/` into your project.
+
+### ESP-IDF
+
+The repository root is an ESP-IDF component. Add it through `EXTRA_COMPONENT_DIRS`
+or component manager metadata, then provide `Config::i2cWrite`,
+`Config::i2cWriteRead`, `Config::nowMs`, and optionally
+`Config::cooperativeYield` from your application-owned adapter. A basic
+new-driver example is in `examples/esp_idf/basic`.
 
 ## Quick Start
 
@@ -89,6 +98,8 @@ void setup() {
   cfg.i2cWrite = i2cWrite;
   cfg.i2cWriteRead = i2cWriteRead;
   cfg.i2cUser = &Wire;
+  cfg.nowMs = [](void*) { return millis(); };
+  cfg.cooperativeYield = [](void*) { yield(); };
   cfg.i2cAddress = 0x40;
   cfg.shuntResistance[0] = 0.1f;  // Channel 1: 100 mΩ
   cfg.shuntResistance[1] = 0.1f;  // Channel 2: 100 mΩ
@@ -205,9 +216,10 @@ device defaults.
 1. **Threading**: Single-threaded. Call `tick()` and all API from the same context.
 2. **Timing**: `tick()` does bounded work only (checks CVRF flag). All waits use deadline math, never `delay()`.
 3. **Resource ownership**: I2C bus is NOT owned by the library. Transport callbacks are injected via `Config`.
-4. **Memory**: All allocation happens in `begin()`. Zero heap allocation in steady state.
-5. **Error handling**: Every fallible API returns `Status`. Check with `status.ok()`.
-6. **Health**: `OFFLINE` is latched. Normal public I2C operations return `BUSY` with `Driver is offline; call recover()` without touching the bus until `recover()` succeeds.
+4. **Framework boundary**: Core code does not call `Wire`, `Serial`, `delay()`, `yield()`, or `millis()` directly. Arduino examples provide those hooks externally.
+5. **Memory**: All allocation happens in `begin()`. Zero heap allocation in steady state.
+6. **Error handling**: Every fallible API returns `Status`. Check with `status.ok()`.
+7. **Health**: `OFFLINE` is latched. Normal public I2C operations return `BUSY` with `Driver is offline; call recover()` without touching the bus until `recover()` succeeds.
 
 ## Examples
 
@@ -239,6 +251,7 @@ Not part of the library. These simulate project-level glue and keep examples sel
 
 - `CHANGELOG.md` — full release history
 - `docs/IDF_PORT.md` — ESP-IDF portability guidance
+- `docs/IDF_PORT_IMPLEMENTATION.md` — ESP-IDF implementation notes and validation status
 - `INA3221_triple_power_monitor_implementation_manual.md` — implementation reference
 
 ## License

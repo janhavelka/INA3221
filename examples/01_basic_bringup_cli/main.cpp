@@ -80,6 +80,14 @@ const char* errToStr(INA3221::Err err) {
   }
 }
 
+uint32_t exampleNowMs(void*) {
+  return millis();
+}
+
+void exampleYield(void*) {
+  yield();
+}
+
 const char* stateToStr(INA3221::DriverState st) {
   using INA3221::DriverState;
   switch (st) {
@@ -1593,6 +1601,8 @@ void setup() {
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
   cfg.i2cUser = &Wire;
+  cfg.nowMs = exampleNowMs;
+  cfg.cooperativeYield = exampleYield;
   cfg.i2cAddress = 0x40;
   cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
   cfg.offlineThreshold = 5;

@@ -31,13 +31,16 @@ using I2cWriteReadFn = Status (*)(uint8_t addr, const uint8_t* txData, size_t tx
                                   uint8_t* rxData, size_t rxLen, uint32_t timeoutMs,
                                   void* user);
 
-/// @brief Millisecond timestamp callback.
+/// @brief Optional monotonic millisecond timestamp callback.
 /// @param user User context pointer passed through from Config
 /// @return Current monotonic milliseconds
+/// @note Framework-neutral builds do not call platform time APIs; if unset,
+/// health timestamps use 0 and blocking helpers cannot advance from wall time.
 using NowMsFn = uint32_t (*)(void* user);
 
-/// @brief Cooperative yield callback.
+/// @brief Optional cooperative yield callback.
 /// @param user User context pointer passed through from Config
+/// @note If unset, no scheduler/yield API is called by the driver core.
 using YieldFn = void (*)(void* user);
 
 /// @brief Averaging mode (number of samples for recursive averaging).
@@ -91,8 +94,8 @@ struct Config {
   void* i2cUser = nullptr;
 
   // === Timing Hooks (optional) ===
-  NowMsFn nowMs = nullptr;                 ///< Monotonic millisecond source
-  YieldFn cooperativeYield = nullptr;      ///< Cooperative scheduler hint
+  NowMsFn nowMs = nullptr;                 ///< Optional monotonic millisecond source
+  YieldFn cooperativeYield = nullptr;      ///< Optional cooperative scheduler hint
   void* timeUser = nullptr;                ///< User context for timing hooks
 
   // === Device Settings ===

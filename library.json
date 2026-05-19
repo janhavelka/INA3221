@@ -8,7 +8,8 @@
     "current-sensor",
     "voltage-monitor",
     "i2c",
-    "13-bit"
+    "13-bit",
+    "esp-idf"
   ],
   "authors": [
     {
@@ -30,7 +31,8 @@
   "license": "MIT",
   "homepage": "https://www.thymos.cz",
   "frameworks": [
-    "arduino"
+    "arduino",
+    "espidf"
   ],
   "platforms": [
     "espressif32"
