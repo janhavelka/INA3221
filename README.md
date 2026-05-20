@@ -3,6 +3,8 @@
 Production-grade INA3221 triple-channel power monitor I2C driver for
 ESP32-S2 / ESP32-S3 (Arduino framework, PlatformIO, and ESP-IDF component use).
 
+Library version: `v1.2.0`
+
 ## Features
 
 - Injected I2C transport (no Wire dependency in library code)
@@ -24,7 +26,7 @@ Add to `platformio.ini`:
 
 ```ini
 lib_deps =
-  INA3221
+  https://github.com/janhavelka/INA3221.git#v1.2.0
 ```
 
 ### Manual
@@ -40,6 +42,14 @@ or component manager metadata, then provide `Config::i2cWrite`,
 example in `examples/esp_idf/basic` uses ESP-IDF `driver/i2c_master.h` glue and
 implements the same bring-up CLI command surface natively with `app_main`,
 `esp_timer`, FreeRTOS waits, and fixed C buffers.
+
+## Release 1.2.0 Highlights
+
+- Adds ESP-IDF component metadata and root CMake support for component use.
+- Adds the native ESP-IDF `examples/esp_idf/basic` CLI using `driver/i2c_master.h`, `app_main`, `esp_timer`, FreeRTOS waits, and fixed C buffers.
+- Preserves Arduino and ESP-IDF user-visible CLI parity for scan/probe, three-channel measurement, conversion control, alert limits, raw register diagnostics, stress, and self-test workflows.
+- Keeps the driver core framework-neutral; I2C, timing, and cooperative-yield behavior remain callback-injected by the application.
+- Includes hardware validation of the ESP-IDF port before release.
 
 ## Quick Start
 

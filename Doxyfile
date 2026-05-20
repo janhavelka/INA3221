@@ -2,8 +2,8 @@
 # Generated and maintained for unified API documentation.
 
 PROJECT_NAME           = "INA3221"
-PROJECT_NUMBER         = "1.1.0"
-PROJECT_BRIEF          = "INA3221 triple-channel power monitor library API documentation"
+PROJECT_NUMBER         = "1.2.0"
+PROJECT_BRIEF          = "INA3221 triple-channel power monitor library API documentation for release 1.2.0"
 OUTPUT_DIRECTORY       = docs/doxygen
 CREATE_SUBDIRS         = NO
 ALLOW_UNICODE_NAMES    = NO
@@ -31,11 +31,11 @@ REFERENCED_BY_RELATION = YES
 REFERENCES_RELATION    = YES
 STRIP_CODE_COMMENTS    = NO
 
-INPUT                  = README.md CHANGELOG.md AGENTS.md CONTRIBUTING.md include docs/IDF_PORT.md
+INPUT                  = README.md CHANGELOG.md AGENTS.md CONTRIBUTING.md include docs/IDF_PORT.md docs/IDF_PORT_IMPLEMENTATION.md examples/01_basic_bringup_cli examples/esp_idf/basic/main
 FILE_PATTERNS          = *.h *.md
 RECURSIVE              = YES
 EXCLUDE_PATTERNS       = */.pio/* */.git/* */test/* */docs/doxygen/* */docs/extracted-md/* */docs/pdf-extracted-md/* */docs/_pdf_extracts/*
-EXAMPLE_PATH           = examples/01_basic_bringup_cli
+EXAMPLE_PATH           = examples/01_basic_bringup_cli examples/esp_idf/basic/main
 
 USE_MDFILE_AS_MAINPAGE = README.md
 FULL_PATH_NAMES        = NO

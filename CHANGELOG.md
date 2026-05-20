@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-05-20
+
 ### Added
 - ESP-IDF component metadata, root `CMakeLists.txt`, and a native
   `examples/esp_idf/basic` application using the ESP-IDF new I2C master driver
@@ -33,10 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tools/check_idf_example_contract.py` now rejects Arduino compatibility
   facades, Arduino CLI source inclusion, and Arduino framework tokens in IDF
   example code.
+- Release metadata, README installation instructions, and Doxygen project
+  metadata now target `v1.2.0`.
 
 ### Removed
 - Removed the ESP-IDF path's `IdfArduinoCompat.h` compatibility facade and
   shared Arduino CLI-source inclusion.
+
+### Fixed
+- The ESP-IDF port was validated on hardware before tagging this release.
 
 ## [1.1.0] - 2026-05-17
 
@@ -104,6 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `end()` now best-effort powers the monitor down before clearing runtime state.
 - `recover()` now re-validates manufacturer / die IDs, clears conversion state, and reapplies cached configuration.
 
-[Unreleased]: https://github.com/janhavelka/INA3221/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/janhavelka/INA3221/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/janhavelka/INA3221/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/janhavelka/INA3221/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/janhavelka/INA3221/releases/tag/v1.0.0
