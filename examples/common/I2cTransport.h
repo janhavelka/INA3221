@@ -134,7 +134,9 @@ inline INA3221::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txL
 /**
  * @brief Initialize Wire with default pins and frequency.
  */
-inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50) {
+inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50,
+                     uint8_t address = 0x40) {
+  (void)address;
 #if defined(ARDUINO_ARCH_ESP32)
   // Toggle SCL to release any stuck slave
   pinMode(scl, OUTPUT);
@@ -163,6 +165,48 @@ inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutM
   (void)timeoutMs;
 #endif
   return true;
+}
+
+inline INA3221::Status wireWriteReadAt(uint8_t addr, const uint8_t* tx, size_t txLen,
+                                       uint8_t* rx, size_t rxLen, uint32_t timeoutMs) {
+  return wireWriteRead(addr, tx, txLen, rx, rxLen, timeoutMs, &Wire);
+}
+
+inline INA3221::Status probeAddress(uint8_t addr, uint16_t timeoutMs) {
+#if defined(ARDUINO_ARCH_ESP32)
+  Wire.setTimeOut(timeoutMs);
+#else
+  (void)timeoutMs;
+#endif
+  Wire.beginTransmission(addr);
+  switch (Wire.endTransmission(true)) {
+    case 0:
+      return INA3221::Status::Ok();
+    case 1:
+      return INA3221::Status::Error(INA3221::Err::INVALID_PARAM, "I2C data too long", 1);
+    case 2:
+      return INA3221::Status::Error(INA3221::Err::I2C_NACK_ADDR, "I2C address NACK", 2);
+    case 3:
+      return INA3221::Status::Error(INA3221::Err::I2C_NACK_DATA, "I2C data NACK", 3);
+    case 4:
+      return INA3221::Status::Error(INA3221::Err::I2C_BUS, "I2C bus error", 4);
+    case 5:
+      return INA3221::Status::Error(INA3221::Err::I2C_TIMEOUT, "I2C timeout", 5);
+    default:
+      return INA3221::Status::Error(INA3221::Err::I2C_ERROR, "I2C unknown error");
+  }
+}
+
+inline uint32_t arduinoNowMs(void*) {
+  return millis();
+}
+
+inline void arduinoYield(void*) {
+  yield();
+}
+
+inline void* configUser() {
+  return &Wire;
 }
 
 }  // namespace transport

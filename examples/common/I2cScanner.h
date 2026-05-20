@@ -63,15 +63,16 @@ inline bool readRegister16(TwoWire& wire, uint8_t addr, uint8_t reg, uint16_t& v
   return true;
 }
 
-inline Ina3221Identity readIna3221Identity(TwoWire& wire, uint8_t addr) {
+template <typename BusT>
+inline Ina3221Identity readIna3221Identity(BusT& bus, uint8_t addr) {
   Ina3221Identity identity;
   if (!isIna3221Address(addr)) {
     return identity;
   }
 
   identity.readOk =
-      readRegister16(wire, addr, INA3221::cmd::REG_MANUFACTURER_ID, identity.manufacturerId) &&
-      readRegister16(wire, addr, INA3221::cmd::REG_DIE_ID, identity.dieId);
+      readRegister16(bus, addr, INA3221::cmd::REG_MANUFACTURER_ID, identity.manufacturerId) &&
+      readRegister16(bus, addr, INA3221::cmd::REG_DIE_ID, identity.dieId);
   return identity;
 }
 
@@ -194,6 +195,10 @@ inline void scan(TwoWire& wire, uint16_t timeoutMs = 50) {
   if (count > 0) {
     LOGI("Common addresses: 0x40-0x43=INA3221, 0x48-0x4B=ADS1115, 0x51=RV3032, 0x76/0x77=BME280");
   }
+}
+
+inline void scanDefault(uint16_t timeoutMs = 50) {
+  scan(Wire, timeoutMs);
 }
 
 }  // namespace i2c_scanner

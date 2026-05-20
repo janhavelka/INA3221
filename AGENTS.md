@@ -3,7 +3,7 @@
 ## Role and Target
 You are a professional embedded software engineer building a production-grade INA3221 triple-channel power monitor library.
 
-- Target: ESP32-S2 / ESP32-S3, Arduino framework, PlatformIO.
+- Target: ESP32-S2 / ESP32-S3, Arduino and ESP-IDF examples, PlatformIO / ESP-IDF component use.
 - Goals: deterministic behavior, long-term stability, clean API contracts, portability, no surprises in the field.
 - These rules are binding.
 
@@ -35,6 +35,15 @@ Rules:
 - No board-specific pins/bus in library code; only in `Config`.
 - Public headers only in `include/INA3221/`.
 - Examples demonstrate usage and may use `examples/common/BoardConfig.h`.
+- Public/core library headers and `src/` must not include Arduino or ESP-IDF framework headers.
+- ESP-IDF examples must be native IDF applications using `app_main`,
+  `driver/i2c_master.h`, `esp_timer`, FreeRTOS waits/yields, and fixed C
+  buffers or native console APIs.
+- ESP-IDF examples must not include Arduino CLI sources and must not use
+  `Arduino.h`, `Wire.h`, `String`, `Serial`, `TwoWire`, `ArduinoCompat`, or
+  `IdfArduinoCompat` facades.
+- `examples/common/` remains Arduino-example glue; IDF-only adapters live under
+  `examples/esp_idf/`.
 - Keep the layout boring and predictable.
 
 ---

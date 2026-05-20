@@ -11,6 +11,8 @@ REQUIRED_COMMON = [
     "BoardConfig.h",
     "BuildConfig.h",
     "Log.h",
+    "I2cTransport.h",
+    "I2cScanner.h",
     "TransportAdapter.h",
     "BusDiag.h",
     "CliShell.h",
@@ -48,6 +50,7 @@ def main() -> int:
         ROOT / "examples" / "03_feature_walkthrough",
         "deprecated example 03_feature_walkthrough",
     )
+    ensure_missing(common_dir / "IdfArduinoCompat.h", "Arduino compatibility facade")
 
     for name in REQUIRED_COMMON:
         ensure_exists(common_dir / name, f"common helper {name}")

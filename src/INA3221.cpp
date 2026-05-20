@@ -3,7 +3,6 @@
 
 #include "INA3221/INA3221.h"
 
-#include <Arduino.h>
 #include <climits>
 #include <cmath>
 
@@ -1495,7 +1494,7 @@ uint32_t INA3221::_nowMs() const {
   if (_config.nowMs != nullptr) {
     return _config.nowMs(_config.timeUser);
   }
-  return millis();
+  return 0;
 }
 
 void INA3221::_cooperativeYield() const {
@@ -1503,7 +1502,6 @@ void INA3221::_cooperativeYield() const {
     _config.cooperativeYield(_config.timeUser);
     return;
   }
-  yield();
 }
 
 uint8_t INA3221::_enabledChannelCount() const {

@@ -2,9 +2,10 @@
 /// @brief INA3221 basic bringup example
 /// @note This is an EXAMPLE, not part of the library
 
-#include <Arduino.h>
 #include <cstdlib>
 #include <limits>
+
+#include <Arduino.h>
 
 #include "examples/common/BoardConfig.h"
 #include "examples/common/BusDiag.h"
@@ -78,6 +79,14 @@ const char* errToStr(INA3221::Err err) {
     case Err::I2C_BUS:                  return "I2C_BUS";
     default:                            return "UNKNOWN";
   }
+}
+
+uint32_t exampleNowMs(void*) {
+  return millis();
+}
+
+void exampleYield(void*) {
+  yield();
 }
 
 const char* stateToStr(INA3221::DriverState st) {
@@ -1592,8 +1601,10 @@ void setup() {
   INA3221::Config cfg;
   cfg.i2cWrite = transport::wireWrite;
   cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cUser = &Wire;
-  cfg.i2cAddress = 0x40;
+  cfg.i2cUser = transport::configUser();
+  cfg.nowMs = transport::arduinoNowMs;
+  cfg.cooperativeYield = transport::arduinoYield;
+  cfg.i2cAddress = board::INA3221_I2C_ADDR;
   cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
   cfg.offlineThreshold = 5;
   cfg.shuntResistance[0] = 0.1f;
