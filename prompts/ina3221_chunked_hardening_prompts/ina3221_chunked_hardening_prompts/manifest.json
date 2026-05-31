@@ -1,0 +1,15 @@
+{
+  "project": "INA3221 industry-readiness hardening",
+  "send_order": [
+    "01_branch_agents_baseline.md",
+    "02_core_contracts_and_guardrails.md",
+    "03_mask_enable_alert_side_effects.md",
+    "04_conversion_timing_readiness_model.md",
+    "05_reset_recover_cache_dirty_state.md",
+    "06_power_valid_timing_control_summation.md",
+    "07_fake_transport_fault_injection_tests.md",
+    "08_docs_examples_idf_cli_validation.md",
+    "09_final_integration_release_readiness.md"
+  ],
+  "notes": "Send one prompt at a time. Review each phase report before continuing."
+}
