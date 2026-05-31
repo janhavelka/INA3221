@@ -43,7 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shared Arduino CLI-source inclusion.
 
 ### Fixed
-- The ESP-IDF port was validated on hardware before tagging this release.
+- Corrected validation notes: Arduino example behavior has owner hardware-test
+  coverage, while ESP-IDF build and hardware validation remain pending.
 
 ## [1.1.0] - 2026-05-17
 

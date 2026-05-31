@@ -7,6 +7,9 @@
 #include "driver/i2c_master.h"
 #include "esp_err.h"
 
+// Example-local singleton transport used by the native ESP-IDF CLI. Reusable
+// applications should own their own Ina3221IdfI2c context and pass it via
+// Config::i2cUser instead of sharing this example helper.
 struct Ina3221IdfI2c {
   i2c_master_bus_handle_t bus = nullptr;
   i2c_master_dev_handle_t dev = nullptr;
