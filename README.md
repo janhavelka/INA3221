@@ -49,7 +49,9 @@ implements the same bring-up CLI command surface natively with `app_main`,
 - Adds the native ESP-IDF `examples/esp_idf/basic` CLI using `driver/i2c_master.h`, `app_main`, `esp_timer`, FreeRTOS waits, and fixed C buffers.
 - Preserves Arduino and ESP-IDF user-visible CLI parity for scan/probe, three-channel measurement, conversion control, alert limits, raw register diagnostics, stress, and self-test workflows.
 - Keeps the driver core framework-neutral; I2C, timing, and cooperative-yield behavior remain callback-injected by the application.
-- Includes hardware validation of the ESP-IDF port before release.
+- Arduino example behavior has owner hardware-test coverage and remains the
+  reference behavior. ESP-IDF support is implemented and statically guarded,
+  but still requires an ESP-IDF build and hardware validation before release.
 
 ## Quick Start
 
