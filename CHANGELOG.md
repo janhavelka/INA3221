@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added staged polling APIs for deadline-owned I2C loops:
+  `startSingleShot()`, `pollSingleShot()`, `startContinuousRead()`,
+  `pollContinuousRead()`, `pollJob()`, `getPollJobSnapshot()`,
+  `readChannelRawStep()`, `readAndClearAlertFlags()`,
+  `startApplyMaskEnable()`, and `pollApplyMaskEnable()`.
+- Native coverage for probe transport-error preservation, disabled and
+  mode-inactive measurement reads, `tick()` Mask/Enable read-clear behavior,
+  and bus-voltage conversion boundaries.
+- Native budget coverage for single-instruction, two-instruction, and draining
+  staged sample polls, disabled-channel skipping, destructive readiness reads,
+  continuous reads, and staged Mask/Enable writes.
+
+### Changed
+- Documented `readBlocking()` and `conversionReady()` as convenience APIs for
+  non-steady paths, with staged polling APIs preferred for deadline-owned I2C
+  owners.
+- `setShuntResistance()` is now runtime-only; pre-begin shunt values must be
+  supplied through `Config::shuntResistance`.
+
+### Fixed
+- `probe()` now preserves raw transport errors instead of collapsing I2C
+  timeout, bus, or NACK failures to `DEVICE_NOT_FOUND`.
+- Per-channel measurement reads now reject disabled channels and quantities not
+  produced by the active mode before touching I2C.
+
 ## [1.2.0] - 2026-05-20
 
 ### Added

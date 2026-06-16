@@ -146,20 +146,20 @@ void loop() {
 | Method | Description |
 |--------|-------------|
 | `begin(config)` | Initialize with injected transport and verify manufacturer / die ID |
-| `tick(nowMs)` | Process bounded conversion polling work |
+| `tick(nowMs)` | Process bounded conversion polling work; in triggered mode it may read Mask/Enable after the delay gate |
 | `end()` | Best-effort power the monitor down and clear cached conversion state |
 | `isInitialized()` | True after successful `begin()` until `end()` |
 | `getConfig()` | Return the driver's cached configuration snapshot |
 | `getSettings(snap)` | Populate a `SettingsSnapshot` with cached config, conversion, Mask/Enable, and health state without I2C |
-| `probe()` | Check device presence without updating health counters |
+| `probe()` | Check device presence without updating health counters and preserve raw transport error codes |
 | `recover()` | Re-validate IDs, clear conversion state, and re-apply cached config / mask settings |
 
 ### Measurement And Conversion API
 
 | Method | Description |
 |--------|-------------|
-| `readShuntRaw()` / `readBusRaw()` | Read raw per-channel voltage registers |
-| `readShuntVoltage()` / `readBusVoltage()` | Read scaled shunt mV and bus V |
+| `readShuntRaw()` / `readBusRaw()` | Read raw per-channel voltage registers when the channel and mode make that quantity valid |
+| `readShuntVoltage()` / `readBusVoltage()` | Read scaled shunt mV and bus V when the channel and mode make that quantity valid |
 | `readCurrent()` / `readPower()` | Calculate current and power from configured shunt resistance |
 | `readChannel()` | Read shunt, bus, current, and power for one channel |
 | `readShuntSumRaw()` / `readShuntSumVoltage()` | Read shunt-voltage summation register |
@@ -167,7 +167,10 @@ void loop() {
 | `startConversion(mode)` | Trigger a single-shot conversion using `SHUNT_TRIG`, `BUS_TRIG`, or `SHUNT_BUS_TRIG` |
 | `readConversionReady(ready)` | Read CVRF with Status propagation |
 | `conversionReady()` | Convenience bool wrapper that returns false on errors |
-| `readBlocking()` | Bounded helper that starts/waits/reads without using `delay()` |
+| `startSingleShot()` / `pollSingleShot()` | Staged single-shot sampling for deadline-owned poll loops |
+| `startContinuousRead()` / `pollContinuousRead()` | Staged continuous-mode sampling for deadline-owned poll loops |
+| `pollJob()` / `getPollJobSnapshot()` | Generic staged-job advancement and cache-only raw-result snapshot |
+| `readBlocking()` | Convenience-only bounded helper that can start, poll, yield, and read multiple registers |
 
 ### Raw Access And Compatibility Aliases
 
@@ -175,6 +178,8 @@ void loop() {
 |--------|-------------|
 | `readRegister16(reg, value)` | Read a tracked 16-bit register; valid addresses are `0x00`-`0x11`, `0xFE`, `0xFF` |
 | `writeRegister16(reg, value)` | Write a tracked 16-bit register; invalid addresses are rejected before I2C |
+| `readAndClearAlertFlags()` | Explicit Mask/Enable read that clears CVRF and latched alert flags |
+| `startApplyMaskEnable()` / `pollApplyMaskEnable()` | Staged one-instruction Mask/Enable writable-bit write |
 | `setVbusConvTime()` / `getVbusConvTime()` | Cross-library naming aliases for the bus conversion-time API |
 | `setVshuntConvTime()` / `getVshuntConvTime()` | Cross-library naming aliases for the shunt conversion-time API |
 
@@ -188,7 +193,7 @@ void loop() {
 | `vBusCt` | `CT_1100US` | Bus voltage conversion time |
 | `vShCt` | `CT_1100US` | Shunt voltage conversion time |
 | `mode` | `SHUNT_BUS_CONT` | Operating mode (power-down, triggered, continuous) |
-| `shuntResistance[3]` | `{0.1, 0.1, 0.1}` | Per-channel shunt resistance in ohms |
+| `shuntResistance[3]` | `{0.1, 0.1, 0.1}` | Per-channel shunt resistance in ohms; pre-begin values belong here, while `setShuntResistance()` is runtime-only |
 | `offlineThreshold` | `5` | Consecutive I2C failures before OFFLINE state |
 
 ### Operating Modes
@@ -205,7 +210,13 @@ void loop() {
 
 Writing a triggered mode to the Configuration register starts a hardware single-shot conversion. The driver tracks that side effect: `begin()` with a triggered mode, `setMode()` to a triggered mode, `writeConfig()` with triggered mode bits, and `startConversion()` all mark the conversion in progress. Measurement APIs return `CONVERSION_NOT_READY` until the configured conversion/averaging time has elapsed and CVRF is observed.
 
-`readConversionReady()` and `readAlertFlags()` read the Mask/Enable register. Per INA3221 register semantics, that read clears CVRF and latched alert flags. The driver caches a ready triggered conversion before CVRF is cleared so subsequent measurement reads are still allowed.
+Per-channel measurement APIs return `INVALID_CONFIG` before touching I2C when the requested channel is disabled or when the current mode does not measure the requested quantity. For example, `BUS_CONT` allows bus-voltage reads but not shunt/current/power reads, and `SHUNT_CONT` allows shunt/current reads but not bus/power/full-channel reads.
+
+`readConversionReady()`, `readAlertFlags()`, triggered-mode `tick()` after the delay gate, and staged polling with `pollConversionReady=true` read the Mask/Enable register. Per INA3221 register semantics, that read clears CVRF and latched alert flags. The driver caches a ready triggered conversion before CVRF is cleared so subsequent measurement reads are still allowed.
+
+`startSingleShot()` schedules the Configuration-register trigger write; `pollJob(nowMs, maxInstructions)` advances the delay gate, optional destructive readiness read, and enabled-channel raw register reads. `pollConversionReady=false` skips the Mask/Enable read after the conversion delay. `readBlocking()` and `conversionReady()` are convenience APIs. Deadline-owned I2C task loops should use explicit staged operations so each poll has a known transfer budget and so Mask/Enable read-clear points are visible in the owner.
+
+`probe()` uses raw diagnostic I2C and does not update driver health. Transport callback failures such as NACK, bus errors, and timeouts are returned unchanged instead of being collapsed to `DEVICE_NOT_FOUND`.
 
 Configuration setters update the cached `Config` only after their I2C write succeeds. On a failed write, the previous cached mode, conversion settings, channel enables, and conversion state are restored.
 Alert-limit setters mask reserved bits before writing device registers. The
@@ -226,12 +237,12 @@ device defaults.
 ## Behavioral Contracts
 
 1. **Threading**: Single-threaded. Call `tick()` and all API from the same context.
-2. **Timing**: `tick()` does bounded work only (checks CVRF flag). All waits use deadline math, never `delay()`.
+2. **Timing**: `tick()` does bounded work only, but its CVRF check reads Mask/Enable after the local delay gate and therefore has the documented read-clear side effect. All waits use deadline math, never `delay()`.
 3. **Resource ownership**: I2C bus is NOT owned by the library. Transport callbacks are injected via `Config`.
 4. **Framework boundary**: Core code does not call `Wire`, `Serial`, `delay()`, `yield()`, `millis()`, or ESP-IDF peripheral APIs directly. Arduino examples and native ESP-IDF examples provide those hooks externally.
 5. **Memory**: All allocation happens in `begin()`. Zero heap allocation in steady state.
 6. **Error handling**: Every fallible API returns `Status`. Check with `status.ok()`.
-7. **Health**: `OFFLINE` is latched. Normal public I2C operations return `BUSY` with `Driver is offline; call recover()` without touching the bus until `recover()` succeeds.
+7. **Health**: `OFFLINE` is latched. Normal public I2C operations return `BUSY` with `Driver is offline; call recover()` without touching the bus until `recover()` succeeds. This is driver diagnostic state, not a replacement for the application's I2C-owner health and retry policy.
 
 ## Examples
 

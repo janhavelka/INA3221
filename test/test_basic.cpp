@@ -19,15 +19,26 @@ using namespace INA3221;
 
 namespace {
 
+static constexpr uint16_t kMaskEnableReadClearFlags =
+    cmd::MASK_CF1 | cmd::MASK_CF2 | cmd::MASK_CF3 |
+    cmd::MASK_SF |
+    cmd::MASK_WF1 | cmd::MASK_WF2 | cmd::MASK_WF3 |
+    cmd::MASK_CVRF;
+
 struct FakeBus {
   Status writeStatus = Status::Ok();
   Status readStatus = Status::Ok();
   uint32_t nowMs = 1234;
   uint32_t writeCalls = 0;
   uint32_t readCalls = 0;
+  uint32_t maskReadCalls = 0;
   uint32_t yieldCalls = 0;
+  uint8_t readRegs[128] = {};
+  uint8_t readRegCount = 0;
+  uint8_t lastReadReg = 0;
   uint8_t lastWriteReg = 0;
   uint16_t lastWriteValue = 0;
+  bool clearMaskEnableReadClearFlags = false;
 
   // Register values returned on read (keyed by register address)
   // Default: manufacturer ID, die ID, config register
@@ -46,6 +57,11 @@ struct FakeBus {
     // Mask/Enable with CVRF set = 0x0001
     registerData[0x0F][0] = 0x00;
     registerData[0x0F][1] = 0x01;
+  }
+
+  void clearReadLog() {
+    readRegCount = 0;
+    lastReadReg = 0;
   }
 };
 
@@ -76,6 +92,13 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
   }
   // Return register-specific data based on register address
   uint8_t reg = txData[0];
+  bus->lastReadReg = reg;
+  if (bus->readRegCount < sizeof(bus->readRegs)) {
+    bus->readRegs[bus->readRegCount++] = reg;
+  }
+  if (reg == cmd::REG_MASK_ENABLE) {
+    bus->maskReadCalls++;
+  }
   if (rxLen >= 1) {
     rxData[0] = bus->registerData[reg][0];
   }
@@ -84,6 +107,13 @@ Status fakeWriteRead(uint8_t, const uint8_t* txData, size_t txLen, uint8_t* rxDa
   }
   for (size_t i = 2; i < rxLen; ++i) {
     rxData[i] = 0;
+  }
+  if (reg == cmd::REG_MASK_ENABLE && bus->clearMaskEnableReadClearFlags) {
+    uint16_t value = (static_cast<uint16_t>(bus->registerData[reg][0]) << 8) |
+                     bus->registerData[reg][1];
+    value &= static_cast<uint16_t>(~kMaskEnableReadClearFlags);
+    bus->registerData[reg][0] = static_cast<uint8_t>((value >> 8) & 0xFF);
+    bus->registerData[reg][1] = static_cast<uint8_t>(value & 0xFF);
   }
   return Status::Ok();
 }
@@ -107,6 +137,37 @@ Config makeConfig(FakeBus& bus) {
   cfg.offlineThreshold = 3;
   cfg.i2cTimeoutMs = 10;
   return cfg;
+}
+
+uint16_t readFakeRegister(const FakeBus& bus, uint8_t reg) {
+  return (static_cast<uint16_t>(bus.registerData[reg][0]) << 8) |
+         bus.registerData[reg][1];
+}
+
+void writeFakeRegister(FakeBus& bus, uint8_t reg, uint16_t value) {
+  bus.registerData[reg][0] = static_cast<uint8_t>((value >> 8) & 0xFF);
+  bus.registerData[reg][1] = static_cast<uint8_t>(value & 0xFF);
+}
+
+void assertProbePreservesReadError(Err err, int32_t detail) {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint32_t beforeSuccess = dev.totalSuccess();
+  const uint32_t beforeFailures = dev.totalFailures();
+  const uint8_t beforeConsecutive = dev.consecutiveFailures();
+  const DriverState beforeState = dev.state();
+
+  bus.readStatus = Status::Error(err, "forced probe failure", detail);
+  Status st = dev.probe();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(err), static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(detail, st.detail);
+  TEST_ASSERT_EQUAL_UINT32(beforeSuccess, dev.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(beforeFailures, dev.totalFailures());
+  TEST_ASSERT_EQUAL_UINT8(beforeConsecutive, dev.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(beforeState),
+                          static_cast<uint8_t>(dev.state()));
 }
 
 }  // namespace
@@ -358,13 +419,38 @@ void test_probe_failure_does_not_update_health() {
 
   bus.readStatus = Status::Error(Err::TIMEOUT, "forced probe timeout", -7);
   Status st = dev.probe();
-  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_UINT32(beforeSuccess, dev.totalSuccess());
   TEST_ASSERT_EQUAL_UINT32(beforeFailures, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(beforeConsecutive, dev.consecutiveFailures());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(beforeState),
                           static_cast<uint8_t>(dev.state()));
+}
+
+void test_probe_preserves_transport_error_matrix() {
+  assertProbePreservesReadError(Err::TIMEOUT, -1);
+  assertProbePreservesReadError(Err::I2C_TIMEOUT, -2);
+  assertProbePreservesReadError(Err::I2C_BUS, -3);
+  assertProbePreservesReadError(Err::I2C_NACK_ADDR, -4);
+  assertProbePreservesReadError(Err::I2C_NACK_DATA, -5);
+  assertProbePreservesReadError(Err::I2C_ERROR, -6);
+  assertProbePreservesReadError(Err::DEVICE_NOT_FOUND, -7);
+}
+
+void test_begin_probe_preserves_transport_error() {
+  FakeBus bus;
+  bus.readStatus = Status::Error(Err::I2C_NACK_DATA, "forced begin probe nack", -12);
+  INA3221::INA3221 dev;
+
+  Status st = dev.begin(makeConfig(bus));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-12, st.detail);
+  TEST_ASSERT_FALSE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
 }
 
 void test_probe_detects_wrong_manufacturer_id() {
@@ -560,6 +646,81 @@ void test_read_bus_voltage() {
   TEST_ASSERT_FLOAT_WITHIN(0.01f, 6.0f, volts);
 }
 
+void test_disabled_channel_reads_reject_without_i2c() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.ch2Enable = false;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  const uint32_t readsAfterBegin = bus.readCalls;
+
+  writeFakeRegister(bus, cmd::REG_CH2_SHUNT, 0x0190);
+  writeFakeRegister(bus, cmd::REG_CH2_BUS, 0x1770);
+
+  int16_t raw = 0;
+  Status st = dev.readShuntRaw(Channel::CH2, raw);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_STRING("Channel disabled", st.msg);
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  float volts = 0.0f;
+  st = dev.readBusVoltage(Channel::CH2, volts);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  ChannelMeasurement measurement;
+  st = dev.readChannel(Channel::CH2, measurement);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+}
+
+void test_disabled_channel_triggered_read_does_not_poll_mask_enable() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  cfg.ch2Enable = false;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  bus.clearMaskEnableReadClearFlags = true;
+  writeFakeRegister(bus, cmd::REG_MASK_ENABLE, cmd::MASK_CF1 | cmd::MASK_CVRF);
+  bus.nowMs += 20;
+  const uint32_t readsAfterBegin = bus.readCalls;
+
+  ChannelMeasurement measurement;
+  Status st = dev.readChannel(Channel::CH2, measurement);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(0u, bus.maskReadCalls);
+  TEST_ASSERT_EQUAL_HEX16(cmd::MASK_CF1 | cmd::MASK_CVRF,
+                          readFakeRegister(bus, cmd::REG_MASK_ENABLE));
+}
+
+void test_mode_inactive_measurement_reads_reject_without_i2c() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_CONT;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  const uint32_t readsAfterBegin = bus.readCalls;
+
+  float volts = 0.0f;
+  Status st = dev.readBusVoltage(Channel::CH1, volts);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_STRING("Mode does not measure bus", st.msg);
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  ChannelMeasurement measurement;
+  st = dev.readChannel(Channel::CH1, measurement);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+}
+
 void test_read_current() {
   FakeBus bus;
   INA3221::INA3221 dev;
@@ -628,6 +789,151 @@ void test_triggered_read_is_gated_until_conversion_ready() {
   TEST_ASSERT_TRUE(dev._conversionReady);
   TEST_ASSERT_FLOAT_WITHIN(0.01f, 2.0f, m.shuntVoltage_mV);
   TEST_ASSERT_FLOAT_WITHIN(0.01f, 6.0f, m.busVoltage_V);
+}
+
+void test_poll_single_shot_respects_budget_and_skips_disabled_channel() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.ch2Enable = false;
+  cfg.mode = Mode::SHUNT_BUS_CONT;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  writeFakeRegister(bus, cmd::REG_CH1_SHUNT, 0x0110);
+  writeFakeRegister(bus, cmd::REG_CH1_BUS, 0x2220);
+  writeFakeRegister(bus, cmd::REG_CH2_SHUNT, 0x3330);
+  writeFakeRegister(bus, cmd::REG_CH2_BUS, 0x4440);
+  writeFakeRegister(bus, cmd::REG_CH3_SHUNT, 0x0550);
+  writeFakeRegister(bus, cmd::REG_CH3_BUS, 0x6660);
+
+  const uint32_t writesAfterBegin = bus.writeCalls;
+  const uint32_t readsAfterBegin = bus.readCalls;
+  TEST_ASSERT_TRUE(dev.startSingleShot(Mode::SHUNT_BUS_TRIG, false).inProgress());
+
+  Status st = dev.pollJob(bus.nowMs, 1);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG, bus.lastWriteReg);
+
+  PollJobSnapshot snapshot;
+  TEST_ASSERT_TRUE(dev.getPollJobSnapshot(snapshot).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(PollJobStage::WAIT_CONVERSION),
+                          static_cast<uint8_t>(snapshot.stage));
+  TEST_ASSERT_EQUAL_UINT8(1u, snapshot.lastInstructions);
+  TEST_ASSERT_EQUAL_UINT16(1u, snapshot.totalInstructions);
+
+  st = dev.pollJob(bus.nowMs, 6);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_TRUE(dev.getPollJobSnapshot(snapshot).ok());
+  TEST_ASSERT_EQUAL_UINT8(0u, snapshot.lastInstructions);
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+
+  bus.nowMs += 10;
+  bus.clearReadLog();
+  st = dev.pollJob(bus.nowMs, 1);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_EQUAL_UINT8(1u, bus.readRegCount);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CH1_SHUNT, bus.readRegs[0]);
+  TEST_ASSERT_TRUE(dev.getPollJobSnapshot(snapshot).ok());
+  TEST_ASSERT_TRUE(snapshot.channels[0].shuntValid);
+  TEST_ASSERT_FALSE(snapshot.channels[0].busValid);
+  TEST_ASSERT_FALSE(snapshot.channels[1].channelEnabled);
+  TEST_ASSERT_EQUAL_UINT8(1u, snapshot.lastInstructions);
+  TEST_ASSERT_EQUAL_UINT16(2u, snapshot.totalInstructions);
+
+  st = dev.pollJob(bus.nowMs, 2);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_EQUAL_UINT8(3u, bus.readRegCount);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CH1_BUS, bus.readRegs[1]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CH3_SHUNT, bus.readRegs[2]);
+  TEST_ASSERT_TRUE(dev.getPollJobSnapshot(snapshot).ok());
+  TEST_ASSERT_TRUE(snapshot.channels[0].busValid);
+  TEST_ASSERT_TRUE(snapshot.channels[2].shuntValid);
+  TEST_ASSERT_FALSE(snapshot.channels[2].busValid);
+  TEST_ASSERT_EQUAL_UINT8(2u, snapshot.lastInstructions);
+  TEST_ASSERT_EQUAL_UINT16(4u, snapshot.totalInstructions);
+
+  st = dev.pollJob(bus.nowMs, 8);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(4u, bus.readRegCount);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CH3_BUS, bus.readRegs[3]);
+  TEST_ASSERT_TRUE(dev.getPollJobSnapshot(snapshot).ok());
+  TEST_ASSERT_TRUE(snapshot.complete);
+  TEST_ASSERT_TRUE(snapshot.channels[2].busValid);
+  TEST_ASSERT_EQUAL_INT16(0x0110, snapshot.channels[0].shuntRaw);
+  TEST_ASSERT_EQUAL_INT16(0x2220, snapshot.channels[0].busRaw);
+  TEST_ASSERT_EQUAL_INT16(0x0550, snapshot.channels[2].shuntRaw);
+  TEST_ASSERT_EQUAL_INT16(0x6660, snapshot.channels[2].busRaw);
+  TEST_ASSERT_EQUAL_UINT16(5u, snapshot.totalInstructions);
+
+  for (uint8_t i = 0; i < bus.readRegCount; ++i) {
+    TEST_ASSERT_NOT_EQUAL(cmd::REG_CH2_SHUNT, bus.readRegs[i]);
+    TEST_ASSERT_NOT_EQUAL(cmd::REG_CH2_BUS, bus.readRegs[i]);
+    TEST_ASSERT_NOT_EQUAL(cmd::REG_MASK_ENABLE, bus.readRegs[i]);
+  }
+}
+
+void test_poll_single_shot_ready_step_reads_and_clears_mask_enable() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_CONT;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  TEST_ASSERT_TRUE(dev.startSingleShot(Mode::SHUNT_BUS_TRIG, true).inProgress());
+  TEST_ASSERT_TRUE(dev.pollJob(bus.nowMs, 1).inProgress());
+
+  bus.clearMaskEnableReadClearFlags = true;
+  writeFakeRegister(bus, cmd::REG_MASK_ENABLE,
+                    cmd::MASK_CF1 | cmd::MASK_WF2 | cmd::MASK_CVRF);
+  bus.nowMs += 10;
+  bus.clearReadLog();
+
+  Status st = dev.pollJob(bus.nowMs, 1);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_EQUAL_UINT8(1u, bus.readRegCount);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_MASK_ENABLE, bus.readRegs[0]);
+  TEST_ASSERT_EQUAL_UINT32(1u, bus.maskReadCalls);
+  TEST_ASSERT_EQUAL_HEX16(0u, readFakeRegister(bus, cmd::REG_MASK_ENABLE));
+
+  PollJobSnapshot snapshot;
+  TEST_ASSERT_TRUE(dev.getPollJobSnapshot(snapshot).ok());
+  TEST_ASSERT_TRUE(snapshot.conversionReady);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(PollJobStage::READ_CHANNELS),
+                          static_cast<uint8_t>(snapshot.stage));
+  TEST_ASSERT_EQUAL_UINT8(1u, snapshot.lastInstructions);
+  TEST_ASSERT_EQUAL_UINT16(2u, snapshot.totalInstructions);
+}
+
+void test_poll_continuous_read_uses_enabled_channel_registers_only() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.ch2Enable = false;
+  cfg.mode = Mode::SHUNT_BUS_CONT;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  writeFakeRegister(bus, cmd::REG_CH1_SHUNT, 0x0100);
+  writeFakeRegister(bus, cmd::REG_CH1_BUS, 0x0200);
+  writeFakeRegister(bus, cmd::REG_CH3_SHUNT, 0x0300);
+  writeFakeRegister(bus, cmd::REG_CH3_BUS, 0x0400);
+  bus.clearReadLog();
+
+  TEST_ASSERT_TRUE(dev.startContinuousRead(false).inProgress());
+  Status st = dev.pollContinuousRead(bus.nowMs, 8);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(4u, bus.readRegCount);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CH1_SHUNT, bus.readRegs[0]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CH1_BUS, bus.readRegs[1]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CH3_SHUNT, bus.readRegs[2]);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CH3_BUS, bus.readRegs[3]);
+
+  PollJobSnapshot snapshot;
+  TEST_ASSERT_TRUE(dev.getPollJobSnapshot(snapshot).ok());
+  TEST_ASSERT_TRUE(snapshot.complete);
+  TEST_ASSERT_EQUAL_UINT16(4u, snapshot.totalInstructions);
+  TEST_ASSERT_FALSE(snapshot.channels[1].channelEnabled);
 }
 
 void test_read_not_initialized() {
@@ -728,6 +1034,14 @@ void test_set_shunt_resistance() {
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.05f, dev.getShuntResistance(Channel::CH1));
 }
 
+void test_set_shunt_resistance_requires_begin() {
+  INA3221::INA3221 dev;
+  Status st = dev.setShuntResistance(Channel::CH1, 0.05f);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::NOT_INITIALIZED),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.1f, dev.getShuntResistance(Channel::CH1));
+}
+
 void test_set_shunt_resistance_rejects_zero() {
   FakeBus bus;
   INA3221::INA3221 dev;
@@ -765,6 +1079,36 @@ void test_mask_enable_cache_survives_config_writes() {
                           bus.lastWriteValue);
   TEST_ASSERT_EQUAL_HEX16(cmd::MASK_SCC1 | cmd::MASK_SCC3 | cmd::MASK_WEN,
                           dev._maskEnableWritableCache);
+}
+
+void test_poll_apply_mask_enable_is_one_budgeted_write() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  const uint32_t writesAfterBegin = bus.writeCalls;
+
+  Status st = dev.startApplyMaskEnable(cmd::MASK_SCC1 | cmd::MASK_WEN |
+                                       cmd::MASK_CF1);
+  TEST_ASSERT_TRUE(st.inProgress());
+
+  st = dev.pollApplyMaskEnable(bus.nowMs, 0);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin, bus.writeCalls);
+
+  st = dev.pollApplyMaskEnable(bus.nowMs, 1);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT32(writesAfterBegin + 1u, bus.writeCalls);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_MASK_ENABLE, bus.lastWriteReg);
+  TEST_ASSERT_EQUAL_HEX16(cmd::MASK_SCC1 | cmd::MASK_WEN, bus.lastWriteValue);
+  TEST_ASSERT_EQUAL_HEX16(cmd::MASK_SCC1 | cmd::MASK_WEN,
+                          dev._maskEnableWritableCache);
+
+  PollJobSnapshot snapshot;
+  TEST_ASSERT_TRUE(dev.getPollJobSnapshot(snapshot).ok());
+  TEST_ASSERT_TRUE(snapshot.complete);
+  TEST_ASSERT_EQUAL_UINT8(1u, snapshot.lastInstructions);
+  TEST_ASSERT_EQUAL_UINT16(1u, snapshot.totalInstructions);
 }
 
 void test_write_config_with_reset_bit_syncs_cached_defaults() {
@@ -831,6 +1175,16 @@ void test_bus_raw_to_volts() {
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 6.0f, INA3221::INA3221::busRawToVolts(0x1770));
 }
 
+void test_bus_raw_to_volts_boundaries() {
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 32.76f,
+                           INA3221::INA3221::busRawToVolts(0x7FF8));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, -0.008f,
+                           INA3221::INA3221::busRawToVolts(-8));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, -32.768f,
+                           INA3221::INA3221::busRawToVolts(
+                               std::numeric_limits<int16_t>::min()));
+}
+
 void test_mv_to_shunt_raw() {
   // 2.0 mV -> 2.0 / 0.04 = 50 -> 50 << 3 = 400 = 0x0190
   TEST_ASSERT_EQUAL_INT16(0x0190, INA3221::INA3221::mvToShuntRaw(2.0f));
@@ -839,6 +1193,16 @@ void test_mv_to_shunt_raw() {
 void test_volts_to_bus_raw() {
   // 6.0 V -> 6.0 / 0.008 = 750 -> 750 << 3 = 6000 = 0x1770
   TEST_ASSERT_EQUAL_INT16(0x1770, INA3221::INA3221::voltsToBusRaw(6.0f));
+}
+
+void test_volts_to_bus_raw_boundaries() {
+  TEST_ASSERT_EQUAL_INT16(0x7FF8, INA3221::INA3221::voltsToBusRaw(32.76f));
+  TEST_ASSERT_EQUAL_INT16(-8, INA3221::INA3221::voltsToBusRaw(-0.008f));
+  TEST_ASSERT_EQUAL_INT16(std::numeric_limits<int16_t>::min(),
+                          INA3221::INA3221::voltsToBusRaw(-32.768f));
+  TEST_ASSERT_EQUAL_INT16(0x7FF8, INA3221::INA3221::voltsToBusRaw(40.0f));
+  TEST_ASSERT_EQUAL_INT16(std::numeric_limits<int16_t>::min(),
+                          INA3221::INA3221::voltsToBusRaw(-40.0f));
 }
 
 void test_conversion_time_us() {
@@ -883,6 +1247,49 @@ void test_start_conversion_rejects_power_down_mode() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_CONFIG),
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_FALSE(dev._conversionStarted);
+}
+
+void test_tick_before_conversion_delay_preserves_alert_flags() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  TEST_ASSERT_TRUE(dev._conversionStarted);
+  TEST_ASSERT_FALSE(dev._conversionReady);
+
+  bus.clearMaskEnableReadClearFlags = true;
+  writeFakeRegister(bus, cmd::REG_MASK_ENABLE,
+                    cmd::MASK_CF1 | cmd::MASK_WF2 | cmd::MASK_CVRF);
+  const uint32_t readsAfterBegin = bus.readCalls;
+
+  dev.tick(bus.nowMs);
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(0u, bus.maskReadCalls);
+  TEST_ASSERT_FALSE(dev._conversionReady);
+  TEST_ASSERT_EQUAL_HEX16(cmd::MASK_CF1 | cmd::MASK_WF2 | cmd::MASK_CVRF,
+                          readFakeRegister(bus, cmd::REG_MASK_ENABLE));
+}
+
+void test_tick_after_conversion_delay_reads_and_clears_alert_flags() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.clearMaskEnableReadClearFlags = true;
+  writeFakeRegister(bus, cmd::REG_MASK_ENABLE,
+                    cmd::MASK_CF1 | cmd::MASK_WF2 | cmd::MASK_CVRF);
+  const uint32_t readsAfterBegin = bus.readCalls;
+
+  bus.nowMs += 20;
+  dev.tick(bus.nowMs);
+  TEST_ASSERT_EQUAL_UINT32(readsAfterBegin + 1u, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(1u, bus.maskReadCalls);
+  TEST_ASSERT_FALSE(dev._conversionStarted);
+  TEST_ASSERT_TRUE(dev._conversionReady);
+  TEST_ASSERT_EQUAL_HEX16(0u, readFakeRegister(bus, cmd::REG_MASK_ENABLE));
 }
 
 void test_read_conversion_ready_propagates_i2c_error() {
@@ -1054,6 +1461,8 @@ int main() {
 
   // Probe / Recover
   RUN_TEST(test_probe_failure_does_not_update_health);
+  RUN_TEST(test_probe_preserves_transport_error_matrix);
+  RUN_TEST(test_begin_probe_preserves_transport_error);
   RUN_TEST(test_probe_detects_wrong_manufacturer_id);
   RUN_TEST(test_probe_detects_wrong_die_id);
   RUN_TEST(test_recover_failure_updates_health);
@@ -1066,9 +1475,15 @@ int main() {
   // Measurements
   RUN_TEST(test_read_shunt_raw);
   RUN_TEST(test_read_bus_voltage);
+  RUN_TEST(test_disabled_channel_reads_reject_without_i2c);
+  RUN_TEST(test_disabled_channel_triggered_read_does_not_poll_mask_enable);
+  RUN_TEST(test_mode_inactive_measurement_reads_reject_without_i2c);
   RUN_TEST(test_read_current);
   RUN_TEST(test_read_channel_full);
   RUN_TEST(test_triggered_read_is_gated_until_conversion_ready);
+  RUN_TEST(test_poll_single_shot_respects_budget_and_skips_disabled_channel);
+  RUN_TEST(test_poll_single_shot_ready_step_reads_and_clears_mask_enable);
+  RUN_TEST(test_poll_continuous_read_uses_enabled_channel_registers_only);
   RUN_TEST(test_read_not_initialized);
 
   // Configuration
@@ -1079,21 +1494,27 @@ int main() {
   RUN_TEST(test_set_channel_enable);
   RUN_TEST(test_set_channel_enable_rejects_disabling_last_active_channel);
   RUN_TEST(test_set_shunt_resistance);
+  RUN_TEST(test_set_shunt_resistance_requires_begin);
   RUN_TEST(test_set_shunt_resistance_rejects_zero);
   RUN_TEST(test_set_shunt_resistance_rejects_nan);
   RUN_TEST(test_mask_enable_cache_survives_config_writes);
+  RUN_TEST(test_poll_apply_mask_enable_is_one_budgeted_write);
   RUN_TEST(test_write_config_with_reset_bit_syncs_cached_defaults);
   RUN_TEST(test_alert_limit_writes_clear_reserved_bits);
 
   // Utility
   RUN_TEST(test_shunt_raw_to_mv);
   RUN_TEST(test_bus_raw_to_volts);
+  RUN_TEST(test_bus_raw_to_volts_boundaries);
   RUN_TEST(test_mv_to_shunt_raw);
   RUN_TEST(test_volts_to_bus_raw);
+  RUN_TEST(test_volts_to_bus_raw_boundaries);
   RUN_TEST(test_conversion_time_us);
   RUN_TEST(test_cycle_time_us);
   RUN_TEST(test_cycle_time_includes_averaging);
   RUN_TEST(test_start_conversion_rejects_power_down_mode);
+  RUN_TEST(test_tick_before_conversion_delay_preserves_alert_flags);
+  RUN_TEST(test_tick_after_conversion_delay_reads_and_clears_alert_flags);
   RUN_TEST(test_read_conversion_ready_propagates_i2c_error);
   RUN_TEST(test_read_blocking_times_out_with_stalled_clock);
 

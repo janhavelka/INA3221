@@ -43,6 +43,50 @@ struct AlertFlags {
   bool conversionReady = false; ///< CVRF: Conversion ready flag
 };
 
+/// @brief Chunked driver job type.
+enum class PollJobKind : uint8_t {
+  NONE,             ///< No active chunked job
+  SINGLE_SHOT,      ///< Triggered conversion and enabled-channel reads
+  CONTINUOUS_READ,  ///< Enabled-channel reads from an active continuous mode
+  APPLY_MASK_ENABLE ///< Mask/Enable writable-bit apply
+};
+
+/// @brief Current phase of a chunked driver job.
+enum class PollJobStage : uint8_t {
+  IDLE,              ///< No work scheduled
+  WRITE_CONFIG,      ///< One Configuration-register write is pending
+  WAIT_CONVERSION,   ///< Waiting for the configured conversion cycle time
+  READ_READY,        ///< One Mask/Enable read is pending; clears CVRF/alerts
+  READ_CHANNELS,     ///< Per-channel raw register reads are pending
+  WRITE_MASK_ENABLE, ///< One Mask/Enable write is pending
+  COMPLETE           ///< Job completed and cached results are available
+};
+
+/// @brief Raw per-channel sample captured by chunked polling.
+struct ChannelRawMeasurement {
+  int16_t shuntRaw = 0;       ///< Raw shunt register value in datasheet format
+  int16_t busRaw = 0;         ///< Raw bus register value in datasheet format
+  bool shuntValid = false;    ///< True if shuntRaw was read for this job
+  bool busValid = false;      ///< True if busRaw was read for this job
+  bool channelEnabled = false;///< True if the channel was enabled for this job
+};
+
+/// @brief Cache-only snapshot of the active chunked job.
+struct PollJobSnapshot {
+  PollJobKind kind = PollJobKind::NONE;
+  PollJobStage stage = PollJobStage::IDLE;
+  bool active = false;
+  bool complete = false;
+  bool pollConversionReady = false;
+  bool conversionReady = false;
+  Mode sampleMode = Mode::SHUNT_BUS_TRIG;
+  uint32_t conversionStartMs = 0;
+  uint8_t nextChannel = 0;
+  uint8_t lastInstructions = 0;
+  uint16_t totalInstructions = 0;
+  ChannelRawMeasurement channels[3];
+};
+
 /// @brief Snapshot of cached settings and runtime state without I2C access.
 struct SettingsSnapshot {
   bool initialized = false;
@@ -72,7 +116,10 @@ public:
   // === Lifecycle ===
   /// Initialize the driver with configuration and verify manufacturer/die IDs.
   Status begin(const Config& config);
-  /// Process pending operations (currently bounded polling only).
+  /// Process pending operations (currently bounded single-shot polling only).
+  /// @note In triggered modes, once the local conversion delay has elapsed,
+  ///       this may read Mask/Enable to inspect CVRF. Per INA3221 register
+  ///       semantics, that read clears CVRF and latched alert flags.
   void tick(uint32_t nowMs);
   /// Best-effort power the device down and clear cached conversion state.
   void end();
@@ -85,6 +132,8 @@ public:
 
   // === Diagnostics (no health tracking) ===
   /// Check device presence and identity without updating health counters.
+  /// @note Raw transport failures are returned unchanged; DEVICE_NOT_FOUND is
+  ///       returned only when the transport callback reports it.
   Status probe();
 
   /// Re-validate IDs, clear conversion state, and re-apply cached configuration.
@@ -109,6 +158,9 @@ public:
   uint32_t totalSuccess() const { return _totalSuccess; }
 
   // === Measurement API ===
+  /// Measurement reads require the channel to be enabled and the current mode
+  /// to include the requested quantity; otherwise INVALID_CONFIG is returned
+  /// before touching I2C.
   Status readShuntRaw(Channel ch, int16_t& raw);
   Status readBusRaw(Channel ch, int16_t& raw);
   Status readShuntVoltage(Channel ch, float& mV);
@@ -127,7 +179,39 @@ public:
   ///       per the INA3221 register semantics.
   Status readConversionReady(bool& ready);
   /// Convenience wrapper around readConversionReady(); returns false on errors.
+  /// @note Convenience-only: this hides Status detail and can still perform a
+  ///       tracked Mask/Enable read with the same read-clear side effects.
   bool conversionReady();
+  /// Schedule a chunked single-shot job using the current triggered mode, or
+  /// SHUNT_BUS_TRIG if the current mode is not triggered.
+  /// @param pollConversionReady If true, pollSingleShot() reads Mask/Enable
+  ///        after the delay gate; that read clears CVRF and latched alerts.
+  Status startSingleShot(bool pollConversionReady = true);
+  /// Schedule a chunked single-shot job with an explicit triggered mode.
+  /// @param mode SHUNT_TRIG, BUS_TRIG, or SHUNT_BUS_TRIG.
+  /// @param pollConversionReady If true, pollSingleShot() reads Mask/Enable
+  ///        after the delay gate; that read clears CVRF and latched alerts.
+  Status startSingleShot(Mode mode, bool pollConversionReady = true);
+  /// Advance a chunked single-shot job by at most maxInstructions register
+  /// transfers. One 16-bit register read or write is one instruction.
+  Status pollSingleShot(uint32_t nowMs, uint8_t maxInstructions);
+  /// Schedule a chunked read from the current continuous mode.
+  /// @param pollConversionReady If true, pollContinuousRead() first reads
+  ///        Mask/Enable; that read clears CVRF and latched alerts.
+  Status startContinuousRead(bool pollConversionReady = false);
+  /// Advance a chunked continuous-read job by at most maxInstructions register
+  /// transfers. One 16-bit register read is one instruction.
+  Status pollContinuousRead(uint32_t nowMs, uint8_t maxInstructions);
+  /// Advance whichever chunked job is active.
+  Status pollJob(uint32_t nowMs, uint8_t maxInstructions);
+  /// Read one pending raw register for a channel in the active sample job.
+  Status readChannelRawStep(Channel ch);
+  /// Get cached raw results from the last or active chunked sample job.
+  Status getPollJobSnapshot(PollJobSnapshot& out) const;
+  /// Convenience-only helper that may start a conversion, poll repeatedly,
+  /// yield cooperatively, clear Mask/Enable flags through readiness polling,
+  /// and read multiple channel registers in one call. Keep explicit staged
+  /// operations in deadline-owned steady polling paths.
   Status readBlocking(ChannelMeasurement* ch1 = nullptr,
                       ChannelMeasurement* ch2 = nullptr,
                       ChannelMeasurement* ch3 = nullptr,
@@ -166,6 +250,7 @@ public:
   /// Set host-side shunt resistance used for current/power calculations.
   /// @param ch Channel whose shunt resistance is being configured.
   /// @param ohms Must be finite and > 0.
+  /// @note Runtime setter; pre-begin shunt values belong in Config.
   Status setShuntResistance(Channel ch, float ohms);
   float getShuntResistance(Channel ch) const;
 
@@ -236,6 +321,8 @@ public:
   /// @return Status from register read.
   /// @note Reading Mask/Enable clears latched alert and conversion-ready flags.
   Status readAlertFlags(AlertFlags& flags);
+  /// @brief Explicitly read Mask/Enable and clear latched flags/CVRF.
+  Status readAndClearAlertFlags(AlertFlags& flags);
 
   /// @brief Configure channels included in shunt-voltage summation.
   /// @param ch1 Include channel 1.
@@ -249,6 +336,11 @@ public:
   /// @param criticalLatch true latches critical alerts.
   /// @return Status from register write.
   Status setAlertLatchEnable(bool warningLatch, bool criticalLatch);
+  /// @brief Schedule one Mask/Enable writable-bit register write.
+  /// @param writableBits New SCC/WEN/CEN bits; read-only flags are masked out.
+  Status startApplyMaskEnable(uint16_t writableBits);
+  /// @brief Advance the scheduled Mask/Enable write by instruction budget.
+  Status pollApplyMaskEnable(uint32_t nowMs, uint8_t maxInstructions);
 
   // === Device Identification ===
   Status readManufacturerId(uint16_t& id);
@@ -292,13 +384,24 @@ private:
   Status _readConversionReadyAt(uint32_t nowMs, bool& ready);
   Status _ensureMeasurementReadyForRead();
   void _handleConfigWriteSideEffects();
+  void _clearPollJob();
+  void _resetPollSampleCache();
+  Status _startSampleJob(PollJobKind kind, Mode mode, bool pollConversionReady);
+  Status _pollSampleJob(uint32_t nowMs, uint8_t maxInstructions);
+  Status _pollApplyMaskEnableJob(uint8_t maxInstructions);
+  Status _readChannelRawStep(Channel ch);
   uint16_t _buildConfigRegister() const;
+  uint16_t _buildConfigRegisterForMode(Mode mode) const;
   uint32_t _nowMs() const;
   void _cooperativeYield() const;
 
   uint8_t _enabledChannelCount() const;
+  bool _isChannelEnabled(Channel ch) const;
   bool _isTriggeredMode() const;
   bool _isContinuousMode() const;
+  bool _sampleModeReadsShunt() const;
+  bool _sampleModeReadsBus() const;
+  bool _sampleChannelComplete(Channel ch) const;
 
   // === State ===
   Config _config;
@@ -319,6 +422,19 @@ private:
   bool _conversionReady = false;
   uint32_t _conversionStartMs = 0;
   uint16_t _maskEnableWritableCache = 0;
+
+  // === Chunked Poll Job State ===
+  PollJobKind _pollJobKind = PollJobKind::NONE;
+  PollJobStage _pollJobStage = PollJobStage::IDLE;
+  Mode _pollSampleMode = Mode::SHUNT_BUS_TRIG;
+  bool _pollConversionReady = false;
+  bool _pollObservedReady = false;
+  uint32_t _pollConversionStartMs = 0;
+  uint8_t _pollNextChannel = 0;
+  uint8_t _pollInstructionsLast = 0;
+  uint16_t _pollInstructionsTotal = 0;
+  uint16_t _pendingMaskEnableWritable = 0;
+  ChannelRawMeasurement _pollChannels[3];
 };
 
 } // namespace INA3221

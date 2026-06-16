@@ -49,6 +49,16 @@ bool isContinuousMode(Mode mode) {
          mode == Mode::SHUNT_BUS_CONT;
 }
 
+bool modeReadsShunt(Mode mode) {
+  return mode == Mode::SHUNT_TRIG || mode == Mode::SHUNT_BUS_TRIG ||
+         mode == Mode::SHUNT_CONT || mode == Mode::SHUNT_BUS_CONT;
+}
+
+bool modeReadsBus(Mode mode) {
+  return mode == Mode::BUS_TRIG || mode == Mode::SHUNT_BUS_TRIG ||
+         mode == Mode::BUS_CONT || mode == Mode::SHUNT_BUS_CONT;
+}
+
 bool isValidRegister(uint8_t reg) {
   return reg <= cmd::REG_PV_LOWER_LIMIT ||
          reg == cmd::REG_MANUFACTURER_ID ||
@@ -73,6 +83,36 @@ bool modeAllowsNoChannels(Mode mode) {
 
 bool configHasRequiredChannels(const Config& config) {
   return modeAllowsNoChannels(config.mode) || enabledChannelCount(config) > 0;
+}
+
+bool isChannelEnabled(const Config& config, Channel ch) {
+  switch (ch) {
+    case Channel::CH1: return config.ch1Enable;
+    case Channel::CH2: return config.ch2Enable;
+    case Channel::CH3: return config.ch3Enable;
+    default: return false;
+  }
+}
+
+Status validateMeasurementRead(const Config& config, bool initialized,
+                               Channel ch, bool requireShunt,
+                               bool requireBus) {
+  if (!initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  if (!isValidChannel(ch)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid channel");
+  }
+  if (!isChannelEnabled(config, ch)) {
+    return Status::Error(Err::INVALID_CONFIG, "Channel disabled");
+  }
+  if (requireShunt && !modeReadsShunt(config.mode)) {
+    return Status::Error(Err::INVALID_CONFIG, "Mode does not measure shunt");
+  }
+  if (requireBus && !modeReadsBus(config.mode)) {
+    return Status::Error(Err::INVALID_CONFIG, "Mode does not measure bus");
+  }
+  return Status::Ok();
 }
 
 int16_t signExtendField(uint16_t raw, uint8_t shift, uint8_t width) {
@@ -192,6 +232,7 @@ Status INA3221::begin(const Config& config) {
   _conversionReady = false;
   _conversionStartMs = 0;
   _maskEnableWritableCache = 0;
+  _clearPollJob();
 
   _lastOkMs = 0;
   _lastErrorMs = 0;
@@ -236,6 +277,7 @@ Status INA3221::begin(const Config& config) {
     _conversionReady = false;
     _conversionStartMs = 0;
     _maskEnableWritableCache = 0;
+    _clearPollJob();
     return failure;
   };
 
@@ -288,6 +330,7 @@ void INA3221::end() {
   _conversionReady = false;
   _conversionStartMs = 0;
   _maskEnableWritableCache = 0;
+  _clearPollJob();
 }
 
 // ============================================================================
@@ -298,10 +341,7 @@ Status INA3221::probe() {
   uint16_t mfgId = 0;
   Status st = _readRegister16Raw(cmd::REG_MANUFACTURER_ID, mfgId);
   if (!st.ok()) {
-    if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
-      return st;
-    }
-    return Status::Error(Err::DEVICE_NOT_FOUND, "INA3221 not responding", st.detail);
+    return st;
   }
   if (mfgId != cmd::MANUFACTURER_ID_VALUE) {
     return Status::Error(Err::MANUFACTURER_ID_MISMATCH, "Manufacturer ID mismatch",
@@ -311,10 +351,7 @@ Status INA3221::probe() {
   uint16_t dieId = 0;
   st = _readRegister16Raw(cmd::REG_DIE_ID, dieId);
   if (!st.ok()) {
-    if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
-      return st;
-    }
-    return Status::Error(Err::DEVICE_NOT_FOUND, "INA3221 not responding", st.detail);
+    return st;
   }
   if (dieId != cmd::DIE_ID_VALUE) {
     return Status::Error(Err::DIE_ID_MISMATCH, "Die ID mismatch",
@@ -357,6 +394,7 @@ Status INA3221::recover() {
     _conversionStarted = false;
     _conversionReady = false;
     _conversionStartMs = 0;
+    _clearPollJob();
 
     st = _applyConfig();
     if (!st.ok()) {
@@ -408,11 +446,9 @@ Status INA3221::getSettings(SettingsSnapshot& out) const {
 // ============================================================================
 
 Status INA3221::readShuntRaw(Channel ch, int16_t& raw) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
-  }
-  if (!isValidChannel(ch)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid channel");
+  Status valid = validateMeasurementRead(_config, _initialized, ch, true, false);
+  if (!valid.ok()) {
+    return valid;
   }
   Status readyStatus = _ensureMeasurementReadyForRead();
   if (!readyStatus.ok()) {
@@ -429,11 +465,9 @@ Status INA3221::readShuntRaw(Channel ch, int16_t& raw) {
 }
 
 Status INA3221::readBusRaw(Channel ch, int16_t& raw) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
-  }
-  if (!isValidChannel(ch)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid channel");
+  Status valid = validateMeasurementRead(_config, _initialized, ch, false, true);
+  if (!valid.ok()) {
+    return valid;
   }
   Status readyStatus = _ensureMeasurementReadyForRead();
   if (!readyStatus.ok()) {
@@ -470,8 +504,9 @@ Status INA3221::readBusVoltage(Channel ch, float& volts) {
 }
 
 Status INA3221::readCurrent(Channel ch, float& mA) {
-  if (!isValidChannel(ch)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid channel");
+  Status valid = validateMeasurementRead(_config, _initialized, ch, true, false);
+  if (!valid.ok()) {
+    return valid;
   }
   float shuntMv = 0.0f;
   Status st = readShuntVoltage(ch, shuntMv);
@@ -485,8 +520,9 @@ Status INA3221::readCurrent(Channel ch, float& mA) {
 }
 
 Status INA3221::readPower(Channel ch, float& mW) {
-  if (!isValidChannel(ch)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid channel");
+  Status valid = validateMeasurementRead(_config, _initialized, ch, true, true);
+  if (!valid.ok()) {
+    return valid;
   }
   float busV = 0.0f;
   float currentMa = 0.0f;
@@ -504,11 +540,9 @@ Status INA3221::readPower(Channel ch, float& mW) {
 }
 
 Status INA3221::readChannel(Channel ch, ChannelMeasurement& out) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
-  }
-  if (!isValidChannel(ch)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid channel");
+  Status valid = validateMeasurementRead(_config, _initialized, ch, true, true);
+  if (!valid.ok()) {
+    return valid;
   }
   Status readyStatus = _ensureMeasurementReadyForRead();
   if (!readyStatus.ok()) {
@@ -640,6 +674,106 @@ bool INA3221::conversionReady() {
   bool ready = false;
   Status st = readConversionReady(ready);
   return st.ok() && ready;
+}
+
+Status INA3221::startSingleShot(bool pollConversionReady) {
+  Mode mode = _isTriggeredMode() ? _config.mode : Mode::SHUNT_BUS_TRIG;
+  return startSingleShot(mode, pollConversionReady);
+}
+
+Status INA3221::startSingleShot(Mode mode, bool pollConversionReady) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  if (!isTriggeredMode(mode)) {
+    return Status::Error(Err::INVALID_PARAM, "Must be a triggered mode");
+  }
+  return _startSampleJob(PollJobKind::SINGLE_SHOT, mode, pollConversionReady);
+}
+
+Status INA3221::pollSingleShot(uint32_t nowMs, uint8_t maxInstructions) {
+  if (_pollJobKind == PollJobKind::NONE &&
+      _pollJobStage != PollJobStage::COMPLETE) {
+    return Status::Ok();
+  }
+  if (_pollJobKind != PollJobKind::SINGLE_SHOT) {
+    return Status::Error(Err::BUSY, "Single-shot job is not active");
+  }
+  return _pollSampleJob(nowMs, maxInstructions);
+}
+
+Status INA3221::startContinuousRead(bool pollConversionReady) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  if (!_isContinuousMode()) {
+    return Status::Error(Err::INVALID_CONFIG, "Continuous mode required");
+  }
+  return _startSampleJob(PollJobKind::CONTINUOUS_READ, _config.mode,
+                         pollConversionReady);
+}
+
+Status INA3221::pollContinuousRead(uint32_t nowMs, uint8_t maxInstructions) {
+  if (_pollJobKind == PollJobKind::NONE &&
+      _pollJobStage != PollJobStage::COMPLETE) {
+    return Status::Ok();
+  }
+  if (_pollJobKind != PollJobKind::CONTINUOUS_READ) {
+    return Status::Error(Err::BUSY, "Continuous-read job is not active");
+  }
+  return _pollSampleJob(nowMs, maxInstructions);
+}
+
+Status INA3221::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
+  switch (_pollJobKind) {
+    case PollJobKind::SINGLE_SHOT:
+      return pollSingleShot(nowMs, maxInstructions);
+    case PollJobKind::CONTINUOUS_READ:
+      return pollContinuousRead(nowMs, maxInstructions);
+    case PollJobKind::APPLY_MASK_ENABLE:
+      return pollApplyMaskEnable(nowMs, maxInstructions);
+    case PollJobKind::NONE:
+    default:
+      return Status::Ok();
+  }
+}
+
+Status INA3221::readChannelRawStep(Channel ch) {
+  _pollInstructionsLast = 0;
+  const bool willTransfer =
+      isValidChannel(ch) &&
+      (_pollJobKind == PollJobKind::SINGLE_SHOT ||
+       _pollJobKind == PollJobKind::CONTINUOUS_READ) &&
+      _pollJobStage == PollJobStage::READ_CHANNELS &&
+      _pollChannels[static_cast<uint8_t>(ch)].channelEnabled &&
+      !_sampleChannelComplete(ch);
+  Status st = _readChannelRawStep(ch);
+  if (willTransfer && (st.ok() || st.inProgress())) {
+    _pollInstructionsLast = 1;
+    if (_pollInstructionsTotal < UINT16_MAX) {
+      _pollInstructionsTotal++;
+    }
+  }
+  return st;
+}
+
+Status INA3221::getPollJobSnapshot(PollJobSnapshot& out) const {
+  out.kind = _pollJobKind;
+  out.stage = _pollJobStage;
+  out.active = _pollJobKind != PollJobKind::NONE &&
+               _pollJobStage != PollJobStage::COMPLETE;
+  out.complete = _pollJobStage == PollJobStage::COMPLETE;
+  out.pollConversionReady = _pollConversionReady;
+  out.conversionReady = _pollObservedReady;
+  out.sampleMode = _pollSampleMode;
+  out.conversionStartMs = _pollConversionStartMs;
+  out.nextChannel = _pollNextChannel;
+  out.lastInstructions = _pollInstructionsLast;
+  out.totalInstructions = _pollInstructionsTotal;
+  for (uint8_t i = 0; i < 3; ++i) {
+    out.channels[i] = _pollChannels[i];
+  }
+  return Status::Ok();
 }
 
 Status INA3221::readBlocking(ChannelMeasurement* ch1,
@@ -845,15 +979,13 @@ Status INA3221::setChannelEnable(Channel ch, bool enable) {
 }
 
 bool INA3221::getChannelEnable(Channel ch) const {
-  switch (ch) {
-    case Channel::CH1: return _config.ch1Enable;
-    case Channel::CH2: return _config.ch2Enable;
-    case Channel::CH3: return _config.ch3Enable;
-    default: return false;
-  }
+  return isChannelEnabled(_config, ch);
 }
 
 Status INA3221::setShuntResistance(Channel ch, float ohms) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
   if (!isValidChannel(ch)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid channel");
   }
@@ -900,6 +1032,7 @@ Status INA3221::writeConfig(uint16_t config) {
     _conversionReady = false;
     _conversionStartMs = 0;
     _maskEnableWritableCache = 0;
+    _clearPollJob();
     return Status::Ok();
   }
 
@@ -949,6 +1082,7 @@ Status INA3221::softReset() {
   _conversionReady = false;
   _conversionStartMs = 0;
   _maskEnableWritableCache = 0;
+  _clearPollJob();
 
   return Status::Ok();
 }
@@ -1108,6 +1242,10 @@ Status INA3221::readAlertFlags(AlertFlags& flags) {
   return Status::Ok();
 }
 
+Status INA3221::readAndClearAlertFlags(AlertFlags& flags) {
+  return readAlertFlags(flags);
+}
+
 Status INA3221::setSummationChannels(bool ch1, bool ch2, bool ch3) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
@@ -1141,6 +1279,34 @@ Status INA3221::setAlertLatchEnable(bool warningLatch, bool criticalLatch) {
     _maskEnableWritableCache = regVal;
   }
   return st;
+}
+
+Status INA3221::startApplyMaskEnable(uint16_t writableBits) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  if (_pollJobKind != PollJobKind::NONE &&
+      _pollJobStage != PollJobStage::COMPLETE) {
+    return Status::Error(Err::BUSY, "Poll job already active");
+  }
+
+  _clearPollJob();
+  _pollJobKind = PollJobKind::APPLY_MASK_ENABLE;
+  _pollJobStage = PollJobStage::WRITE_MASK_ENABLE;
+  _pendingMaskEnableWritable = static_cast<uint16_t>(writableBits & kMaskEnableWritable);
+  return Status{Err::IN_PROGRESS, 0, "Mask/Enable apply scheduled"};
+}
+
+Status INA3221::pollApplyMaskEnable(uint32_t nowMs, uint8_t maxInstructions) {
+  (void)nowMs;
+  if (_pollJobKind == PollJobKind::NONE &&
+      _pollJobStage != PollJobStage::COMPLETE) {
+    return Status::Ok();
+  }
+  if (_pollJobKind != PollJobKind::APPLY_MASK_ENABLE) {
+    return Status::Error(Err::BUSY, "Mask/Enable apply job is not active");
+  }
+  return _pollApplyMaskEnableJob(maxInstructions);
 }
 
 // ============================================================================
@@ -1398,6 +1564,268 @@ void INA3221::_reassertOfflineLatch() {
 // Internal
 // ============================================================================
 
+void INA3221::_clearPollJob() {
+  _pollJobKind = PollJobKind::NONE;
+  _pollJobStage = PollJobStage::IDLE;
+  _pollSampleMode = Mode::SHUNT_BUS_TRIG;
+  _pollConversionReady = false;
+  _pollObservedReady = false;
+  _pollConversionStartMs = 0;
+  _pollNextChannel = 0;
+  _pollInstructionsLast = 0;
+  _pollInstructionsTotal = 0;
+  _pendingMaskEnableWritable = 0;
+  _resetPollSampleCache();
+}
+
+void INA3221::_resetPollSampleCache() {
+  for (uint8_t i = 0; i < 3; ++i) {
+    _pollChannels[i] = ChannelRawMeasurement{};
+  }
+}
+
+Status INA3221::_startSampleJob(PollJobKind kind, Mode mode,
+                                bool pollConversionReady) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  if (kind != PollJobKind::SINGLE_SHOT &&
+      kind != PollJobKind::CONTINUOUS_READ) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid sample job kind");
+  }
+  if (_pollJobKind != PollJobKind::NONE &&
+      _pollJobStage != PollJobStage::COMPLETE) {
+    return Status::Error(Err::BUSY, "Poll job already active");
+  }
+  if (_enabledChannelCount() == 0) {
+    return Status::Error(Err::INVALID_CONFIG, "At least one channel must be enabled");
+  }
+  if (kind == PollJobKind::SINGLE_SHOT && !isTriggeredMode(mode)) {
+    return Status::Error(Err::INVALID_PARAM, "Must be a triggered mode");
+  }
+  if (kind == PollJobKind::CONTINUOUS_READ && !isContinuousMode(mode)) {
+    return Status::Error(Err::INVALID_CONFIG, "Continuous mode required");
+  }
+  if (!modeReadsShunt(mode) && !modeReadsBus(mode)) {
+    return Status::Error(Err::INVALID_CONFIG, "Sample mode required");
+  }
+
+  _clearPollJob();
+  _pollJobKind = kind;
+  _pollJobStage = kind == PollJobKind::SINGLE_SHOT
+                      ? PollJobStage::WRITE_CONFIG
+                      : (pollConversionReady ? PollJobStage::READ_READY
+                                             : PollJobStage::READ_CHANNELS);
+  _pollSampleMode = mode;
+  _pollConversionReady = pollConversionReady;
+  _pollObservedReady = !pollConversionReady &&
+                       kind == PollJobKind::CONTINUOUS_READ;
+  for (uint8_t i = 0; i < 3; ++i) {
+    const Channel ch = static_cast<Channel>(i);
+    _pollChannels[i].channelEnabled = _isChannelEnabled(ch);
+  }
+  return Status{Err::IN_PROGRESS, 0, "Poll job scheduled"};
+}
+
+Status INA3221::_pollSampleJob(uint32_t nowMs, uint8_t maxInstructions) {
+  _pollInstructionsLast = 0;
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  if (maxInstructions == 0) {
+    return Status::Error(Err::INVALID_PARAM, "maxInstructions must be > 0");
+  }
+  if (_pollJobStage == PollJobStage::COMPLETE) {
+    return Status::Ok();
+  }
+  if (_pollJobKind != PollJobKind::SINGLE_SHOT &&
+      _pollJobKind != PollJobKind::CONTINUOUS_READ) {
+    return Status::Error(Err::BUSY, "Sample job is not active");
+  }
+
+  uint8_t executed = 0;
+  auto recordInstruction = [&]() {
+    executed++;
+    _pollInstructionsLast = executed;
+    if (_pollInstructionsTotal < UINT16_MAX) {
+      _pollInstructionsTotal++;
+    }
+  };
+
+  while (executed < maxInstructions) {
+    if (_pollJobStage == PollJobStage::WRITE_CONFIG) {
+      Status st = writeRegister16(cmd::REG_CONFIG,
+                                  _buildConfigRegisterForMode(_pollSampleMode));
+      recordInstruction();
+      if (!st.ok()) {
+        return st;
+      }
+      _config.mode = _pollSampleMode;
+      _conversionStarted = true;
+      _conversionReady = false;
+      _conversionStartMs = nowMs;
+      _pollConversionStartMs = nowMs;
+      _pollObservedReady = false;
+      _pollJobStage = PollJobStage::WAIT_CONVERSION;
+      continue;
+    }
+
+    if (_pollJobStage == PollJobStage::WAIT_CONVERSION) {
+      const uint32_t cycleUs = getCycleTimeUs();
+      const uint32_t cycleMs = (cycleUs + 999) / 1000 + 1;
+      if ((nowMs - _pollConversionStartMs) < cycleMs) {
+        return Status{Err::IN_PROGRESS, 0, "Waiting for conversion"};
+      }
+      if (_pollConversionReady) {
+        _pollJobStage = PollJobStage::READ_READY;
+      } else {
+        _pollObservedReady = true;
+        _conversionStarted = false;
+        _conversionReady = true;
+        _pollJobStage = PollJobStage::READ_CHANNELS;
+      }
+      continue;
+    }
+
+    if (_pollJobStage == PollJobStage::READ_READY) {
+      uint16_t maskEn = 0;
+      Status st = readRegister16(cmd::REG_MASK_ENABLE, maskEn);
+      recordInstruction();
+      if (!st.ok()) {
+        return st;
+      }
+      if ((maskEn & cmd::MASK_CVRF) == 0U) {
+        return Status{Err::IN_PROGRESS, 0, "Conversion not ready"};
+      }
+      _pollObservedReady = true;
+      _conversionStarted = false;
+      _conversionReady = true;
+      _pollJobStage = PollJobStage::READ_CHANNELS;
+      continue;
+    }
+
+    if (_pollJobStage == PollJobStage::READ_CHANNELS) {
+      while (_pollNextChannel < 3U) {
+        const Channel ch = static_cast<Channel>(_pollNextChannel);
+        if (!_pollChannels[_pollNextChannel].channelEnabled ||
+            _sampleChannelComplete(ch)) {
+          _pollNextChannel++;
+          continue;
+        }
+        Status st = _readChannelRawStep(ch);
+        recordInstruction();
+        if (!st.ok() && !st.inProgress()) {
+          return st;
+        }
+        if (_sampleChannelComplete(ch)) {
+          _pollNextChannel++;
+        }
+        break;
+      }
+
+      if (_pollNextChannel >= 3U) {
+        _pollJobStage = PollJobStage::COMPLETE;
+        _conversionStarted = false;
+        _conversionReady = true;
+        return Status::Ok();
+      }
+      continue;
+    }
+
+    if (_pollJobStage == PollJobStage::COMPLETE) {
+      return Status::Ok();
+    }
+
+    return Status::Error(Err::INVALID_CONFIG, "Invalid poll job stage");
+  }
+
+  return _pollJobStage == PollJobStage::COMPLETE
+             ? Status::Ok()
+             : Status{Err::IN_PROGRESS, 0, "Poll job in progress"};
+}
+
+Status INA3221::_pollApplyMaskEnableJob(uint8_t maxInstructions) {
+  _pollInstructionsLast = 0;
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  if (maxInstructions == 0) {
+    return Status::Error(Err::INVALID_PARAM, "maxInstructions must be > 0");
+  }
+  if (_pollJobStage == PollJobStage::COMPLETE) {
+    return Status::Ok();
+  }
+  if (_pollJobKind != PollJobKind::APPLY_MASK_ENABLE ||
+      _pollJobStage != PollJobStage::WRITE_MASK_ENABLE) {
+    return Status::Error(Err::BUSY, "Mask/Enable apply job is not active");
+  }
+
+  Status st = writeRegister16(cmd::REG_MASK_ENABLE, _pendingMaskEnableWritable);
+  _pollInstructionsLast = 1;
+  if (_pollInstructionsTotal < UINT16_MAX) {
+    _pollInstructionsTotal++;
+  }
+  if (!st.ok()) {
+    return st;
+  }
+
+  _maskEnableWritableCache = _pendingMaskEnableWritable;
+  _pollJobStage = PollJobStage::COMPLETE;
+  return Status::Ok();
+}
+
+Status INA3221::_readChannelRawStep(Channel ch) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  if (!isValidChannel(ch)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid channel");
+  }
+  if (_pollJobKind != PollJobKind::SINGLE_SHOT &&
+      _pollJobKind != PollJobKind::CONTINUOUS_READ) {
+    return Status::Error(Err::INVALID_CONFIG, "Sample job is not active");
+  }
+  if (_pollJobStage != PollJobStage::READ_CHANNELS) {
+    return Status::Error(Err::BUSY, "Sample job is not ready for channel reads");
+  }
+
+  const uint8_t idx = static_cast<uint8_t>(ch);
+  ChannelRawMeasurement& sample = _pollChannels[idx];
+  if (!sample.channelEnabled) {
+    return Status::Error(Err::INVALID_CONFIG, "Channel disabled for sample job");
+  }
+  if (_sampleChannelComplete(ch)) {
+    return Status::Ok();
+  }
+
+  uint16_t regVal = 0;
+  if (_sampleModeReadsShunt() && !sample.shuntValid) {
+    Status st = readRegister16(shuntRegAddr(ch), regVal);
+    if (!st.ok()) {
+      return st;
+    }
+    sample.shuntRaw = static_cast<int16_t>(regVal);
+    sample.shuntValid = true;
+    return _sampleChannelComplete(ch)
+               ? Status::Ok()
+               : Status{Err::IN_PROGRESS, 0, "Channel raw read in progress"};
+  }
+
+  if (_sampleModeReadsBus() && !sample.busValid) {
+    Status st = readRegister16(busRegAddr(ch), regVal);
+    if (!st.ok()) {
+      return st;
+    }
+    sample.busRaw = static_cast<int16_t>(regVal);
+    sample.busValid = true;
+    return _sampleChannelComplete(ch)
+               ? Status::Ok()
+               : Status{Err::IN_PROGRESS, 0, "Channel raw read in progress"};
+  }
+
+  return Status::Ok();
+}
+
 Status INA3221::_applyConfig() {
   return _writeRegister16Tracked(cmd::REG_CONFIG, _buildConfigRegister());
 }
@@ -1466,6 +1894,7 @@ Status INA3221::_ensureMeasurementReadyForRead() {
 }
 
 void INA3221::_handleConfigWriteSideEffects() {
+  _clearPollJob();
   if (_isTriggeredMode()) {
     _conversionStarted = true;
     _conversionReady = false;
@@ -1487,6 +1916,13 @@ uint16_t INA3221::_buildConfigRegister() const {
   config |= (static_cast<uint16_t>(_config.vBusCt) << cmd::BIT_VBUSCT) & cmd::MASK_VBUSCT;
   config |= (static_cast<uint16_t>(_config.vShCt) << cmd::BIT_VSHCT) & cmd::MASK_VSHCT;
   config |= (static_cast<uint16_t>(_config.mode) << cmd::BIT_MODE) & cmd::MASK_MODE;
+  return config;
+}
+
+uint16_t INA3221::_buildConfigRegisterForMode(Mode mode) const {
+  uint16_t config = _buildConfigRegister();
+  config &= static_cast<uint16_t>(~cmd::MASK_MODE);
+  config |= (static_cast<uint16_t>(mode) << cmd::BIT_MODE) & cmd::MASK_MODE;
   return config;
 }
 
@@ -1512,12 +1948,43 @@ uint8_t INA3221::_enabledChannelCount() const {
   return count;
 }
 
+bool INA3221::_isChannelEnabled(Channel ch) const {
+  switch (ch) {
+    case Channel::CH1: return _config.ch1Enable;
+    case Channel::CH2: return _config.ch2Enable;
+    case Channel::CH3: return _config.ch3Enable;
+    default: return false;
+  }
+}
+
 bool INA3221::_isTriggeredMode() const {
   return isTriggeredMode(_config.mode);
 }
 
 bool INA3221::_isContinuousMode() const {
   return isContinuousMode(_config.mode);
+}
+
+bool INA3221::_sampleModeReadsShunt() const {
+  return modeReadsShunt(_pollSampleMode);
+}
+
+bool INA3221::_sampleModeReadsBus() const {
+  return modeReadsBus(_pollSampleMode);
+}
+
+bool INA3221::_sampleChannelComplete(Channel ch) const {
+  if (!isValidChannel(ch)) {
+    return true;
+  }
+  const uint8_t idx = static_cast<uint8_t>(ch);
+  const ChannelRawMeasurement& sample = _pollChannels[idx];
+  if (!sample.channelEnabled) {
+    return true;
+  }
+  const bool shuntDone = !_sampleModeReadsShunt() || sample.shuntValid;
+  const bool busDone = !_sampleModeReadsBus() || sample.busValid;
+  return shuntDone && busDone;
 }
 
 } // namespace INA3221
