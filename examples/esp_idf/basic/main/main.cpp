@@ -514,6 +514,13 @@ void printSettingsSnapshot() {
       snap.conversionReady ? "YES" : "NO",
       static_cast<unsigned long>(snap.conversionStartMs));
   out("  Mask/Enable writable cache: 0x%04X\n", snap.maskEnableWritableCache);
+  out("  Hardware config dirty: %s\n", snap.hardwareConfigDirty ? "YES" : "NO");
+  if (snap.hardwareConfigDirty) {
+    out("  Dirty reason: %s (code=%u detail=%ld)\n",
+        errToStr(snap.hardwareConfigDirtyStatus.code),
+        static_cast<unsigned>(snap.hardwareConfigDirtyStatus.code),
+        static_cast<long>(snap.hardwareConfigDirtyStatus.detail));
+  }
 }
 
 void printMaskEnable() {

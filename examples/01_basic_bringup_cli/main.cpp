@@ -666,6 +666,13 @@ void printSettingsSnapshot() {
                 snap.conversionReady ? "YES" : "NO",
                 static_cast<unsigned long>(snap.conversionStartMs));
   Serial.printf("  Mask/Enable writable cache: 0x%04X\n", snap.maskEnableWritableCache);
+  Serial.printf("  Hardware config dirty: %s\n", snap.hardwareConfigDirty ? "YES" : "NO");
+  if (snap.hardwareConfigDirty) {
+    Serial.printf("  Dirty reason: %s (code=%u detail=%ld)\n",
+                  errToStr(snap.hardwareConfigDirtyStatus.code),
+                  static_cast<unsigned>(snap.hardwareConfigDirtyStatus.code),
+                  static_cast<long>(snap.hardwareConfigDirtyStatus.detail));
+  }
   Serial.printf("  Cycle time: %lu us\n", static_cast<unsigned long>(device.getCycleTimeUs()));
 }
 

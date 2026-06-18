@@ -108,6 +108,8 @@ struct SettingsSnapshot {
   bool conversionReady = false;
   uint32_t conversionStartMs = 0;
   uint16_t maskEnableWritableCache = 0;
+  bool hardwareConfigDirty = false;
+  Status hardwareConfigDirtyStatus = Status::Ok();
 };
 
 /// @brief Managed synchronous INA3221 driver.
@@ -144,6 +146,7 @@ public:
 
   // === Driver State ===
   DriverState state() const { return _driverState; }
+  DriverState driverState() const { return state(); }
   bool isOnline() const {
     return _driverState == DriverState::READY ||
            _driverState == DriverState::DEGRADED;
@@ -156,6 +159,8 @@ public:
   uint8_t consecutiveFailures() const { return _consecutiveFailures; }
   uint32_t totalFailures() const { return _totalFailures; }
   uint32_t totalSuccess() const { return _totalSuccess; }
+  bool hardwareConfigDirty() const { return _hardwareConfigDirty; }
+  Status hardwareConfigDirtyStatus() const { return _hardwareConfigDirtyStatus; }
 
   // === Measurement API ===
   /// Measurement reads require the channel to be enabled and the current mode
@@ -378,6 +383,8 @@ private:
   Status _updateHealth(const Status& st);
   Status _recordFailure(const Status& st);
   void _reassertOfflineLatch();
+  void _markHardwareConfigDirty(const Status& reason);
+  void _clearHardwareConfigDirty();
 
   // === Internal ===
   Status _applyConfig();
@@ -416,6 +423,8 @@ private:
   uint8_t _consecutiveFailures = 0;
   uint32_t _totalFailures = 0;
   uint32_t _totalSuccess = 0;
+  bool _hardwareConfigDirty = false;
+  Status _hardwareConfigDirtyStatus = Status::Ok();
 
   // === Conversion State ===
   bool _conversionStarted = false;

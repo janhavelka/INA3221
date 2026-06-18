@@ -265,6 +265,9 @@ void test_get_settings_snapshot() {
   TEST_ASSERT_FALSE(snap.conversionReady);
   TEST_ASSERT_EQUAL_UINT32(bus.nowMs, snap.conversionStartMs);
   TEST_ASSERT_EQUAL_HEX16(0u, snap.maskEnableWritableCache);
+  TEST_ASSERT_FALSE(snap.hardwareConfigDirty);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::OK),
+                          static_cast<uint8_t>(snap.hardwareConfigDirtyStatus.code));
 }
 
 // ============================================================================
@@ -401,6 +404,25 @@ void test_begin_success_sets_ready_and_counters() {
   TEST_ASSERT_EQUAL_UINT32(0u, dev.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(0u, dev.consecutiveFailures());
   TEST_ASSERT_EQUAL_UINT32(0u, dev.lastOkMs());
+}
+
+void test_driver_state_alias_matches_state() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(dev.state()),
+                          static_cast<uint8_t>(dev.driverState()));
+
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(dev.state()),
+                          static_cast<uint8_t>(dev.driverState()));
+
+  bus.readStatus = Status::Error(Err::I2C_TIMEOUT, "forced timeout", -21);
+  uint16_t id = 0;
+  Status st = dev.readManufacturerId(id);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(dev.state()),
+                          static_cast<uint8_t>(dev.driverState()));
 }
 
 // ============================================================================
@@ -998,6 +1020,36 @@ void test_set_averaging_rolls_back_cached_config_on_write_failure() {
                           static_cast<uint8_t>(dev.getAveraging()));
 }
 
+void test_failed_config_write_marks_hardware_config_dirty_and_recover_clears() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+
+  bus.writeStatus = Status::Error(Err::I2C_TIMEOUT, "forced config timeout", -31);
+  Status st = dev.setAveraging(Averaging::AVG_1024);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Averaging::AVG_1),
+                          static_cast<uint8_t>(dev.getAveraging()));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyStatus().code));
+  TEST_ASSERT_EQUAL_INT32(-31, dev.hardwareConfigDirtyStatus().detail);
+
+  SettingsSnapshot snap;
+  TEST_ASSERT_TRUE(dev.getSettings(snap).ok());
+  TEST_ASSERT_TRUE(snap.hardwareConfigDirty);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(snap.hardwareConfigDirtyStatus.code));
+
+  bus.writeStatus = Status::Ok();
+  TEST_ASSERT_TRUE(dev.recover().ok());
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::OK),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyStatus().code));
+}
+
 void test_set_channel_enable() {
   FakeBus bus;
   INA3221::INA3221 dev;
@@ -1109,6 +1161,41 @@ void test_poll_apply_mask_enable_is_one_budgeted_write() {
   TEST_ASSERT_TRUE(snapshot.complete);
   TEST_ASSERT_EQUAL_UINT8(1u, snapshot.lastInstructions);
   TEST_ASSERT_EQUAL_UINT16(1u, snapshot.totalInstructions);
+}
+
+void test_failed_mask_enable_write_marks_hardware_config_dirty() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.writeStatus = Status::Error(Err::I2C_BUS, "forced mask write failure", -32);
+  Status st = dev.setSummationChannels(true, false, true);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyStatus().code));
+  TEST_ASSERT_EQUAL_INT32(-32, dev.hardwareConfigDirtyStatus().detail);
+  TEST_ASSERT_EQUAL_HEX16(0u, dev._maskEnableWritableCache);
+}
+
+void test_raw_cached_register_write_marks_hardware_config_dirty_until_reset() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+
+  Status st = dev.writeRegister16(cmd::REG_MASK_ENABLE, cmd::MASK_SCC1);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::OK),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyStatus().code));
+  TEST_ASSERT_EQUAL_INT32(cmd::REG_MASK_ENABLE,
+                          dev.hardwareConfigDirtyStatus().detail);
+  TEST_ASSERT_EQUAL_HEX16(0u, dev._maskEnableWritableCache);
+
+  TEST_ASSERT_TRUE(dev.softReset().ok());
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
 }
 
 void test_write_config_with_reset_bit_syncs_cached_defaults() {
@@ -1458,6 +1545,7 @@ int main() {
   RUN_TEST(test_failed_begin_probe_resets_cached_config);
   RUN_TEST(test_begin_normalizes_offline_threshold_on_stored_copy);
   RUN_TEST(test_begin_success_sets_ready_and_counters);
+  RUN_TEST(test_driver_state_alias_matches_state);
 
   // Probe / Recover
   RUN_TEST(test_probe_failure_does_not_update_health);
@@ -1491,6 +1579,7 @@ int main() {
   RUN_TEST(test_set_mode_rolls_back_cached_config_on_write_failure);
   RUN_TEST(test_set_averaging);
   RUN_TEST(test_set_averaging_rolls_back_cached_config_on_write_failure);
+  RUN_TEST(test_failed_config_write_marks_hardware_config_dirty_and_recover_clears);
   RUN_TEST(test_set_channel_enable);
   RUN_TEST(test_set_channel_enable_rejects_disabling_last_active_channel);
   RUN_TEST(test_set_shunt_resistance);
@@ -1499,6 +1588,8 @@ int main() {
   RUN_TEST(test_set_shunt_resistance_rejects_nan);
   RUN_TEST(test_mask_enable_cache_survives_config_writes);
   RUN_TEST(test_poll_apply_mask_enable_is_one_budgeted_write);
+  RUN_TEST(test_failed_mask_enable_write_marks_hardware_config_dirty);
+  RUN_TEST(test_raw_cached_register_write_marks_hardware_config_dirty_until_reset);
   RUN_TEST(test_write_config_with_reset_bit_syncs_cached_defaults);
   RUN_TEST(test_alert_limit_writes_clear_reserved_bits);
 

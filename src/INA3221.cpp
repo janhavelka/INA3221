@@ -65,6 +65,10 @@ bool isValidRegister(uint8_t reg) {
          reg == cmd::REG_DIE_ID;
 }
 
+bool registerAffectsCachedHardwareConfig(uint8_t reg) {
+  return reg == cmd::REG_CONFIG || reg == cmd::REG_MASK_ENABLE;
+}
+
 bool isPositiveFinite(float value) {
   return std::isfinite(value) && value > 0.0f;
 }
@@ -240,6 +244,7 @@ Status INA3221::begin(const Config& config) {
   _consecutiveFailures = 0;
   _totalFailures = 0;
   _totalSuccess = 0;
+  _clearHardwareConfigDirty();
 
   if (requestedConfig.i2cWrite == nullptr || requestedConfig.i2cWriteRead == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C callbacks required");
@@ -278,6 +283,7 @@ Status INA3221::begin(const Config& config) {
     _conversionStartMs = 0;
     _maskEnableWritableCache = 0;
     _clearPollJob();
+    _clearHardwareConfigDirty();
     return failure;
   };
 
@@ -296,6 +302,7 @@ Status INA3221::begin(const Config& config) {
   _initialized = true;
   _driverState = DriverState::READY;
   _handleConfigWriteSideEffects();
+  _clearHardwareConfigDirty();
   return Status::Ok();
 }
 
@@ -331,6 +338,7 @@ void INA3221::end() {
   _conversionStartMs = 0;
   _maskEnableWritableCache = 0;
   _clearPollJob();
+  _clearHardwareConfigDirty();
 }
 
 // ============================================================================
@@ -398,16 +406,20 @@ Status INA3221::recover() {
 
     st = _applyConfig();
     if (!st.ok()) {
+      _markHardwareConfigDirty(st);
       return st;
     }
     _handleConfigWriteSideEffects();
 
-    st = writeRegister16(cmd::REG_MASK_ENABLE,
-                         static_cast<uint16_t>(_maskEnableWritableCache & kMaskEnableWritable));
+    st = _writeRegister16Tracked(cmd::REG_MASK_ENABLE,
+                                 static_cast<uint16_t>(_maskEnableWritableCache &
+                                                       kMaskEnableWritable));
     if (!st.ok()) {
+      _markHardwareConfigDirty(st);
       return st;
     }
 
+    _clearHardwareConfigDirty();
     return Status::Ok();
   }();
   if (startedOffline && !result.ok() && !result.inProgress()) {
@@ -438,6 +450,8 @@ Status INA3221::getSettings(SettingsSnapshot& out) const {
   out.conversionReady = _conversionReady;
   out.conversionStartMs = _conversionStartMs;
   out.maskEnableWritableCache = _maskEnableWritableCache;
+  out.hardwareConfigDirty = _hardwareConfigDirty;
+  out.hardwareConfigDirtyStatus = _hardwareConfigDirtyStatus;
   return Status::Ok();
 }
 
@@ -625,8 +639,9 @@ Status INA3221::startConversion() {
 
   // Writing to config register triggers single-shot conversion
   uint16_t configReg = _buildConfigRegister();
-  Status st = writeRegister16(cmd::REG_CONFIG, configReg);
+  Status st = _writeRegister16Tracked(cmd::REG_CONFIG, configReg);
   if (!st.ok()) {
+    _markHardwareConfigDirty(st);
     return st;
   }
 
@@ -654,9 +669,10 @@ Status INA3221::startConversion(Mode mode) {
   _config.mode = mode;
 
   uint16_t configReg = _buildConfigRegister();
-  Status st = writeRegister16(cmd::REG_CONFIG, configReg);
+  Status st = _writeRegister16Tracked(cmd::REG_CONFIG, configReg);
   if (!st.ok()) {
     _config.mode = prevMode;
+    _markHardwareConfigDirty(st);
     return st;
   }
 
@@ -860,6 +876,7 @@ Status INA3221::setMode(Mode mode) {
     _conversionStarted = prevStarted;
     _conversionReady = prevReady;
     _conversionStartMs = prevStartMs;
+    _markHardwareConfigDirty(st);
     return st;
   }
   _handleConfigWriteSideEffects();
@@ -887,6 +904,7 @@ Status INA3221::setAveraging(Averaging avg) {
     _conversionStarted = prevStarted;
     _conversionReady = prevReady;
     _conversionStartMs = prevStartMs;
+    _markHardwareConfigDirty(st);
     return st;
   }
   _handleConfigWriteSideEffects();
@@ -911,6 +929,7 @@ Status INA3221::setVBusConvTime(ConvTime ct) {
     _conversionStarted = prevStarted;
     _conversionReady = prevReady;
     _conversionStartMs = prevStartMs;
+    _markHardwareConfigDirty(st);
     return st;
   }
   _handleConfigWriteSideEffects();
@@ -935,6 +954,7 @@ Status INA3221::setVShuntConvTime(ConvTime ct) {
     _conversionStarted = prevStarted;
     _conversionReady = prevReady;
     _conversionStartMs = prevStartMs;
+    _markHardwareConfigDirty(st);
     return st;
   }
   _handleConfigWriteSideEffects();
@@ -972,6 +992,7 @@ Status INA3221::setChannelEnable(Channel ch, bool enable) {
     _conversionStarted = prevStarted;
     _conversionReady = prevReady;
     _conversionStartMs = prevStartMs;
+    _markHardwareConfigDirty(st);
     return st;
   }
   _handleConfigWriteSideEffects();
@@ -1016,8 +1037,9 @@ Status INA3221::writeConfig(uint16_t config) {
   }
 
   if ((config & cmd::MASK_RST) != 0U) {
-    Status st = writeRegister16(cmd::REG_CONFIG, config);
+    Status st = _writeRegister16Tracked(cmd::REG_CONFIG, config);
     if (!st.ok()) {
+      _markHardwareConfigDirty(st);
       return st;
     }
 
@@ -1033,6 +1055,7 @@ Status INA3221::writeConfig(uint16_t config) {
     _conversionStartMs = 0;
     _maskEnableWritableCache = 0;
     _clearPollJob();
+    _clearHardwareConfigDirty();
     return Status::Ok();
   }
 
@@ -1048,8 +1071,9 @@ Status INA3221::writeConfig(uint16_t config) {
     return Status::Error(Err::INVALID_PARAM, "At least one channel must be enabled");
   }
 
-  Status st = writeRegister16(cmd::REG_CONFIG, config);
+  Status st = _writeRegister16Tracked(cmd::REG_CONFIG, config);
   if (!st.ok()) {
+    _markHardwareConfigDirty(st);
     return st;
   }
 
@@ -1065,8 +1089,9 @@ Status INA3221::softReset() {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
 
-  Status st = writeRegister16(cmd::REG_CONFIG, cmd::MASK_RST);
+  Status st = _writeRegister16Tracked(cmd::REG_CONFIG, cmd::MASK_RST);
   if (!st.ok()) {
+    _markHardwareConfigDirty(st);
     return st;
   }
 
@@ -1083,6 +1108,7 @@ Status INA3221::softReset() {
   _conversionStartMs = 0;
   _maskEnableWritableCache = 0;
   _clearPollJob();
+  _clearHardwareConfigDirty();
 
   return Status::Ok();
 }
@@ -1257,9 +1283,11 @@ Status INA3221::setSummationChannels(bool ch1, bool ch2, bool ch3) {
   if (ch2) regVal |= cmd::MASK_SCC2;
   if (ch3) regVal |= cmd::MASK_SCC3;
 
-  Status st = writeRegister16(cmd::REG_MASK_ENABLE, regVal);
+  Status st = _writeRegister16Tracked(cmd::REG_MASK_ENABLE, regVal);
   if (st.ok()) {
     _maskEnableWritableCache = regVal;
+  } else {
+    _markHardwareConfigDirty(st);
   }
   return st;
 }
@@ -1274,9 +1302,11 @@ Status INA3221::setAlertLatchEnable(bool warningLatch, bool criticalLatch) {
   if (warningLatch) regVal |= cmd::MASK_WEN;
   if (criticalLatch) regVal |= cmd::MASK_CEN;
 
-  Status st = writeRegister16(cmd::REG_MASK_ENABLE, regVal);
+  Status st = _writeRegister16Tracked(cmd::REG_MASK_ENABLE, regVal);
   if (st.ok()) {
     _maskEnableWritableCache = regVal;
+  } else {
+    _markHardwareConfigDirty(st);
   }
   return st;
 }
@@ -1453,7 +1483,17 @@ Status INA3221::writeRegister16(uint8_t reg, uint16_t value) {
   if (!isValidRegister(reg)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid register address");
   }
-  return _writeRegister16Tracked(reg, value);
+  Status st = _writeRegister16Tracked(reg, value);
+  if (registerAffectsCachedHardwareConfig(reg)) {
+    if (st.ok()) {
+      _markHardwareConfigDirty(
+          Status{Err::OK, static_cast<int32_t>(reg),
+                 "Raw register write bypassed cached settings"});
+    } else {
+      _markHardwareConfigDirty(st);
+    }
+  }
+  return st;
 }
 
 Status INA3221::_readRegister16Tracked(uint8_t reg, uint16_t& value) {
@@ -1560,6 +1600,18 @@ void INA3221::_reassertOfflineLatch() {
   }
 }
 
+void INA3221::_markHardwareConfigDirty(const Status& reason) {
+  if (!_hardwareConfigDirty) {
+    _hardwareConfigDirty = true;
+    _hardwareConfigDirtyStatus = reason;
+  }
+}
+
+void INA3221::_clearHardwareConfigDirty() {
+  _hardwareConfigDirty = false;
+  _hardwareConfigDirtyStatus = Status::Ok();
+}
+
 // ============================================================================
 // Internal
 // ============================================================================
@@ -1654,10 +1706,11 @@ Status INA3221::_pollSampleJob(uint32_t nowMs, uint8_t maxInstructions) {
 
   while (executed < maxInstructions) {
     if (_pollJobStage == PollJobStage::WRITE_CONFIG) {
-      Status st = writeRegister16(cmd::REG_CONFIG,
-                                  _buildConfigRegisterForMode(_pollSampleMode));
+      Status st = _writeRegister16Tracked(cmd::REG_CONFIG,
+                                          _buildConfigRegisterForMode(_pollSampleMode));
       recordInstruction();
       if (!st.ok()) {
+        _markHardwareConfigDirty(st);
         return st;
       }
       _config.mode = _pollSampleMode;
@@ -1760,12 +1813,13 @@ Status INA3221::_pollApplyMaskEnableJob(uint8_t maxInstructions) {
     return Status::Error(Err::BUSY, "Mask/Enable apply job is not active");
   }
 
-  Status st = writeRegister16(cmd::REG_MASK_ENABLE, _pendingMaskEnableWritable);
+  Status st = _writeRegister16Tracked(cmd::REG_MASK_ENABLE, _pendingMaskEnableWritable);
   _pollInstructionsLast = 1;
   if (_pollInstructionsTotal < UINT16_MAX) {
     _pollInstructionsTotal++;
   }
   if (!st.ok()) {
+    _markHardwareConfigDirty(st);
     return st;
   }
 

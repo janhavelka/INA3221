@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pollContinuousRead()`, `pollJob()`, `getPollJobSnapshot()`,
   `readChannelRawStep()`, `readAndClearAlertFlags()`,
   `startApplyMaskEnable()`, and `pollApplyMaskEnable()`.
+- Added `driverState()` as a source-compatible alias for `state()`.
+- Added `hardwareConfigDirty()` / `hardwareConfigDirtyStatus()` and matching
+  `SettingsSnapshot` fields for Configuration and Mask/Enable cache
+  uncertainty diagnostics.
 - Native coverage for probe transport-error preservation, disabled and
   mode-inactive measurement reads, `tick()` Mask/Enable read-clear behavior,
   and bus-voltage conversion boundaries.
@@ -26,12 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   owners.
 - `setShuntResistance()` is now runtime-only; pre-begin shunt values must be
   supplied through `Config::shuntResistance`.
+- Documented that HIL is currently manual through the Arduino and ESP-IDF CLIs,
+  with no maintained automation runner.
 
 ### Fixed
 - `probe()` now preserves raw transport errors instead of collapsing I2C
   timeout, bus, or NACK failures to `DEVICE_NOT_FOUND`.
 - Per-channel measurement reads now reject disabled channels and quantities not
   produced by the active mode before touching I2C.
+- Failed Configuration or Mask/Enable cache writes now expose cache/hardware
+  uncertainty instead of silently relying on rolled-back cached state.
 
 ## [1.2.0] - 2026-05-20
 

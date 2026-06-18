@@ -155,6 +155,8 @@ void loop() {
 | `getSettings(snap)` | Populate a `SettingsSnapshot` with cached config, conversion, Mask/Enable, and health state without I2C |
 | `probe()` | Check device presence without updating health counters and preserve raw transport error codes |
 | `recover()` | Re-validate IDs, clear conversion state, and re-apply cached config / mask settings |
+| `state()` / `driverState()` | Return the cached driver health state |
+| `hardwareConfigDirty()` | True when cached Configuration or Mask/Enable state may not match hardware |
 
 ### Measurement And Conversion API
 
@@ -220,11 +222,15 @@ Per-channel measurement APIs return `INVALID_CONFIG` before touching I2C when th
 
 `probe()` uses raw diagnostic I2C and does not update driver health. Transport callback failures such as NACK, bus errors, and timeouts are returned unchanged instead of being collapsed to `DEVICE_NOT_FOUND`.
 
-Configuration setters update the cached `Config` only after their I2C write succeeds. On a failed write, the previous cached mode, conversion settings, channel enables, and conversion state are restored.
+Configuration setters update the cached `Config` only after their I2C write succeeds. On a failed Configuration or Mask/Enable write, the previous cached mode, conversion settings, channel enables, and conversion state are restored, and `hardwareConfigDirty()` is set because the hardware may still have accepted the write before the transport reported failure.
 Alert-limit setters mask reserved bits before writing device registers. The
 Mask/Enable writable-bit cache is preserved across configuration writes, and
 `writeConfig()` with the reset bit set synchronizes cached settings back to the
 device defaults.
+Tracked raw `writeRegister16()` calls to Configuration or Mask/Enable are
+diagnostic writes that bypass the typed cache and mark `hardwareConfigDirty()`.
+Successful `begin()`, `recover()`, `softReset()`, or reset-bit `writeConfig()`
+clears the dirty flag after cached settings are reapplied or reset.
 
 ### Conversion Times
 
@@ -254,7 +260,12 @@ device defaults.
 - Startup and `scan` diagnostics identify INA3221 devices on `0x40`-`0x43` by reading Manufacturer ID `0x5449` and Die ID `0x3220`, including the corresponding A0 strap label.
 - CLI diagnostics include `cfg` / `settings` for cached settings, `mask` for decoded Mask/Enable state, and `reg <addr>` / `wreg <addr> <val>` for tracked raw register access. Bare `chen`, `rshunt`, `crit`, `warn`, `sumch`, and `latch` show current settings; adding arguments updates those settings.
 - `stress` reports per-channel measurement statistics. `stress_mix` reports high-level operation counts plus `Health delta (tracked I2C)`, which is the driver's tracked transport success/failure counter delta and can be larger than the high-level operation count.
-- CLI numeric and `0|1` arguments are parsed strictly; malformed input is rejected instead of silently becoming zero. Raw register writes are intended for diagnostics and can desync cached config until `recover()` or `begin()` reapplies it.
+- CLI numeric and `0|1` arguments are parsed strictly; malformed input is rejected instead of silently becoming zero. Raw cached-register writes are intended for diagnostics and mark cached config dirty until `recover()`, `softReset()`, reset-bit `writeConfig()`, or `begin()` reapplies it.
+
+HIL is not automated in this repository. The Arduino and ESP-IDF CLIs provide
+manual hardware diagnostics for `version`, `scan`, `probe`, `settings`, driver
+health (`drv`), and `selftest`, but no maintained script currently drives those
+commands against real hardware.
 
 ### Example Helpers (`examples/common/`)
 
