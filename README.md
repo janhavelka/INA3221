@@ -262,10 +262,13 @@ clears the dirty flag after cached settings are reapplied or reset.
 - `stress` reports per-channel measurement statistics. `stress_mix` reports high-level operation counts plus `Health delta (tracked I2C)`, which is the driver's tracked transport success/failure counter delta and can be larger than the high-level operation count.
 - CLI numeric and `0|1` arguments are parsed strictly; malformed input is rejected instead of silently becoming zero. Raw cached-register writes are intended for diagnostics and mark cached config dirty until `recover()`, `softReset()`, reset-bit `writeConfig()`, or `begin()` reapplies it.
 
-HIL is not automated in this repository. The Arduino and ESP-IDF CLIs provide
-manual hardware diagnostics for `version`, `scan`, `probe`, `settings`, driver
-health (`drv`), and `selftest`, but no maintained script currently drives those
-commands against real hardware.
+`tools/hil_cli_runner.py` provides bounded serial HIL automation for the
+Arduino/ESP-IDF CLI command surface. It supports dry-run and parser self-test
+modes, per-command timeouts, transcript capture, Markdown report output, short
+stress/benchmark runs, and an optional bounded soak. Hardware results are valid
+only when the runner reaches a responsive CLI on the documented serial endpoint;
+electrical fault injection and unsafe stimulus remain manual fixture-specific
+work and must be reported as `NOT RUN` when unsupported.
 
 ### Example Helpers (`examples/common/`)
 

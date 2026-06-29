@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `hardwareConfigDirty()` / `hardwareConfigDirtyStatus()` and matching
   `SettingsSnapshot` fields for Configuration and Mask/Enable cache
   uncertainty diagnostics.
+- Added `tools/hil_cli_runner.py` for bounded serial CLI HIL runs with parser
+  self-test, dry-run, transcript capture, Markdown reporting, benchmark steps,
+  and optional soak duration limits.
 - Native coverage for probe transport-error preservation, disabled and
   mode-inactive measurement reads, `tick()` Mask/Enable read-clear behavior,
   and bus-voltage conversion boundaries.
@@ -30,8 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   owners.
 - `setShuntResistance()` is now runtime-only; pre-begin shunt values must be
   supplied through `Config::shuntResistance`.
-- Documented that HIL is currently manual through the Arduino and ESP-IDF CLIs,
-  with no maintained automation runner.
+- Documented the serial HIL runner and its fixture limitations.
 
 ### Fixed
 - `probe()` now preserves raw transport errors instead of collapsing I2C
