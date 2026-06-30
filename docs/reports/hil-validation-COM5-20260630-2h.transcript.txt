@@ -1,0 +1,672 @@
+===== BOOT / PRE-COMMAND TRANSCRIPT =====
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x40379d02
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x118c
+load:0x403c8700,len:0x4
+load:0x403c8704,len:0xc20
+load:0x403cb700,len:0x30e0
+entry 0x403c88b8
+[36m[I][0m === INA3221 Bringup Example ===
+[36m[I][0m I2C initialized (SDA=8, SCL=9)
+[36m[I][0m Scanning I2C bus (timeout=50ms)...
+[36m[I][0m      0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+00:                         -- -- -- -- -- -- -- -- 
+10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+20: 20 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+40: 40 41 -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+50: 50 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+60: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+70: -- -- -- -- -- -- -- --                         
+[36m[I][0m Scan complete. Found 4 device(s).
+[36m[I][0m Checking INA3221 identity registers on 0x40-0x43...
+[36m[I][0m   0x40: INA3221 recognized (A0=GND, mfg=0x5449, die=0x3220)
+[33m[W][0m   0x41: responded, but not INA3221 (A0=VS, mfg=0x5449, die=0x2281)
+[36m[I][0m INA3221 recognized: 1 device(s).
+[36m[I][0m Common addresses: 0x40-0x43=INA3221, 0x48-0x4B=ADS1115, 0x51=RV3032, 0x76/0x77=BME280
+[36m[I][0m Device initialized successfully
+=== Driver Health ===
+  State: [32mREADY[0m
+  Online: [32myes[0m
+  Consecutive failures: [32m0[0m
+  Total success: [33m0[0m
+  Total failures: [32m0[0m
+  Success rate: [31m0.0%[0m
+  Last OK: [33mnever[0m
+  Last error: [32mnever[0m
+
+Type 'help' for commands
+> 
+===== CONN-001 :: version =====
+=== Version Info ===
+  Example firmware build: Jun 30 2026 15:48:05
+  INA3221 library version: 2.0.0
+  INA3221 version code: 20000 (major=2 minor=0 patch=0)
+> 
+===== CONN-002 :: scan =====
+[36m[I][0m Scanning I2C bus (timeout=50ms)...
+[36m[I][0m      0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
+00:                         -- -- -- -- -- -- -- -- 
+10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+20: 20 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+40: 40 41 -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+50: 50 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+60: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
+70: -- -- -- -- -- -- -- --                         
+[36m[I][0m Scan complete. Found 4 device(s).
+[36m[I][0m Checking INA3221 identity registers on 0x40-0x43...
+[36m[I][0m   0x40: INA3221 recognized (A0=GND, mfg=0x5449, die=0x3220)
+[33m[W][0m   0x41: responded, but not INA3221 (A0=VS, mfg=0x5449, die=0x2281)
+[36m[I][0m INA3221 recognized: 1 device(s).
+[36m[I][0m Common addresses: 0x40-0x43=INA3221, 0x48-0x4B=ADS1115, 0x51=RV3032, 0x76/0x77=BME280
+> 
+===== CONN-003 :: probe =====
+[36m[I][0m Probing device (no health tracking)...
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== CONN-004 :: ids =====
+  Manufacturer ID: 0x5449 (OK - TI)
+  Die ID: 0x3220 (OK - INA3221)
+> 
+===== STATE-001 :: drv =====
+=== Driver Health ===
+  State: [32mREADY[0m
+  Online: [32myes[0m
+  Consecutive failures: [32m0[0m
+  Total success: [32m2[0m
+  Total failures: [32m0[0m
+  Success rate: [32m100.0%[0m
+  Last OK: [32m278 ms ago (at 4241 ms)[0m
+  Last error: [32mnever[0m
+> 
+===== STATE-002 :: settings =====
+=== Cached Settings ===
+  Initialized: YES
+  State: READY
+  Address: 0x40
+  I2C timeout: 50 ms
+  Offline threshold: 5
+  Hooks: nowMs=YES yield=YES
+  Mode: SHUNT_BUS_CONT
+  Averaging: 1 samples
+  VbusCT: 1100us
+  VshCT: 1100us
+  Channels: CH1=ON  CH2=ON  CH3=ON
+  Rshunt: CH1=0.1000  CH2=0.1000  CH3=0.1000 ohm
+  Conversion: started=NO ready=NO start=0 ms
+  Mask/Enable writable cache: 0x0000
+  Hardware config dirty: NO
+  Cycle time: 6600 us
+> 
+===== DATA-001 :: timing =====
+=== Timing Info ===
+  Conversion time: 2200 us
+  Cycle time: 6600 us
+  Averaging: 1 samples
+  VbusCT: 1100us
+  VshCT: 1100us
+  Shunt LSB: 0.04 mV (40 uV)
+  Bus LSB: 8 mV
+  Data shift: 3 bits (data in [15:3])
+> 
+===== DATA-002 :: config =====
+  Config: 0x7127
+  Mode: SHUNT_BUS_CONT
+  Averaging: 1 samples
+  VbusCT: 1100us
+  VshCT: 1100us
+  CH1: ON  CH2: ON  CH3: ON
+  Rshunt: CH1=0.1000  CH2=0.1000  CH3=0.1000 ohm
+  Cycle time: 6600 us
+> 
+===== DATA-003 :: read =====
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+> 
+===== DATA-004 :: ch 1 =====
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+> 
+===== DATA-005 :: shuntraw 1 =====
+  CH1 shunt raw: 48 (0.240 mV)
+> 
+===== DATA-006 :: busraw 1 =====
+  CH1 bus raw: 5040 (5.040 V)
+> 
+===== DATA-007 :: shunt 1 =====
+  CH1 shunt: 0.200 mV
+> 
+===== DATA-008 :: bus 1 =====
+  CH1 bus: 5.040 V
+> 
+===== DATA-009 :: current 1 =====
+  CH1 current: 2.400 mA
+> 
+===== DATA-010 :: power 1 =====
+  CH1 power: 10.080 mW
+> 
+===== DATA-011 :: sumraw =====
+  Shunt sum raw: 0
+> 
+===== DATA-012 :: sum =====
+  Shunt sum: 0.000 mV
+> 
+===== MODE-001 :: mode =====
+  Mode: SHUNT_BUS_CONT
+> 
+===== MODE-002 :: mode pd =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== MODE-003 :: mode sbc =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== MODE-004 :: mode sbtrig =====
+  Status: [31mIN_PROGRESS[0m (code=11, detail=0)
+  Message: [33mConversion started[0m
+> 
+===== MODE-005 :: poll =====
+[36m[I][0m Conversion ready: [32mYES[0m
+> 
+===== MODE-006 :: mode sbc =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== MODE-007 :: start sbtrig =====
+  Status: [31mIN_PROGRESS[0m (code=11, detail=0)
+  Message: [33mConversion started[0m
+> 
+===== MODE-008 :: poll =====
+[36m[I][0m Conversion ready: [32mYES[0m
+> 
+===== MODE-009 :: mode sbc =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== CFG-001 :: avg 0 =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== CFG-002 :: avg 7 =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== CFG-003 :: avg 0 =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== CFG-004 :: vbusct 0 =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== CFG-005 :: vbusct 7 =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== CFG-006 :: vbusct 4 =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== CFG-007 :: vshct 0 =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== CFG-008 :: vshct 7 =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== CFG-009 :: vshct 4 =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== CFG-010 :: chen 3 0 =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== CFG-011 :: ch 3 =====
+  Status: [31mINVALID_CONFIG[0m (code=2, detail=0)
+  Message: [33mChannel disabled[0m
+> 
+===== CFG-012 :: chen 3 1 =====
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== ALERT-001 :: alerts =====
+=== Alert Flags ===
+  Critical: CH1=0  CH2=0  CH3=0
+  Warning:  CH1=0  CH2=0  CH3=0
+  Summation=0  PowerValid=0  TimingCtl=1  ConvReady=1
+> 
+===== ALERT-002 :: mask =====
+=== Mask/Enable Register ===
+  Raw: 0x0003
+  Sum channels: CH1=OFF  CH2=OFF  CH3=OFF
+  Latch: warning=OFF  critical=OFF
+  Critical flags: CH1=0  CH2=0  CH3=0
+  Warning flags:  CH1=0  CH2=0  CH3=0
+  SF=0  PVF=0  TCF=1  CVRF=1
+  Note: reading this register clears latched alert and conversion-ready flags.
+> 
+===== ALERT-003 :: crit =====
+  CH1 critical limit: 32760 (163.800 mV)
+  CH2 critical limit: 32760 (163.800 mV)
+  CH3 critical limit: 32760 (163.800 mV)
+> 
+===== ALERT-004 :: warn =====
+  CH1 warning limit: 32760 (163.800 mV)
+  CH2 warning limit: 32760 (163.800 mV)
+  CH3 warning limit: 32760 (163.800 mV)
+> 
+===== ALERT-005 :: sumlim =====
+  Shunt sum limit: 32766
+> 
+===== ALERT-006 :: pvhi =====
+  Power valid upper limit: 10000 (10.000 V)
+> 
+===== ALERT-007 :: pvlo =====
+  Power valid lower limit: 9000 (9.000 V)
+> 
+===== ALERT-008 :: sumch =====
+=== Mask/Enable Register ===
+  Raw: 0x0003
+  Sum channels: CH1=OFF  CH2=OFF  CH3=OFF
+  Latch: warning=OFF  critical=OFF
+  Critical flags: CH1=0  CH2=0  CH3=0
+  Warning flags:  CH1=0  CH2=0  CH3=0
+  SF=0  PVF=0  TCF=1  CVRF=1
+  Note: reading this register clears latched alert and conversion-ready flags.
+> 
+===== ALERT-009 :: latch =====
+=== Mask/Enable Register ===
+  Raw: 0x0003
+  Sum channels: CH1=OFF  CH2=OFF  CH3=OFF
+  Latch: warning=OFF  critical=OFF
+  Critical flags: CH1=0  CH2=0  CH3=0
+  Warning flags:  CH1=0  CH2=0  CH3=0
+  SF=0  PVF=0  TCF=1  CVRF=1
+  Note: reading this register clears latched alert and conversion-ready flags.
+> 
+===== RESET-001 :: recover =====
+[36m[I][0m Attempting recovery...
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+=== Driver Health ===
+  State: [32mREADY[0m
+  Online: [32myes[0m
+  Consecutive failures: [32m0[0m
+  Total success: [32m56[0m
+  Total failures: [32m0[0m
+  Success rate: [32m100.0%[0m
+  Last OK: [32m0 ms ago (at 16896 ms)[0m
+  Last error: [32mnever[0m
+> 
+===== RESET-002 :: reset =====
+[36m[I][0m Performing software reset...
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+> 
+===== RESET-003 :: recover =====
+[36m[I][0m Attempting recovery...
+  Status: [32mOK[0m (code=0, detail=0)
+  Message: [33mOK[0m
+=== Driver Health ===
+  State: [32mREADY[0m
+  Online: [32myes[0m
+  Consecutive failures: [32m0[0m
+  Total success: [32m61[0m
+  Total failures: [32m0[0m
+  Success rate: [32m100.0%[0m
+  Last OK: [32m0 ms ago (at 17458 ms)[0m
+  Last error: [32mnever[0m
+> 
+===== RESET-004 :: settings =====
+=== Cached Settings ===
+  Initialized: YES
+  State: READY
+  Address: 0x40
+  I2C timeout: 50 ms
+  Offline threshold: 5
+  Hooks: nowMs=YES yield=YES
+  Mode: SHUNT_BUS_CONT
+  Averaging: 1 samples
+  VbusCT: 1100us
+  VshCT: 1100us
+  Channels: CH1=ON  CH2=ON  CH3=ON
+  Rshunt: CH1=0.1000  CH2=0.1000  CH3=0.1000 ohm
+  Conversion: started=NO ready=NO start=0 ms
+  Mask/Enable writable cache: 0x0000
+  Hardware config dirty: NO
+  Cycle time: 6600 us
+> 
+===== MATH-001 :: convert shunt -1 =====
+  Shunt raw -1 = -0.040 mV
+> 
+===== MATH-002 :: convert bus 32767 =====
+  Bus raw 32767 = 32.760 V
+> 
+===== MATH-003 :: convert bus -1 =====
+  Bus raw -1 = -0.008 V
+> 
+===== ERR-001 :: unknown_hil_command =====
+[33m[W][0m Unknown command: unknown_hil_command
+> 
+===== ERR-002 :: ch 4 =====
+[33m[W][0m Invalid channel (1-3)
+> 
+===== ERR-003 :: avg 8 =====
+[33m[W][0m Invalid avg (0-7)
+> 
+===== ERR-004 :: vbusct x =====
+[33m[W][0m Invalid conv time (0-7)
+> 
+===== ERR-005 :: mode nope =====
+[33m[W][0m Invalid mode (pd/strig/btrig/sbtrig/sc/bc/sbc)
+> 
+===== ERR-006 :: reg 0x100 =====
+[33m[W][0m Usage: reg <addr>
+> 
+===== ERR-007 :: stress 0 =====
+[33m[W][0m Invalid count (1-100000)
+> 
+===== STRESS-001 :: selftest =====
+=== INA3221 selftest (safe commands) ===
+  [[32mPASS[0m] probe responds
+  [[32mPASS[0m] probe no-health-side-effects
+  [[32mPASS[0m] readConfig
+  [[32mPASS[0m] readManufacturerId
+  [[32mPASS[0m] readDieId
+  [[32mPASS[0m] readChannel(CH1)
+  [[32mPASS[0m] setMode(SHUNT_BUS_CONT)
+  [[32mPASS[0m] setAveraging(1)
+  [[32mPASS[0m] recover
+  [[32mPASS[0m] isOnline
+Selftest result: pass=[32m10[0m fail=[32m0[0m skip=[33m0[0m
+> 
+===== STRESS-002 :: stress 50 =====
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: [32m50[0m
+  Errors: [32m0[0m
+  Duration: 60 ms
+  Rate: 833.33 samples/s
+  CH1 Vshunt mV: min=0.200 avg=0.223 max=0.240
+  CH1 Vbus V:    min=5.040 avg=5.040 max=5.040
+  CH1 Current mA:min=2.000 avg=2.232 max=2.400
+  CH1 Power mW:  min=10.080 avg=11.249 max=12.096
+  CH2 Vshunt mV: min=0.200 avg=0.224 max=0.240
+  CH2 Vbus V:    min=5.016 avg=5.023 max=5.024
+  CH2 Current mA:min=2.000 avg=2.240 max=2.400
+  CH2 Power mW:  min=10.048 avg=11.252 max=12.058
+  CH3 Vshunt mV: min=0.200 avg=0.231 max=0.240
+  CH3 Vbus V:    min=5.032 avg=5.032 max=5.032
+  CH3 Current mA:min=2.000 avg=2.312 max=2.400
+  CH3 Power mW:  min=10.064 avg=11.634 max=12.077
+> 
+===== STRESS-003 :: stress_mix 50 =====
+=== stress_mix summary ===
+  Total: [32mok=300[0m [32mfail=0[0m ([32m100.00%[0m)
+  Duration: 111 ms
+  Rate: 2702.70 ops/s
+  readBlocking [32mok=50[0m [32mfail=0[0m
+  readConfig   [32mok=50[0m [32mfail=0[0m
+  mfgId        [32mok=50[0m [32mfail=0[0m
+  shuntCh1     [32mok=50[0m [32mfail=0[0m
+  busCh2       [32mok=50[0m [32mfail=0[0m
+  alerts       [32mok=50[0m [32mfail=0[0m
+  Health delta (tracked I2C): [32msuccess +550[0m, [32mfailures +0[0m
+> 
+===== FINAL-001 :: drv =====
+=== Driver Health ===
+  State: [32mREADY[0m
+  Online: [32myes[0m
+  Consecutive failures: [32m0[0m
+  Total success: [32m922[0m
+  Total failures: [32m0[0m
+  Success rate: [32m100.0%[0m
+  Last OK: [32m280 ms ago (at 21567 ms)[0m
+  Last error: [32mnever[0m
+> 
+===== BENCH-001 :: read 50 =====
+--- Reading 1/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 2/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 3/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 4/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 5/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 6/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 7/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.016 V  I=2.400 mA  P=12.038 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 8/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.016 V  I=2.400 mA  P=12.038 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 9/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.016 V  I=2.000 mA  P=10.032 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 10/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.016 V  I=2.000 mA  P=10.032 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 11/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 12/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 13/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 14/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 15/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 16/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.016 V  I=2.400 mA  P=12.038 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 17/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.016 V  I=2.400 mA  P=12.038 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 18/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 19/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 20/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 21/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.016 V  I=2.000 mA  P=10.032 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 22/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.016 V  I=2.000 mA  P=10.032 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 23/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.016 V  I=2.400 mA  P=12.038 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 24/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.016 V  I=2.400 mA  P=12.038 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 25/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 26/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 27/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 28/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 29/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 30/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 31/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 32/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 33/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 34/50 ---
+  CH1: Vshunt=0.240 mV  Vbus=5.040 V  I=2.400 mA  P=12.096 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.016 V  I=2.000 mA  P=10.032 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 35/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.016 V  I=2.000 mA  P=10.032 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 36/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 37/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 38/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 39/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 40/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 41/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 42/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 43/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 44/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.240 mV  Vbus=5.032 V  I=2.400 mA  P=12.077 mW
+--- Reading 45/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 46/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 47/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.240 mV  Vbus=5.024 V  I=2.400 mA  P=12.058 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 48/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 49/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+--- Reading 50/50 ---
+  CH1: Vshunt=0.200 mV  Vbus=5.040 V  I=2.000 mA  P=10.080 mW
+  CH2: Vshunt=0.200 mV  Vbus=5.024 V  I=2.000 mA  P=10.048 mW
+  CH3: Vshunt=0.200 mV  Vbus=5.032 V  I=2.000 mA  P=10.064 mW
+> 
+===== BENCH-002 :: stress 50 =====
+=== Stress Summary ===
+  Target: 50
+  Attempts: 50
+  Success: [32m50[0m
+  Errors: [32m0[0m
+  Duration: 61 ms
+  Rate: 819.67 samples/s
+  CH1 Vshunt mV: min=0.200 avg=0.218 max=0.240
+  CH1 Vbus V:    min=5.040 avg=5.040 max=5.040
+  CH1 Current mA:min=2.000 avg=2.176 max=2.400
+  CH1 Power mW:  min=10.080 avg=10.967 max=12.096
+  CH2 Vshunt mV: min=0.200 avg=0.207 max=0.240
+  CH2 Vbus V:    min=5.016 avg=5.022 max=5.024
+  CH2 Current mA:min=2.000 avg=2.072 max=2.400
+  CH2 Power mW:  min=10.032 avg=10.406 max=12.058
+  CH3 Vshunt mV: min=0.200 avg=0.222 max=0.240
+  CH3 Vbus V:    min=5.032 avg=5.032 max=5.032
+  CH3 Current mA:min=2.000 avg=2.224 max=2.400
+  CH3 Power mW:  min=10.064 avg=11.191 max=12.077
+> 
+===== BENCH-003 :: stress_mix 50 =====
+=== stress_mix summary ===
+  Total: [32mok=300[0m [32mfail=0[0m ([32m100.00%[0m)
+  Duration: 111 ms
+  Rate: 2702.70 ops/s
+  readBlocking [32mok=50[0m [32mfail=0[0m
+  readConfig   [32mok=50[0m [32mfail=0[0m
+  mfgId        [32mok=50[0m [32mfail=0[0m
+  shuntCh1     [32mok=50[0m [32mfail=0[0m
+  busCh2       [32mok=50[0m [32mfail=0[0m
+  alerts       [32mok=50[0m [32mfail=0[0m
+  Health delta (tracked I2C): [32msuccess +550[0m, [32mfailures +0[0m
+> 

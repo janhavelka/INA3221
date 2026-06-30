@@ -38,6 +38,8 @@ struct FakeBus {
   uint8_t lastReadReg = 0;
   uint8_t lastWriteReg = 0;
   uint16_t lastWriteValue = 0;
+  uint32_t failWriteCall = 0;
+  Status failWriteStatus = Status::Error(Err::I2C_ERROR, "forced write failure");
   bool clearMaskEnableReadClearFlags = false;
 
   // Register values returned on read (keyed by register address)
@@ -68,6 +70,9 @@ struct FakeBus {
 Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user) {
   FakeBus* bus = static_cast<FakeBus*>(user);
   bus->writeCalls++;
+  if (bus->failWriteCall != 0U && bus->writeCalls == bus->failWriteCall) {
+    return bus->failWriteStatus;
+  }
   if (!bus->writeStatus.ok()) {
     return bus->writeStatus;
   }
@@ -630,6 +635,25 @@ void test_failed_recover_from_offline_preserves_latch_after_partial_success() {
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_EQUAL_STRING("Driver is offline; call recover()", st.msg);
   TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+}
+
+void test_recover_mask_write_failure_marks_dirty_after_config_reapply() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  TEST_ASSERT_FALSE(dev.hardwareConfigDirty());
+
+  const uint32_t writesBefore = bus.writeCalls;
+  bus.failWriteCall = writesBefore + 2U;  // config reapply succeeds; mask write fails
+  bus.failWriteStatus = Status::Error(Err::I2C_NACK_DATA, "forced mask failure", -41);
+
+  Status st = dev.recover();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_NACK_DATA),
+                          static_cast<uint8_t>(dev.hardwareConfigDirtyStatus().code));
+  TEST_ASSERT_EQUAL_INT32(-41, dev.hardwareConfigDirtyStatus().detail);
 }
 
 // ============================================================================
@@ -1395,6 +1419,24 @@ void test_read_conversion_ready_propagates_i2c_error() {
   TEST_ASSERT_FALSE(ready);
 }
 
+void test_tick_status_propagates_i2c_error_after_delay_gate() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.nowMs += 10;
+  bus.readStatus = Status::Error(Err::I2C_TIMEOUT, "forced tick timeout", -40);
+  Status st = dev.tickStatus(bus.nowMs);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_INT32(-40, st.detail);
+  TEST_ASSERT_FALSE(dev._conversionReady);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(dev.lastError().code));
+}
+
 void test_read_blocking_times_out_with_stalled_clock() {
   FakeBus bus;
   INA3221::INA3221 dev;
@@ -1407,6 +1449,38 @@ void test_read_blocking_times_out_with_stalled_clock() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::TIMEOUT),
                           static_cast<uint8_t>(st.code));
   TEST_ASSERT_TRUE(bus.yieldCalls > 0);
+}
+
+void test_read_blocking_rejects_all_null_outputs_without_i2c() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint32_t readsBefore = bus.readCalls;
+  const uint32_t writesBefore = bus.writeCalls;
+  Status st = dev.readBlocking(nullptr, nullptr, nullptr);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+}
+
+void test_read_blocking_rejects_oversized_timeout_without_i2c() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  const uint32_t readsBefore = bus.readCalls;
+  const uint32_t writesBefore = bus.writeCalls;
+  ChannelMeasurement m;
+  Status st = dev.readBlocking(&m, nullptr, nullptr,
+                               static_cast<uint32_t>(INT32_MAX) + 1U);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
 }
 
 // ============================================================================
@@ -1438,6 +1512,38 @@ void test_raw_transport_rejects_invalid_buffers() {
 
   st = dev._i2cWriteReadRaw(&byte, 1, &rx, 0);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::INVALID_PARAM), static_cast<uint8_t>(st.code));
+}
+
+void test_power_down_returns_status_and_keeps_driver_initialized() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Status st = dev.powerDown();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::READY),
+                          static_cast<uint8_t>(dev.state()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::POWER_DOWN),
+                          static_cast<uint8_t>(dev.getMode()));
+  TEST_ASSERT_EQUAL_UINT8(cmd::REG_CONFIG, bus.lastWriteReg);
+  TEST_ASSERT_EQUAL_HEX16(0x7120, bus.lastWriteValue);
+}
+
+void test_power_down_propagates_write_failure_and_preserves_mode() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  bus.writeStatus = Status::Error(Err::I2C_BUS, "forced power-down failure", -44);
+  Status st = dev.powerDown();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_BUS),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_TRUE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SHUNT_BUS_CONT),
+                          static_cast<uint8_t>(dev.getMode()));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_INT32(-44, dev.hardwareConfigDirtyStatus().detail);
 }
 
 void test_register_access_after_end_does_not_touch_bus() {
@@ -1482,6 +1588,33 @@ void test_end_while_offline_does_not_touch_bus() {
   TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(DriverState::UNINIT),
                           static_cast<uint8_t>(dev.state()));
+}
+
+void test_raw_mask_enable_read_has_read_clear_side_effect() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint16_t flags = static_cast<uint16_t>(cmd::MASK_CF1 | cmd::MASK_WF2 |
+                                              cmd::MASK_CVRF | cmd::MASK_SCC1);
+  bus.registerData[cmd::REG_MASK_ENABLE][0] = static_cast<uint8_t>((flags >> 8) & 0xFF);
+  bus.registerData[cmd::REG_MASK_ENABLE][1] = static_cast<uint8_t>(flags & 0xFF);
+  bus.clearMaskEnableReadClearFlags = true;
+
+  uint16_t first = 0;
+  Status st = dev.readRegister16(cmd::REG_MASK_ENABLE, first);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_BITS_HIGH(static_cast<uint16_t>(cmd::MASK_CF1 | cmd::MASK_WF2 |
+                                             cmd::MASK_CVRF),
+                        first);
+
+  uint16_t second = 0;
+  st = dev.readRegister16(cmd::REG_MASK_ENABLE, second);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_BITS_LOW(static_cast<uint16_t>(cmd::MASK_CF1 | cmd::MASK_WF2 |
+                                            cmd::MASK_CVRF),
+                       second);
+  TEST_ASSERT_BITS_HIGH(cmd::MASK_SCC1, second);
 }
 
 void test_invalid_raw_register_address_does_not_touch_bus() {
@@ -1559,6 +1692,7 @@ int main() {
   RUN_TEST(test_recover_reaches_offline_when_threshold_is_one);
   RUN_TEST(test_offline_latches_normal_read_without_i2c_until_recover);
   RUN_TEST(test_failed_recover_from_offline_preserves_latch_after_partial_success);
+  RUN_TEST(test_recover_mask_write_failure_marks_dirty_after_config_reapply);
 
   // Measurements
   RUN_TEST(test_read_shunt_raw);
@@ -1607,12 +1741,18 @@ int main() {
   RUN_TEST(test_tick_before_conversion_delay_preserves_alert_flags);
   RUN_TEST(test_tick_after_conversion_delay_reads_and_clears_alert_flags);
   RUN_TEST(test_read_conversion_ready_propagates_i2c_error);
+  RUN_TEST(test_tick_status_propagates_i2c_error_after_delay_gate);
   RUN_TEST(test_read_blocking_times_out_with_stalled_clock);
+  RUN_TEST(test_read_blocking_rejects_all_null_outputs_without_i2c);
+  RUN_TEST(test_read_blocking_rejects_oversized_timeout_without_i2c);
 
   // Transport
   RUN_TEST(test_raw_transport_rejects_invalid_buffers);
+  RUN_TEST(test_power_down_returns_status_and_keeps_driver_initialized);
+  RUN_TEST(test_power_down_propagates_write_failure_and_preserves_mode);
   RUN_TEST(test_register_access_after_end_does_not_touch_bus);
   RUN_TEST(test_end_while_offline_does_not_touch_bus);
+  RUN_TEST(test_raw_mask_enable_read_has_read_clear_side_effect);
   RUN_TEST(test_invalid_raw_register_address_does_not_touch_bus);
 
   // Config register

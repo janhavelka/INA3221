@@ -123,7 +123,13 @@ public:
   ///       this may read Mask/Enable to inspect CVRF. Per INA3221 register
   ///       semantics, that read clears CVRF and latched alert flags.
   void tick(uint32_t nowMs);
+  /// Process pending operations and return any I2C/readiness failure.
+  /// @note Same Mask/Enable read-clear side effect as tick().
+  Status tickStatus(uint32_t nowMs);
+  /// Verified power-down write; the driver remains initialized on success.
+  Status powerDown();
   /// Best-effort power the device down and clear cached conversion state.
+  /// @note Use powerDown() first when shutdown I2C failures must be observed.
   void end();
 
   /// Check if begin() completed successfully and end() has not been called.
@@ -217,6 +223,8 @@ public:
   /// yield cooperatively, clear Mask/Enable flags through readiness polling,
   /// and read multiple channel registers in one call. Keep explicit staged
   /// operations in deadline-owned steady polling paths.
+  /// @return INVALID_PARAM if no channel output pointer is provided or the
+  ///         timeout is too large for wrap-safe local deadline math.
   Status readBlocking(ChannelMeasurement* ch1 = nullptr,
                       ChannelMeasurement* ch2 = nullptr,
                       ChannelMeasurement* ch3 = nullptr,
@@ -353,8 +361,12 @@ public:
 
   // === Raw Register Access ===
   /// Read a 16-bit register using tracked I2C access.
+  /// @note Reading REG_MASK_ENABLE clears latched alert and conversion-ready
+  ///       flags per INA3221 register semantics.
   Status readRegister16(uint8_t reg, uint16_t& value);
   /// Write a 16-bit register using tracked I2C access.
+  /// @note Diagnostic raw writes bypass typed cache helpers. Writes to
+  ///       Configuration or Mask/Enable mark hardwareConfigDirty().
   Status writeRegister16(uint8_t reg, uint16_t value);
 
   // === Utility ===

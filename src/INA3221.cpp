@@ -307,28 +307,31 @@ Status INA3221::begin(const Config& config) {
 }
 
 void INA3221::tick(uint32_t nowMs) {
+  (void)tickStatus(nowMs);
+}
+
+Status INA3221::tickStatus(uint32_t nowMs) {
   if (!_initialized) {
-    return;
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
 
   if (_isTriggeredMode() && _conversionStarted && !_conversionReady) {
     bool ready = false;
-    (void)_readConversionReadyAt(nowMs, ready);
+    return _readConversionReadyAt(nowMs, ready);
   }
+  return Status::Ok();
+}
+
+Status INA3221::powerDown() {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  return setMode(Mode::POWER_DOWN);
 }
 
 void INA3221::end() {
-  if (_initialized && _driverState != DriverState::OFFLINE) {
-    uint16_t configReg = _buildConfigRegister();
-    configReg &= static_cast<uint16_t>(~cmd::MASK_MODE);
-    configReg |= (static_cast<uint16_t>(Mode::POWER_DOWN) << cmd::BIT_MODE) & cmd::MASK_MODE;
-
-    const uint8_t tx[3] = {
-      cmd::REG_CONFIG,
-      static_cast<uint8_t>((configReg >> 8) & 0xFF),
-      static_cast<uint8_t>(configReg & 0xFF)
-    };
-    (void)_i2cWriteRaw(tx, sizeof(tx));
+  if (_initialized) {
+    (void)powerDown();
   }
 
   _initialized = false;
@@ -798,6 +801,12 @@ Status INA3221::readBlocking(ChannelMeasurement* ch1,
                              uint32_t timeoutMs) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  if (ch1 == nullptr && ch2 == nullptr && ch3 == nullptr) {
+    return Status::Error(Err::INVALID_PARAM, "At least one output channel is required");
+  }
+  if (timeoutMs > static_cast<uint32_t>(INT32_MAX)) {
+    return Status::Error(Err::INVALID_PARAM, "Timeout too large");
   }
 
   // If continuous mode, just read directly

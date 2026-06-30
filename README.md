@@ -3,7 +3,7 @@
 Production-grade INA3221 triple-channel power monitor I2C driver for
 ESP32-S2 / ESP32-S3 (Arduino framework, PlatformIO, and ESP-IDF component use).
 
-Library version: `v1.2.0`
+Library version: `v2.0.0`
 
 ## Features
 
@@ -26,7 +26,7 @@ Add to `platformio.ini`:
 
 ```ini
 lib_deps =
-  https://github.com/janhavelka/INA3221.git#v1.2.0
+  https://github.com/janhavelka/INA3221.git#v2.0.0
 ```
 
 ### Manual
@@ -43,15 +43,19 @@ example in `examples/esp_idf/basic` uses ESP-IDF `driver/i2c_master.h` glue and
 implements the same bring-up CLI command surface natively with `app_main`,
 `esp_timer`, FreeRTOS waits, and fixed C buffers.
 
-## Release 1.2.0 Highlights
+## Release 2.0.0 Highlights
 
-- Adds ESP-IDF component metadata and root CMake support for component use.
-- Adds the native ESP-IDF `examples/esp_idf/basic` CLI using `driver/i2c_master.h`, `app_main`, `esp_timer`, FreeRTOS waits, and fixed C buffers.
-- Preserves Arduino and ESP-IDF user-visible CLI parity for scan/probe, three-channel measurement, conversion control, alert limits, raw register diagnostics, stress, and self-test workflows.
-- Keeps the driver core framework-neutral; I2C, timing, and cooperative-yield behavior remain callback-injected by the application.
-- Arduino example behavior has owner hardware-test coverage and remains the
-  reference behavior. ESP-IDF support is implemented and statically guarded,
-  but still requires an ESP-IDF build and hardware validation before release.
+- Adds staged polling APIs for deadline-owned I2C owners.
+- Adds `tickStatus()` and `powerDown()` for observable status on bounded poll
+  work and verified shutdown writes.
+- Adds cache/hardware uncertainty diagnostics with `hardwareConfigDirty()`.
+- Preserves Arduino and ESP-IDF user-visible CLI parity for scan/probe,
+  measurement, conversion control, alert limits, raw-register diagnostics,
+  stress, and self-test workflows.
+- Treats `setShuntResistance()` as runtime-only; configure pre-begin shunt
+  values through `Config::shuntResistance`.
+- Adds bounded serial HIL tooling. Hardware results still depend on a
+  responsive fixture and must not be claimed when the runner reports `NOT RUN`.
 
 ## Quick Start
 
@@ -149,6 +153,8 @@ void loop() {
 |--------|-------------|
 | `begin(config)` | Initialize with injected transport and verify manufacturer / die ID |
 | `tick(nowMs)` | Process bounded conversion polling work; in triggered mode it may read Mask/Enable after the delay gate |
+| `tickStatus(nowMs)` | Same bounded work as `tick()`, but returns any readiness/I2C `Status` |
+| `powerDown()` | Verified power-down write while leaving the driver initialized |
 | `end()` | Best-effort power the monitor down and clear cached conversion state |
 | `isInitialized()` | True after successful `begin()` until `end()` |
 | `getConfig()` | Return the driver's cached configuration snapshot |
@@ -174,13 +180,13 @@ void loop() {
 | `startSingleShot()` / `pollSingleShot()` | Staged single-shot sampling for deadline-owned poll loops |
 | `startContinuousRead()` / `pollContinuousRead()` | Staged continuous-mode sampling for deadline-owned poll loops |
 | `pollJob()` / `getPollJobSnapshot()` | Generic staged-job advancement and cache-only raw-result snapshot |
-| `readBlocking()` | Convenience-only bounded helper that can start, poll, yield, and read multiple registers |
+| `readBlocking()` | Convenience-only bounded helper that can start, poll, yield, and read multiple registers; requires at least one output channel |
 
 ### Raw Access And Compatibility Aliases
 
 | Method | Description |
 |--------|-------------|
-| `readRegister16(reg, value)` | Read a tracked 16-bit register; valid addresses are `0x00`-`0x11`, `0xFE`, `0xFF` |
+| `readRegister16(reg, value)` | Read a tracked 16-bit register; valid addresses are `0x00`-`0x11`, `0xFE`, `0xFF`; reading `REG_MASK_ENABLE` clears CVRF and latched flags |
 | `writeRegister16(reg, value)` | Write a tracked 16-bit register; invalid addresses are rejected before I2C |
 | `readAndClearAlertFlags()` | Explicit Mask/Enable read that clears CVRF and latched alert flags |
 | `startApplyMaskEnable()` / `pollApplyMaskEnable()` | Staged one-instruction Mask/Enable writable-bit write |
@@ -216,9 +222,9 @@ Writing a triggered mode to the Configuration register starts a hardware single-
 
 Per-channel measurement APIs return `INVALID_CONFIG` before touching I2C when the requested channel is disabled or when the current mode does not measure the requested quantity. For example, `BUS_CONT` allows bus-voltage reads but not shunt/current/power reads, and `SHUNT_CONT` allows shunt/current reads but not bus/power/full-channel reads.
 
-`readConversionReady()`, `readAlertFlags()`, triggered-mode `tick()` after the delay gate, and staged polling with `pollConversionReady=true` read the Mask/Enable register. Per INA3221 register semantics, that read clears CVRF and latched alert flags. The driver caches a ready triggered conversion before CVRF is cleared so subsequent measurement reads are still allowed.
+`readConversionReady()`, `readAlertFlags()`, `readRegister16(REG_MASK_ENABLE)`, triggered-mode `tick()` / `tickStatus()` after the delay gate, and staged polling with `pollConversionReady=true` read the Mask/Enable register. Per INA3221 register semantics, that read clears CVRF and latched alert flags. The driver caches a ready triggered conversion before CVRF is cleared so subsequent measurement reads are still allowed.
 
-`startSingleShot()` schedules the Configuration-register trigger write; `pollJob(nowMs, maxInstructions)` advances the delay gate, optional destructive readiness read, and enabled-channel raw register reads. `pollConversionReady=false` skips the Mask/Enable read after the conversion delay. `readBlocking()` and `conversionReady()` are convenience APIs. Deadline-owned I2C task loops should use explicit staged operations so each poll has a known transfer budget and so Mask/Enable read-clear points are visible in the owner.
+`startSingleShot()` schedules the Configuration-register trigger write; `pollJob(nowMs, maxInstructions)` advances the delay gate, optional destructive readiness read, and enabled-channel raw register reads. `pollConversionReady=false` skips the Mask/Enable read after the conversion delay. `readBlocking()` and `conversionReady()` are convenience APIs. `readBlocking()` rejects calls with no output channel and rejects timeout values too large for wrap-safe local deadline math. Deadline-owned I2C task loops should use explicit staged operations so each poll has a known transfer budget and so Mask/Enable read-clear points are visible in the owner.
 
 `probe()` uses raw diagnostic I2C and does not update driver health. Transport callback failures such as NACK, bus errors, and timeouts are returned unchanged instead of being collapsed to `DEVICE_NOT_FOUND`.
 

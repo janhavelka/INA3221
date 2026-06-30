@@ -37,7 +37,7 @@ DEFAULT_FAILURE_TOKENS = (
     "Driver is offline",
     "Failed to initialize",
 )
-PROMPT = "> "
+PROMPT_RE = re.compile(r"(?:^|\n)>\s*$")
 
 
 @dataclass(frozen=True)
@@ -81,6 +81,7 @@ class SoakSummary:
     worst_read_latency_s: float = 0.0
     reset_recovery_count: int = 0
     stop_reason: str = ""
+    failure_samples: list[StepResult] = field(default_factory=list)
 
 
 def strip_ansi(text: str) -> str:
@@ -126,7 +127,7 @@ def run_parser_self_test() -> int:
     cases = [
         (
             "ansi pass",
-            "\x1b[36m[I]\x1b[0m === Version Info ===\nINA3221 library version: 1.2.0\n> ",
+            "\x1b[36m[I]\x1b[0m === Version Info ===\nINA3221 library version: 2.0.0\n> ",
             ("Version Info", "INA3221 library version"),
             DEFAULT_FAILURE_TOKENS,
             False,
@@ -219,29 +220,35 @@ class SerialSession:
         return buf.decode(errors="replace")
 
     def send_command(self, command: str) -> None:
-        self.ser.write((command + "\n").encode("utf-8"))
+        self.ser.write((command + "\r\n").encode("utf-8"))
         self.ser.flush()
 
     def read_until_prompt(self, timeout_s: float, idle_timeout_s: float) -> tuple[str, bool]:
+        _ = idle_timeout_s
         deadline = time.monotonic() + timeout_s
-        last_data = time.monotonic()
         buf = bytearray()
         prompt_seen = False
 
         while time.monotonic() < deadline:
             waiting = getattr(self.ser, "in_waiting", 0)
             chunk = self.ser.read(waiting or 1)
-            now = time.monotonic()
             if chunk:
                 buf.extend(chunk)
-                last_data = now
-                if normalize(buf.decode(errors="replace")).rstrip().endswith(">"):
+                if PROMPT_RE.search(normalize(buf.decode(errors="replace"))):
                     prompt_seen = True
                     break
-                continue
 
-            if buf and (now - last_data) >= idle_timeout_s:
-                break
+        if prompt_seen:
+            settle_deadline = time.monotonic() + 0.02
+            while time.monotonic() < settle_deadline:
+                waiting = getattr(self.ser, "in_waiting", 0)
+                if waiting:
+                    chunk = self.ser.read(waiting)
+                    if chunk:
+                        buf.extend(chunk)
+                        settle_deadline = time.monotonic() + 0.02
+                        continue
+                time.sleep(0.002)
 
         return buf.decode(errors="replace"), prompt_seen
 
@@ -275,11 +282,14 @@ def default_steps(stress_count: int, stress_mix_count: int) -> list[Step]:
         Step("MODE-001", "Mode show", "mode", ("Mode:",)),
         Step("MODE-002", "Power-down mode", "mode pd", ("Status: OK",)),
         Step("MODE-003", "Continuous restore", "mode sbc", ("Status: OK",)),
-        Step("MODE-004", "Triggered mode", "mode sbtrig", ("Status: OK",)),
-        Step("MODE-005", "Triggered start", "start", ("Status: IN_PROGRESS",),
+        Step("MODE-004", "Triggered mode", "mode sbtrig", ("Status: IN_PROGRESS",),
              failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
-        Step("MODE-006", "Triggered poll", "poll", ("Conversion ready",)),
-        Step("MODE-007", "Continuous restore", "mode sbc", ("Status: OK",)),
+        Step("MODE-005", "Triggered mode poll", "poll", ("Conversion ready",)),
+        Step("MODE-006", "Continuous restore", "mode sbc", ("Status: OK",)),
+        Step("MODE-007", "Explicit triggered start", "start sbtrig", ("Status: IN_PROGRESS",),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("MODE-008", "Triggered start poll", "poll", ("Conversion ready",)),
+        Step("MODE-009", "Continuous restore", "mode sbc", ("Status: OK",)),
         Step("CFG-001", "Averaging lower bound", "avg 0", ("Status: OK",)),
         Step("CFG-002", "Averaging upper bound", "avg 7", ("Status: OK",)),
         Step("CFG-003", "Averaging restore", "avg 0", ("Status: OK",)),
@@ -354,8 +364,10 @@ def run_step(
     step: Step,
     default_timeout_s: float,
     idle_timeout_s: float,
+    resync_timeout_s: float,
     transcript: list[str],
     verbose: bool,
+    command_pacing_s: float,
 ) -> StepResult:
     timeout_s = step.timeout_s if step.timeout_s is not None else default_timeout_s
     transcript.append(f"\n===== {step.test_id} :: {step.command} =====\n")
@@ -376,10 +388,15 @@ def run_step(
     )
     if step.notes:
         note = f"{note}; {step.notes}"
+    if not prompt_seen and resync_timeout_s > 0.0:
+        transcript.append(f"\n===== RESYNC after {step.test_id} =====\n")
+        extra, resynced = session.read_until_prompt(resync_timeout_s, idle_timeout_s)
+        transcript.append(extra)
+        note = f"{note}; resync {'ok' if resynced else 'failed'}"
     if verbose:
         print(f"  {status} {elapsed:.3f}s {note}")
 
-    return StepResult(
+    result = StepResult(
         test_id=step.test_id,
         feature=step.feature,
         command=step.command,
@@ -389,6 +406,9 @@ def run_step(
         status=status,
         notes=note,
     )
+    if command_pacing_s > 0.0:
+        time.sleep(command_pacing_s)
+    return result
 
 
 def run_soak(
@@ -396,9 +416,13 @@ def run_soak(
     duration_s: float,
     default_timeout_s: float,
     idle_timeout_s: float,
+    resync_timeout_s: float,
     transcript: list[str],
     verbose: bool,
     failure_limit: int,
+    command_pacing_s: float,
+    pacing_s: float,
+    capture_transcript: bool,
 ) -> SoakSummary:
     summary = SoakSummary(status="PASS")
     summary.start_iso = now_iso()
@@ -413,12 +437,17 @@ def run_soak(
         Step("SOAK-RAW-B", "Soak raw bus", "busraw 1", ("CH1 bus raw",)),
         Step("SOAK-I", "Soak current", "current 1", ("CH1 current",)),
         Step("SOAK-P", "Soak power", "power 1", ("CH1 power",)),
-        Step("SOAK-SET", "Soak settings", "settings", ("Cached Settings",)),
-        Step("SOAK-DRV", "Soak health", "drv", ("Driver Health",)),
-        Step("SOAK-PROBE", "Soak probe", "probe", ("Status: OK",)),
+        Step("SOAK-RD", "Soak read", "read", ("CH1:",)),
+        Step("SOAK-RAW-S", "Soak raw shunt", "shuntraw 1", ("CH1 shunt raw",)),
+        Step("SOAK-RAW-B", "Soak raw bus", "busraw 1", ("CH1 bus raw",)),
+        Step("SOAK-I", "Soak current", "current 1", ("CH1 current",)),
+        Step("SOAK-P", "Soak power", "power 1", ("CH1 power",)),
         Step("SOAK-POLL", "Soak readiness", "poll", ("Conversion ready",)),
         Step("SOAK-MIX", "Soak mixed stress", "stress_mix 5",
              ("stress_mix summary", "fail=0"), timeout_s=max(10.0, default_timeout_s)),
+        Step("SOAK-SET", "Soak settings", "settings", ("Cached Settings",)),
+        Step("SOAK-DRV", "Soak health", "drv", ("Driver Health",)),
+        Step("SOAK-PROBE", "Soak probe", "probe", ("Status: OK",)),
         Step("SOAK-REC", "Soak recover", "recover", ("Status: OK",)),
     ]
 
@@ -431,8 +460,10 @@ def run_soak(
             step,
             default_timeout_s,
             idle_timeout_s,
-            transcript,
+            resync_timeout_s,
+            transcript if capture_transcript else [],
             verbose,
+            command_pacing_s,
         )
         summary.command_counts[step.command] = summary.command_counts.get(step.command, 0) + 1
         latencies.append(result.elapsed_s)
@@ -448,18 +479,28 @@ def run_soak(
             summary.unknown_count += 1
         else:
             summary.fail_count += 1
+            if len(summary.failure_samples) < 10:
+                summary.failure_samples.append(result)
             consecutive_failures += 1
             summary.max_consecutive_failures = max(
                 summary.max_consecutive_failures, consecutive_failures
             )
             if consecutive_failures == 1:
                 summary.consecutive_failure_bursts += 1
+            if "resync failed" in result.notes:
+                summary.status = "FAIL"
+                summary.stop_reason = (
+                    f"stopped after prompt timeout and failed resync at {result.test_id}"
+                )
+                break
             if consecutive_failures >= failure_limit:
                 summary.status = "FAIL"
                 summary.stop_reason = (
                     f"stopped after {consecutive_failures} consecutive failed commands"
                 )
                 break
+        if pacing_s > 0.0:
+            time.sleep(pacing_s)
 
     summary.end_iso = now_iso()
     summary.elapsed_s = max(0.0, duration_s - max(0.0, deadline - time.monotonic()))
@@ -528,7 +569,11 @@ def write_markdown_report(
     lines.append(f"- Serial: `{args.port or 'not set'}` at `{args.baud}` baud")
     lines.append(f"- Per-command timeout: `{args.timeout_s}` s")
     lines.append(f"- Idle timeout: `{args.idle_timeout_s}` s")
+    lines.append(f"- Timeout resync: `{args.resync_timeout_s}` s")
     lines.append(f"- Boot settle: `{args.boot_settle_s}` s")
+    lines.append(f"- Command pacing: `{args.command_pacing_ms}` ms")
+    lines.append(f"- Soak pacing: `{args.soak_pacing_ms}` ms")
+    lines.append(f"- Soak transcript capture: `{'disabled' if args.no_soak_transcript else 'enabled'}`")
     if run_error:
         lines.append(f"- Run error: `{run_error}`")
     lines.append("")
@@ -574,7 +619,7 @@ def write_markdown_report(
             + " |"
         )
     lines.append("")
-    lines.append("## 8-Hour Soak")
+    lines.append("## Soak Summary")
     lines.append("")
     lines.append(f"- Result: `{soak.status}`")
     lines.append(f"- Start: `{soak.start_iso or 'not run'}`")
@@ -593,11 +638,33 @@ def write_markdown_report(
         for command, count in sorted(soak.command_counts.items()):
             lines.append(f"| `{markdown_escape(command)}` | {count} |")
     lines.append("")
+    if soak.failure_samples:
+        lines.append("### Soak Failure Samples")
+        lines.append("")
+        lines.append("| Test ID | Command | Observed | Elapsed s | Notes |")
+        lines.append("|---|---|---|---:|---|")
+        for failure in soak.failure_samples:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        markdown_escape(failure.test_id),
+                        markdown_escape(failure.command),
+                        markdown_escape(failure.observed),
+                        f"{failure.elapsed_s:.3f}",
+                        markdown_escape(failure.notes),
+                    ]
+                )
+                + " |"
+            )
+        lines.append("")
     lines.append("## Limitations")
     lines.append("")
     lines.append("- Electrical fault injection, disconnect testing, and unsafe stimulus are not attempted by this runner.")
     lines.append("- Raw register writes are intentionally excluded from the default suite.")
     lines.append("- Fixture-specific wiring and load plausibility require manual confirmation.")
+    if args.no_soak_transcript:
+        lines.append("- Per-command soak transcript capture was disabled to keep long soak runs bounded in memory; functional pre-soak transcript and soak summary counters are still reported.")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -621,7 +688,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate")
     parser.add_argument("--timeout-s", type=float, default=5.0, help="Per-command timeout")
     parser.add_argument("--idle-timeout-s", type=float, default=0.3, help="Read idle timeout")
+    parser.add_argument("--resync-timeout-s", type=float, default=5.0,
+                        help="Extra prompt wait after a timed-out command before continuing")
     parser.add_argument("--boot-settle-s", type=float, default=2.0, help="Boot/reset settle time")
+    parser.add_argument("--command-pacing-ms", type=float, default=250.0,
+                        help="Delay after each command before sending the next one")
     parser.add_argument("--reset", action="store_true", help="Pulse RTS for an app reset before reading boot output")
     parser.add_argument("--continue-after-connect-fail", action="store_true",
                         help="Continue the suite even if the first command is not responsive")
@@ -638,6 +709,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--soak-seconds", type=float, default=0.0, help="Optional soak duration in seconds")
     parser.add_argument("--soak-failure-limit", type=int, default=3,
                         help="Stop soak after this many consecutive failures")
+    parser.add_argument("--soak-pacing-ms", type=float, default=250.0,
+                        help="Optional delay between soak commands")
+    parser.add_argument("--no-soak-transcript", action="store_true",
+                        help="Do not retain per-command soak transcripts in memory")
     return parser.parse_args(argv)
 
 
@@ -684,8 +759,10 @@ def main(argv: list[str]) -> int:
                 step,
                 args.timeout_s,
                 args.idle_timeout_s,
+                args.resync_timeout_s,
                 transcript,
                 args.verbose,
+                max(0.0, args.command_pacing_ms / 1000.0),
             )
             results.append(result)
             if (
@@ -710,6 +787,24 @@ def main(argv: list[str]) -> int:
                 soak = SoakSummary(status="NOT RUN", stop_reason=reason)
                 suite_aborted = True
                 break
+            if "resync failed" in result.notes:
+                reason = f"prompt timeout and failed resync at {step.test_id}"
+                for skipped in steps[index + 1:]:
+                    results.append(
+                        StepResult(
+                            test_id=skipped.test_id,
+                            feature=skipped.feature,
+                            command=skipped.command,
+                            expected=", ".join(skipped.expected),
+                            observed="not run",
+                            elapsed_s=0.0,
+                            status="NOT RUN",
+                            notes=reason,
+                        )
+                    )
+                soak = SoakSummary(status="NOT RUN", stop_reason=reason)
+                suite_aborted = True
+                break
 
         soak_duration = args.soak_seconds or (args.soak_hours * 3600.0)
         if soak_duration > 0.0 and not suite_aborted:
@@ -718,9 +813,13 @@ def main(argv: list[str]) -> int:
                 soak_duration,
                 args.timeout_s,
                 args.idle_timeout_s,
+                args.resync_timeout_s,
                 transcript,
                 args.verbose,
                 args.soak_failure_limit,
+                max(0.0, args.command_pacing_ms / 1000.0),
+                max(0.0, args.soak_pacing_ms / 1000.0),
+                not args.no_soak_transcript,
             )
     except Exception as exc:
         run_error = str(exc)

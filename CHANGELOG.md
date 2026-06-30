@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-06-29
+
 ### Added
+- Added `tickStatus(nowMs)` for callers that need the bounded `tick()` work
+  plus an observable `Status` result.
+- Added `powerDown()` for verified shutdown writes while keeping `end()` as a
+  best-effort teardown API.
 - Added staged polling APIs for deadline-owned I2C loops:
   `startSingleShot()`, `pollSingleShot()`, `startContinuousRead()`,
   `pollContinuousRead()`, `pollJob()`, `getPollJobSnapshot()`,
@@ -26,22 +32,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native budget coverage for single-instruction, two-instruction, and draining
   staged sample polls, disabled-channel skipping, destructive readiness reads,
   continuous reads, and staged Mask/Enable writes.
+- Native coverage for `tickStatus()` I2C error propagation, `powerDown()`
+  success/failure behavior, `readBlocking()` validation, raw Mask/Enable
+  read-clear side effects, and recover split-write failure diagnostics.
 
 ### Changed
 - Documented `readBlocking()` and `conversionReady()` as convenience APIs for
   non-steady paths, with staged polling APIs preferred for deadline-owned I2C
   owners.
+- `readBlocking()` now rejects calls with no output channels and rejects
+  timeout values too large for wrap-safe local deadline math.
 - `setShuntResistance()` is now runtime-only; pre-begin shunt values must be
   supplied through `Config::shuntResistance`.
+- Raw `readRegister16(REG_MASK_ENABLE)` side effects are documented alongside
+  typed Mask/Enable readers.
 - Documented the serial HIL runner and its fixture limitations.
+- The HIL runner now uses more conservative default command pacing, a less
+  diagnostic-heavy soak cycle, and fail-fast handling when prompt resync fails.
 
 ### Fixed
 - `probe()` now preserves raw transport errors instead of collapsing I2C
   timeout, bus, or NACK failures to `DEVICE_NOT_FOUND`.
 - Per-channel measurement reads now reject disabled channels and quantities not
   produced by the active mode before touching I2C.
-- Failed Configuration or Mask/Enable cache writes now expose cache/hardware
-  uncertainty instead of silently relying on rolled-back cached state.
+- Failed Configuration or Mask/Enable cache writes, including split recover
+  failures, now expose cache/hardware uncertainty instead of silently relying on
+  rolled-back cached state.
+- Arduino CLI diagnostics now flush and yield during long multi-line responses
+  to avoid USB CDC output backpressure during HIL soak runs.
 
 ## [1.2.0] - 2026-05-20
 
@@ -148,7 +166,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `end()` now best-effort powers the monitor down before clearing runtime state.
 - `recover()` now re-validates manufacturer / die IDs, clears conversion state, and reapplies cached configuration.
 
-[Unreleased]: https://github.com/janhavelka/INA3221/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/janhavelka/INA3221/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/janhavelka/INA3221/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/janhavelka/INA3221/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/janhavelka/INA3221/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/janhavelka/INA3221/releases/tag/v1.0.0

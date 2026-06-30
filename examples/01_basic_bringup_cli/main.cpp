@@ -138,6 +138,13 @@ void printPrompt() {
   Serial.flush();
 }
 
+void serviceCliOutput() {
+  // Let USB CDC drain during multi-line diagnostic responses.
+  Serial.flush();
+  yield();
+  delay(1);
+}
+
 void resetStressStats(int target) {
   stressStats.active = true;
   stressStats.startMs = millis();
@@ -323,6 +330,7 @@ void printDriverHealth() {
                 successRateColor(successRate),
                 successRate,
                 LOG_COLOR_RESET);
+  serviceCliOutput();
 
   const uint32_t lastOkMs = device.lastOkMs();
   if (lastOkMs > 0U) {
@@ -356,6 +364,7 @@ void printDriverHealth() {
       Serial.printf("  Error msg: %s%s%s\n", LOG_COLOR_YELLOW, lastErr.msg, LOG_COLOR_RESET);
     }
   }
+  serviceCliOutput();
 }
 
 void printHelp() {
@@ -649,6 +658,7 @@ void printSettingsSnapshot() {
   Serial.printf("  Hooks: nowMs=%s yield=%s\n",
                 snap.hasNowMsHook ? "YES" : "NO",
                 snap.hasCooperativeYieldHook ? "YES" : "NO");
+  serviceCliOutput();
   Serial.printf("  Mode: %s\n", modeToStr(snap.mode));
   Serial.printf("  Averaging: %s samples\n", avgToStr(snap.averaging));
   Serial.printf("  VbusCT: %s\n", ctToStr(snap.vBusCt));
@@ -661,19 +671,23 @@ void printSettingsSnapshot() {
                 static_cast<double>(snap.shuntResistance[0]),
                 static_cast<double>(snap.shuntResistance[1]),
                 static_cast<double>(snap.shuntResistance[2]));
+  serviceCliOutput();
   Serial.printf("  Conversion: started=%s ready=%s start=%lu ms\n",
                 snap.conversionStarted ? "YES" : "NO",
                 snap.conversionReady ? "YES" : "NO",
                 static_cast<unsigned long>(snap.conversionStartMs));
   Serial.printf("  Mask/Enable writable cache: 0x%04X\n", snap.maskEnableWritableCache);
   Serial.printf("  Hardware config dirty: %s\n", snap.hardwareConfigDirty ? "YES" : "NO");
+  serviceCliOutput();
   if (snap.hardwareConfigDirty) {
     Serial.printf("  Dirty reason: %s (code=%u detail=%ld)\n",
                   errToStr(snap.hardwareConfigDirtyStatus.code),
                   static_cast<unsigned>(snap.hardwareConfigDirtyStatus.code),
                   static_cast<long>(snap.hardwareConfigDirtyStatus.detail));
+    serviceCliOutput();
   }
   Serial.printf("  Cycle time: %lu us\n", static_cast<unsigned long>(device.getCycleTimeUs()));
+  serviceCliOutput();
 }
 
 void printMaskEnable() {
