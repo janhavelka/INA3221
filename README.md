@@ -276,6 +276,12 @@ only when the runner reaches a responsive CLI on the documented serial endpoint;
 electrical fault injection and unsafe stimulus remain manual fixture-specific
 work and must be reported as `NOT RUN` when unsupported.
 
+The ESP32-S3 Arduino validation environment uses TinyUSB CDC
+(`ARDUINO_USB_MODE=0`) because the board's default USB Serial/JTAG HWCDC path
+can leave queued CLI output undrained during long soak runs. TinyUSB CDC may
+enumerate on a different COM port after upload and can require DTR asserted;
+use `--dtr` with the HIL runner for that endpoint.
+
 ### Example Helpers (`examples/common/`)
 
 Not part of the library. These simulate project-level glue and keep examples self-contained:
@@ -308,11 +314,16 @@ idf.py -C examples/esp_idf/basic set-target esp32s3 build
 idf.py -C examples/esp_idf/basic set-target esp32s2 build
 ```
 
+Pure ESP-IDF validation requires `idf.py` on `PATH`. If it is unavailable
+locally, record that explicitly and do not claim local ESP-IDF build success
+unless a real `idf.py` transcript or CI log is available.
+
 ## Documentation
 
 - `CHANGELOG.md` — full release history
 - `docs/IDF_PORT.md` — ESP-IDF portability guidance
 - `docs/IDF_PORT_IMPLEMENTATION.md` — ESP-IDF implementation notes and validation status
+- `docs/reports/hil-validation-summary-20260701.md` — compact release HIL summary
 - `INA3221_triple_power_monitor_implementation_manual.md` — implementation reference
 
 ## License

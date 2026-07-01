@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `tools/hil_cli_runner.py` for bounded serial CLI HIL runs with parser
   self-test, dry-run, transcript capture, Markdown reporting, benchmark steps,
   and optional soak duration limits.
+- Added HIL runner DTR/RTS line-state options for native USB CDC serial
+  endpoints that require DTR before they emit CLI output.
 - Native coverage for probe transport-error preservation, disabled and
   mode-inactive measurement reads, `tick()` Mask/Enable read-clear behavior,
   and bus-voltage conversion boundaries.
@@ -49,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documented the serial HIL runner and its fixture limitations.
 - The HIL runner now uses more conservative default command pacing, a less
   diagnostic-heavy soak cycle, and fail-fast handling when prompt resync fails.
+- ESP32-S3 Arduino example builds now use TinyUSB CDC (`ARDUINO_USB_MODE=0`)
+  instead of USB Serial/JTAG HWCDC for stable long-running HIL output.
+- Consolidated generated HIL reports into a maintained summary and removed full
+  transcripts/PID artifacts from release docs.
 
 ### Fixed
 - `probe()` now preserves raw transport errors instead of collapsing I2C
@@ -60,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rolled-back cached state.
 - Arduino CLI diagnostics now flush and yield during long multi-line responses
   to avoid USB CDC output backpressure during HIL soak runs.
+- Avoided ESP32-S3 HWCDC serial stalls observed during long HIL soak runs by
+  validating the example on TinyUSB CDC with explicit DTR.
 
 ## [1.2.0] - 2026-05-20
 

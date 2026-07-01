@@ -178,7 +178,15 @@ def run_parser_self_test() -> int:
 
 
 class SerialSession:
-    def __init__(self, port: str, baud: int, read_timeout_s: float) -> None:
+    def __init__(
+        self,
+        port: str,
+        baud: int,
+        read_timeout_s: float,
+        *,
+        dtr: bool = False,
+        rts: bool = False,
+    ) -> None:
         try:
             import serial  # type: ignore
         except ImportError as exc:  # pragma: no cover - depends on host setup
@@ -193,9 +201,10 @@ class SerialSession:
             timeout=read_timeout_s,
             write_timeout=read_timeout_s,
         )
-        # Match platformio.ini defaults for USB CDC targets.
-        self.ser.dtr = False
-        self.ser.rts = False
+        self._dtr = dtr
+        self._rts = rts
+        self.ser.dtr = self._dtr
+        self.ser.rts = self._rts
 
     def close(self) -> None:
         self.ser.close()
@@ -206,7 +215,8 @@ class SerialSession:
         self.ser.dtr = False
         self.ser.rts = True
         time.sleep(0.1)
-        self.ser.rts = False
+        self.ser.rts = self._rts
+        self.ser.dtr = self._dtr
         time.sleep(settle_s)
 
     def read_available_for(self, duration_s: float) -> str:
@@ -567,6 +577,7 @@ def write_markdown_report(
     lines.append(f"- Python: `{sys.version.split()[0]}`")
     lines.append(f"- PlatformIO: `{command_output(['pio', '--version'])}`")
     lines.append(f"- Serial: `{args.port or 'not set'}` at `{args.baud}` baud")
+    lines.append(f"- Serial line state: `DTR={'1' if args.dtr else '0'}, RTS={'1' if args.rts else '0'}`")
     lines.append(f"- Per-command timeout: `{args.timeout_s}` s")
     lines.append(f"- Idle timeout: `{args.idle_timeout_s}` s")
     lines.append(f"- Timeout resync: `{args.resync_timeout_s}` s")
@@ -693,6 +704,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--boot-settle-s", type=float, default=2.0, help="Boot/reset settle time")
     parser.add_argument("--command-pacing-ms", type=float, default=250.0,
                         help="Delay after each command before sending the next one")
+    parser.add_argument("--dtr", action="store_true",
+                        help="Assert DTR while running the serial session")
+    parser.add_argument("--rts", action="store_true",
+                        help="Assert RTS while running the serial session")
     parser.add_argument("--reset", action="store_true", help="Pulse RTS for an app reset before reading boot output")
     parser.add_argument("--continue-after-connect-fail", action="store_true",
                         help="Continue the suite even if the first command is not responsive")
@@ -740,7 +755,13 @@ def main(argv: list[str]) -> int:
 
     session: Optional[SerialSession] = None
     try:
-        session = SerialSession(args.port, args.baud, read_timeout_s=0.05)
+        session = SerialSession(
+            args.port,
+            args.baud,
+            read_timeout_s=0.05,
+            dtr=args.dtr,
+            rts=args.rts,
+        )
         if args.reset:
             session.reset_target(args.boot_settle_s)
         else:
