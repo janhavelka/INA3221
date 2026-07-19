@@ -23,6 +23,16 @@
 INA3221::INA3221 device;
 bool verboseMode = false;
 
+enum class OwnerDemoPhase : uint8_t {
+  IDLE,
+  INITIALIZING,
+  SAMPLING
+};
+
+OwnerDemoPhase ownerDemoPhase = OwnerDemoPhase::IDLE;
+uint32_t ownerRequestId = 1000U;
+static constexpr uint64_t OWNER_JOB_TIMEOUT_MS = 1000U;
+
 struct ChannelStressStats {
   bool enabled = false;
   bool hasSample = false;
@@ -77,8 +87,32 @@ const char* errToStr(INA3221::Err err) {
     case Err::I2C_NACK_DATA:            return "I2C_NACK_DATA";
     case Err::I2C_TIMEOUT:              return "I2C_TIMEOUT";
     case Err::I2C_BUS:                  return "I2C_BUS";
+    case Err::JOB_BUSY:                 return "JOB_BUSY";
+    case Err::RESULT_PENDING:           return "RESULT_PENDING";
+    case Err::NO_RESULT:                return "NO_RESULT";
+    case Err::CANCELLED:                return "CANCELLED";
+    case Err::DEADLINE_EXPIRED:         return "DEADLINE_EXPIRED";
+    case Err::CONFIG_UNKNOWN:           return "CONFIG_UNKNOWN";
+    case Err::PROFILE_MISMATCH:         return "PROFILE_MISMATCH";
+    case Err::READ_ONLY_REGISTER:       return "READ_ONLY_REGISTER";
+    case Err::ARITHMETIC_OVERFLOW:      return "ARITHMETIC_OVERFLOW";
+    case Err::OUT_OF_RANGE:             return "OUT_OF_RANGE";
+    case Err::NO_ACTIVE_JOB:            return "NO_ACTIVE_JOB";
+    case Err::JOB_KIND_MISMATCH:        return "JOB_KIND_MISMATCH";
+    case Err::CONVERSION_BUSY:          return "CONVERSION_BUSY";
+    case Err::DEVICE_OFFLINE:           return "DEVICE_OFFLINE";
     default:                            return "UNKNOWN";
   }
+}
+
+uint64_t ownerNowMs() {
+  // Extend Arduino's wrapping 32-bit millis() in this single owner context.
+  static uint32_t previous = 0;
+  static uint64_t epoch = 0;
+  const uint32_t current = millis();
+  if (current < previous) epoch += (static_cast<uint64_t>(1U) << 32U);
+  previous = current;
+  return epoch | current;
 }
 
 uint32_t exampleNowMs(void*) {
@@ -390,6 +424,9 @@ void printHelp() {
   cli::printHelpItem("start", "Start single-shot conversion");
   cli::printHelpItem("start <mode>", "Start with triggered mode (strig/btrig/sbtrig)");
   cli::printHelpItem("poll", "Check if conversion is ready");
+  cli::printHelpItem("job", "Show cooperative owner-job progress");
+  cli::printHelpItem("job sample", "Start a budget-one triggered sample");
+  cli::printHelpItem("job cancel", "Cancel active job without I2C");
 
   cli::printHelpSection("Configuration");
   cli::printHelpItem("mode [pd|strig|btrig|sbtrig|sc|bc|sbc]", "Set/show operating mode");
@@ -440,6 +477,126 @@ void printVersionInfo() {
                 INA3221::VERSION_MAJOR,
                 INA3221::VERSION_MINOR,
                 INA3221::VERSION_PATCH);
+}
+
+INA3221::TransportConfig makeOwnerTransport() {
+  INA3221::TransportConfig transportConfig{};
+  transportConfig.i2cWrite = transport::wireWrite;
+  transportConfig.i2cWriteRead = transport::wireWriteRead;
+  transportConfig.i2cUser = transport::configUser();
+  transportConfig.nowMs = transport::arduinoNowMs;
+  transportConfig.cooperativeYield = transport::arduinoYield;
+  transportConfig.defaultTransferTimeoutMs = board::I2C_TIMEOUT_MS;
+  transportConfig.offlineThreshold = 5U;
+  return transportConfig;
+}
+
+INA3221::DeviceProfile makeOwnerProfile() {
+  INA3221::DeviceProfile profile{};
+  profile.i2cAddress = board::INA3221_I2C_ADDR;
+  profile.enabledChannels = INA3221::ALL_CHANNELS;
+  profile.averaging = INA3221::Averaging::AVG_1;
+  profile.vBusCt = INA3221::ConvTime::CT_1100US;
+  profile.vShCt = INA3221::ConvTime::CT_1100US;
+  profile.mode = INA3221::Mode::SHUNT_BUS_TRIG;
+  for (INA3221::ShuntCalibration& shunt : profile.shunts) {
+    shunt.resistanceMicroOhms = 100000U;
+  }
+  return profile;
+}
+
+void printOwnerSample(const INA3221::SampleBatch& sample) {
+  Serial.printf("Owner sample request=%lu profile=%lu valid=0x%02X\n",
+                static_cast<unsigned long>(sample.requestId),
+                static_cast<unsigned long>(sample.profileGeneration),
+                static_cast<unsigned>(sample.validChannels));
+  for (uint8_t i = 0; i < 3U; ++i) {
+    const INA3221::ChannelMask bit = static_cast<INA3221::ChannelMask>(1U << i);
+    if ((sample.validChannels & bit) == 0U) continue;
+    const INA3221::FixedChannelReading& reading = sample.channels[i];
+    Serial.printf("  CH%u: shunt=%lduV bus=%ldmV current=%ldmA power=%ldmW\n",
+                  static_cast<unsigned>(i + 1U),
+                  static_cast<long>(reading.shuntMicroVolts),
+                  static_cast<long>(reading.busMilliVolts),
+                  static_cast<long>(reading.currentMilliAmps),
+                  static_cast<long>(reading.powerMilliWatts));
+  }
+}
+
+INA3221::Status startOwnerSample() {
+  ++ownerRequestId;
+  if (ownerRequestId == 0U) ++ownerRequestId;
+  const uint64_t now = ownerNowMs();
+  INA3221::Status st = device.startTriggeredSample(
+      INA3221::Mode::SHUNT_BUS_TRIG, ownerRequestId,
+      now + OWNER_JOB_TIMEOUT_MS);
+  if (st.inProgress()) ownerDemoPhase = OwnerDemoPhase::SAMPLING;
+  return st;
+}
+
+void serviceOwnerJob() {
+  if (ownerDemoPhase == OwnerDemoPhase::IDLE) return;
+
+  INA3221::JobProgress progress{};
+  (void)device.getJobProgress(progress);
+  if (progress.state == INA3221::JobTerminalState::ACTIVE) {
+    const uint64_t now = ownerNowMs();
+    INA3221::PollContext context{};
+    context.nowMs = now;
+    context.deadlineMs = progress.deadlineMs;
+    context.transferTimeoutMs = board::I2C_TIMEOUT_MS;
+    context.maxTransfers = 1U;  // Normal owner-loop budget: at most one callback.
+    (void)device.pollJob(context);
+    (void)device.getJobProgress(progress);
+  }
+
+  if (!progress.resultPending) return;
+
+  INA3221::JobResult result{};
+  const INA3221::Status takeStatus = device.takeJobResult(result);
+  if (!takeStatus.ok()) {
+    printStatus(takeStatus);
+    ownerDemoPhase = OwnerDemoPhase::IDLE;
+    return;
+  }
+
+  Serial.printf("Owner job kind=%u request=%lu transfers=%u terminal=%u\n",
+                static_cast<unsigned>(result.kind),
+                static_cast<unsigned long>(result.requestId),
+                static_cast<unsigned>(result.transfers),
+                static_cast<unsigned>(result.state));
+  printStatus(result.status);
+
+  if (result.kind == INA3221::JobKind::INITIALIZE && result.status.ok()) {
+    const INA3221::Status sampleStatus = startOwnerSample();
+    if (!sampleStatus.inProgress()) {
+      printStatus(sampleStatus);
+      ownerDemoPhase = OwnerDemoPhase::IDLE;
+    }
+    return;
+  }
+  if (result.kind == INA3221::JobKind::TRIGGERED_SAMPLE && result.sampleValid) {
+    printOwnerSample(result.sample);
+  }
+  ownerDemoPhase = OwnerDemoPhase::IDLE;
+}
+
+void printOwnerJobProgress() {
+  INA3221::JobProgress progress{};
+  const INA3221::Status st = device.getJobProgress(progress);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+  Serial.printf("Owner job kind=%u stage=%u state=%u request=%lu transfers=%u "
+                "lastPoll=%u pending=%u\n",
+                static_cast<unsigned>(progress.kind),
+                static_cast<unsigned>(progress.stage),
+                static_cast<unsigned>(progress.state),
+                static_cast<unsigned long>(progress.requestId),
+                static_cast<unsigned>(progress.totalTransfers),
+                static_cast<unsigned>(progress.lastPollTransfers),
+                progress.resultPending ? 1U : 0U);
 }
 
 const char* modeToStr(INA3221::Mode mode) {
@@ -997,6 +1154,15 @@ void processCommand(const String& cmdLine) {
     printVersionInfo();
   } else if (cmd == "scan") {
     bus_diag::scan();
+  } else if (cmd == "job") {
+    printOwnerJobProgress();
+  } else if (cmd == "job sample") {
+    const INA3221::Status st = startOwnerSample();
+    printStatus(st);
+  } else if (cmd == "job cancel") {
+    // cancelJob() is cache-only and bus-silent; serviceOwnerJob() takes the
+    // resulting terminal record exactly once on the next loop iteration.
+    printStatus(device.cancelJob());
   } else if (cmd == "probe") {
     LOGI("Probing device (no health tracking)...");
     auto st = device.probe();
@@ -1619,35 +1785,38 @@ void setup() {
 
   bus_diag::scan();
 
-  INA3221::Config cfg;
-  cfg.i2cWrite = transport::wireWrite;
-  cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cUser = transport::configUser();
-  cfg.nowMs = transport::arduinoNowMs;
-  cfg.cooperativeYield = transport::arduinoYield;
-  cfg.i2cAddress = board::INA3221_I2C_ADDR;
-  cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
-  cfg.offlineThreshold = 5;
-  cfg.shuntResistance[0] = 0.1f;
-  cfg.shuntResistance[1] = 0.1f;
-  cfg.shuntResistance[2] = 0.1f;
+  const INA3221::TransportConfig transportConfig = makeOwnerTransport();
+  const INA3221::DeviceProfile profile = makeOwnerProfile();
 
-  auto st = device.begin(cfg);
+  // bind() validates and stores contracts without touching I2C. Initialization
+  // is then advanced by serviceOwnerJob(), one transport callback per loop.
+  auto st = device.bind(transportConfig, profile);
   if (!st.ok()) {
-    LOGE("Failed to initialize device");
+    LOGE("Failed to bind device contracts");
     printStatus(st);
     return;
   }
-
-  LOGI("Device initialized successfully");
-  printDriverHealth();
+  ++ownerRequestId;
+  const uint64_t now = ownerNowMs();
+  st = device.startInitialize(ownerRequestId, now + OWNER_JOB_TIMEOUT_MS);
+  if (!st.inProgress()) {
+    LOGE("Failed to start staged initialization");
+    printStatus(st);
+    device.unbind();
+    return;
+  }
+  ownerDemoPhase = OwnerDemoPhase::INITIALIZING;
+  LOGI("Staged initialization started (budget=1 transfer/loop)");
 
   Serial.println("\nType 'help' for commands");
   printPrompt();
 }
 
 void loop() {
-  device.tick(millis());
+  serviceOwnerJob();
+  if (ownerDemoPhase == OwnerDemoPhase::IDLE && device.isInitialized()) {
+    (void)device.tickStatus(millis());
+  }
 
   static String inputBuffer;
   static constexpr size_t kMaxInputLen = 128;

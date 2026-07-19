@@ -12,9 +12,15 @@ namespace {
 
 Ina3221IdfI2c gTransport;
 
-int clampTimeoutMs(uint32_t timeoutMs) {
-  const uint32_t maxTimeout = static_cast<uint32_t>(std::numeric_limits<int>::max());
-  return static_cast<int>(timeoutMs > maxTimeout ? maxTimeout : timeoutMs);
+INA3221::Status validateTimeout(uint32_t timeoutMs, int& outTimeoutMs) {
+  const uint32_t maxTimeout =
+      static_cast<uint32_t>(std::numeric_limits<int>::max());
+  if (timeoutMs == 0 || timeoutMs > maxTimeout) {
+    return INA3221::Status::Error(INA3221::Err::INVALID_PARAM,
+                                  "I2C timeout is outside IDF range");
+  }
+  outTimeoutMs = static_cast<int>(timeoutMs);
+  return INA3221::Status::Ok();
 }
 
 INA3221::Status mapEspErr(esp_err_t err, const char* context) {
@@ -125,7 +131,12 @@ INA3221::Status ina3221IdfI2cWrite(uint8_t addr, const uint8_t* data, size_t len
     return INA3221::Status::Error(INA3221::Err::INVALID_PARAM, "Invalid I2C write buffer");
   }
 
-  ctx->lastError = i2c_master_transmit(ctx->dev, data, len, clampTimeoutMs(timeoutMs));
+  int transferTimeoutMs = 0;
+  st = validateTimeout(timeoutMs, transferTimeoutMs);
+  if (!st.ok()) return st;
+
+  // Exactly one physical attempt. Retry and recovery belong to the bus owner.
+  ctx->lastError = i2c_master_transmit(ctx->dev, data, len, transferTimeoutMs);
   return mapEspErr(ctx->lastError, "I2C write failed");
 }
 
@@ -142,8 +153,13 @@ INA3221::Status ina3221IdfI2cWriteRead(uint8_t addr, const uint8_t* txData,
     return INA3221::Status::Error(INA3221::Err::INVALID_PARAM, "Invalid I2C read buffer");
   }
 
+  int transferTimeoutMs = 0;
+  st = validateTimeout(timeoutMs, transferTimeoutMs);
+  if (!st.ok()) return st;
+
+  // Exactly one combined physical attempt. There is no hidden retry/recovery.
   ctx->lastError = i2c_master_transmit_receive(
-      ctx->dev, txData, txLen, rxData, rxLen, clampTimeoutMs(timeoutMs));
+      ctx->dev, txData, txLen, rxData, rxLen, transferTimeoutMs);
   return mapEspErr(ctx->lastError, "I2C write-read failed");
 }
 
@@ -159,6 +175,10 @@ INA3221::Status ina3221IdfI2cWriteReadAt(uint8_t addr, const uint8_t* txData,
     return INA3221::Status::Error(INA3221::Err::INVALID_PARAM, "Invalid I2C read buffer");
   }
 
+  int transferTimeoutMs = 0;
+  INA3221::Status timeoutStatus = validateTimeout(timeoutMs, transferTimeoutMs);
+  if (!timeoutStatus.ok()) return timeoutStatus;
+
   i2c_master_dev_handle_t tempDev = nullptr;
   i2c_master_dev_handle_t dev = ctx->dev;
   if (addr != ctx->address) {
@@ -173,7 +193,7 @@ INA3221::Status ina3221IdfI2cWriteReadAt(uint8_t addr, const uint8_t* txData,
   }
 
   ctx->lastError = i2c_master_transmit_receive(
-      dev, txData, txLen, rxData, rxLen, clampTimeoutMs(timeoutMs));
+      dev, txData, txLen, rxData, rxLen, transferTimeoutMs);
   if (tempDev != nullptr) {
     (void)i2c_master_bus_rm_device(tempDev);
   }

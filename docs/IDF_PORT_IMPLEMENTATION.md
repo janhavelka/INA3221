@@ -1,53 +1,65 @@
-# INA3221 ESP-IDF Port Implementation
+# Native ESP-IDF implementation status
 
-Implemented after the ESP-IDF port branch was merged into `main`.
+Last updated: 2026-07-19
 
-## Core Boundary
+## Implemented boundary
 
-- `include/` and `src/` are framework-neutral and do not include Arduino,
-  `Wire`, `Serial`, ESP-IDF I2C, FreeRTOS, or GPIO headers.
-- The driver receives all I2C access through `Config::i2cWrite` and
-  `Config::i2cWriteRead`.
-- `Config::nowMs` and `Config::cooperativeYield` remain optional. If `nowMs` is
-  not supplied, health timestamps use `0`; if `cooperativeYield` is not supplied,
-  the driver performs no scheduler call.
+- The root is an ESP-IDF component; core `include/` and `src/` remain free of
+  framework headers and platform calls.
+- `TransportConfig` carries non-owning I2C callbacks and optional compatibility
+  time/yield hooks. `DeviceProfile` carries the complete fixed-size desired
+  device state and calibration.
+- `bind()`/`unbind()` are zero-I2C/bus-silent. The cooperative engine covers
+  initialize, apply, reconcile, triggered/continuous sample, and verified
+  power-down jobs.
+- `PollContext` carries absolute monotonic time, the effective owner deadline,
+  a per-transfer timeout, and a strict callback budget. The examples use budget
+  one.
+- Terminal state and hardware effect are retained in a take-once `JobResult`.
+  Samples use fixed slots/units plus request/profile provenance. Destructive
+  alert events are retained until explicitly taken.
+- Applied measurement and alert certainty are explicit. Passive
+  READY/DEGRADED/OFFLINE health remains diagnostic and is not an admission gate.
 
-## ESP-IDF Additions
+## ESP-IDF example files
 
-- Root `CMakeLists.txt` registers the library as an ESP-IDF component.
-- `idf_component.yml` declares component-manager metadata for ESP-IDF 6.x and
-  the ESP32-S2/S3 targets.
-- `examples/esp_idf/basic` demonstrates application-owned bus/device setup with
-  the new `driver/i2c_master.h` API, `esp_timer_get_time()` timing, and a
-  FreeRTOS yield hook.
-- The ESP-IDF entry point is a native fixed-buffer command shell with the same
-  three-channel measurements, conversion controls, alert limits, raw-register
-  diagnostics, INA3221 identity scanner, health/recovery, stress, and self-test
-  workflows as the Arduino example.
-- The ESP-IDF example does not include the Arduino CLI source and does not use
-  Arduino compatibility facades.
-- `tools/check_idf_example_contract.py` guards native IDF dependencies, native
-  transport use, command parity, and the absence of Arduino framework tokens in
-  IDF example code.
+- `examples/esp_idf/basic/main/main.cpp` defines native `app_main`, owns the
+  example bus, drives staged initialization and a triggered sample, and retains
+  the full fixed-buffer CLI.
+- `Ina3221IdfI2cTransport.cpp` uses one
+  `i2c_master_transmit()`/`i2c_master_transmit_receive()` call per callback,
+  rejects non-finite or out-of-range timeouts, and performs no retry/recovery.
+- The example uses `esp_timer`, FreeRTOS waits/yields, and
+  `driver/i2c_master.h`; it contains no Arduino CLI source, `Arduino.h`, `Wire`,
+  `String`, `Serial`, `TwoWire`, or compatibility facade.
+- `tools/check_idf_example_contract.py` guards those structural and CLI
+  contracts.
 
-## Validation
+## Validation status and evidence rules
 
-- Static check target: `rg "<Arduino.h>|<Wire.h>|millis\\(|delay\\(|yield\\(" include src`
-  should return no matches.
-- Static parity checks:
-  - `python tools/check_cli_contract.py`
-  - `python tools/check_idf_example_contract.py`
-  - `python tools/check_core_timing_guard.py`
-- Arduino examples remain under `examples/01_basic_bringup_cli` and continue to
-  provide `Wire`, `millis()`, and `yield()` through example-local callbacks.
-- IDF builds were not run in this environment because `idf.py` was not on PATH.
-- Arduino example behavior has owner hardware-test coverage and remains the
-  reference behavior for this pass. ESP-IDF hardware validation has not been
-  performed in this environment.
+The following are static source checks, not ESP-IDF compiles:
 
-## Remaining Hardware Work
+```bash
+python tools/check_cli_contract.py
+python tools/check_idf_example_contract.py
+python tools/check_core_timing_guard.py
+python tools/check_metadata_consistency.py
+```
 
-- Build `examples/esp_idf/basic` for ESP32-S3 and ESP32-S2 with ESP-IDF 6.0.1.
-- Validate manufacturer ID `0x5449`, die ID `0x3220`, three-channel scaling,
-  Mask/Enable clear behavior, alert APIs, and health/recovery behavior on
-  hardware.
+This development environment did not provide local `idf.py`; local ESP32-S3
+and ESP32-S2 IDF builds must therefore be reported as `NOT RUN` unless a later
+real transcript is attached.
+
+CI is configured to run the actual compiler and linker in the official
+`espressif/idf:v6.0.1` container, first for ESP32-S3 and then ESP32-S2. A green
+CI job log is compiled-build evidence for its exact revision. Merely passing
+the static guard or reading the workflow is not equivalent evidence.
+
+PlatformIO Arduino builds and native host tests are separate regression gates.
+Hardware validation is also separate and must not be inferred from any build.
+Remaining fixture work includes identity, three-channel fixed-unit scaling,
+maximum conversion timing, alert retention/read-clear behavior, deadline and
+cancellation behavior, ambiguous writes, and application-owned recovery.
+
+INA3221 registers are volatile and the device has no EEPROM/NVM. There is no
+rare persistence-operation latency to characterize.

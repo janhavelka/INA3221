@@ -7,7 +7,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <limits>
+#include <unistd.h>
 
 #include "INA3221/INA3221.h"
 #include "Ina3221IdfI2cTransport.h"
@@ -29,6 +31,16 @@ static constexpr size_t MAX_LINE_LEN = 128;
 INA3221::INA3221 device;
 bool verboseMode = false;
 uint8_t activeAddress = DEFAULT_ADDR;
+
+enum class OwnerDemoPhase : uint8_t {
+  IDLE,
+  INITIALIZING,
+  SAMPLING
+};
+
+OwnerDemoPhase ownerDemoPhase = OwnerDemoPhase::IDLE;
+uint32_t ownerRequestId = 1000U;
+static constexpr uint64_t OWNER_JOB_TIMEOUT_MS = 1000U;
 
 struct ChannelStressStats {
   bool enabled = false;
@@ -62,6 +74,10 @@ StressStats stressStats;
 
 uint32_t nowMs() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000);
+}
+
+uint64_t ownerNowMs() {
+  return static_cast<uint64_t>(esp_timer_get_time()) / 1000U;
 }
 
 void out(const char* fmt, ...) {
@@ -242,6 +258,20 @@ const char* errToStr(INA3221::Err err) {
     case Err::I2C_NACK_DATA: return "I2C_NACK_DATA";
     case Err::I2C_TIMEOUT: return "I2C_TIMEOUT";
     case Err::I2C_BUS: return "I2C_BUS";
+    case Err::JOB_BUSY: return "JOB_BUSY";
+    case Err::RESULT_PENDING: return "RESULT_PENDING";
+    case Err::NO_RESULT: return "NO_RESULT";
+    case Err::CANCELLED: return "CANCELLED";
+    case Err::DEADLINE_EXPIRED: return "DEADLINE_EXPIRED";
+    case Err::CONFIG_UNKNOWN: return "CONFIG_UNKNOWN";
+    case Err::PROFILE_MISMATCH: return "PROFILE_MISMATCH";
+    case Err::READ_ONLY_REGISTER: return "READ_ONLY_REGISTER";
+    case Err::ARITHMETIC_OVERFLOW: return "ARITHMETIC_OVERFLOW";
+    case Err::OUT_OF_RANGE: return "OUT_OF_RANGE";
+    case Err::NO_ACTIVE_JOB: return "NO_ACTIVE_JOB";
+    case Err::JOB_KIND_MISMATCH: return "JOB_KIND_MISMATCH";
+    case Err::CONVERSION_BUSY: return "CONVERSION_BUSY";
+    case Err::DEVICE_OFFLINE: return "DEVICE_OFFLINE";
     default: return "UNKNOWN";
   }
 }
@@ -312,21 +342,31 @@ void printStatus(const INA3221::Status& st) {
   }
 }
 
-INA3221::Config makeConfig(uint8_t address) {
-  INA3221::Config cfg;
-  cfg.i2cWrite = ina3221IdfI2cWrite;
-  cfg.i2cWriteRead = ina3221IdfI2cWriteRead;
-  cfg.i2cUser = &ina3221IdfTransportContext();
-  cfg.nowMs = ina3221IdfNowMs;
-  cfg.cooperativeYield = ina3221IdfYield;
-  cfg.timeUser = &ina3221IdfTransportContext();
-  cfg.i2cAddress = address;
-  cfg.i2cTimeoutMs = I2C_TIMEOUT_MS;
-  cfg.offlineThreshold = 5;
-  cfg.shuntResistance[0] = 0.1f;
-  cfg.shuntResistance[1] = 0.1f;
-  cfg.shuntResistance[2] = 0.1f;
-  return cfg;
+INA3221::TransportConfig makeOwnerTransport() {
+  INA3221::TransportConfig transportConfig{};
+  transportConfig.i2cWrite = ina3221IdfI2cWrite;
+  transportConfig.i2cWriteRead = ina3221IdfI2cWriteRead;
+  transportConfig.i2cUser = &ina3221IdfTransportContext();
+  transportConfig.nowMs = ina3221IdfNowMs;
+  transportConfig.cooperativeYield = ina3221IdfYield;
+  transportConfig.timeUser = &ina3221IdfTransportContext();
+  transportConfig.defaultTransferTimeoutMs = I2C_TIMEOUT_MS;
+  transportConfig.offlineThreshold = 5U;
+  return transportConfig;
+}
+
+INA3221::DeviceProfile makeOwnerProfile(uint8_t address) {
+  INA3221::DeviceProfile profile{};
+  profile.i2cAddress = address;
+  profile.enabledChannels = INA3221::ALL_CHANNELS;
+  profile.averaging = INA3221::Averaging::AVG_1;
+  profile.vBusCt = INA3221::ConvTime::CT_1100US;
+  profile.vShCt = INA3221::ConvTime::CT_1100US;
+  profile.mode = INA3221::Mode::SHUNT_BUS_TRIG;
+  for (INA3221::ShuntCalibration& shunt : profile.shunts) {
+    shunt.resistanceMicroOhms = 100000U;
+  }
+  return profile;
 }
 
 bool initBus(uint8_t address) {
@@ -414,6 +454,9 @@ void printHelp() {
   printHelpItem("start", "Start single-shot conversion");
   printHelpItem("start <strig|btrig|sbtrig>", "Start selected triggered conversion");
   printHelpItem("poll", "Read conversion-ready flag");
+  printHelpItem("job", "Show cooperative owner-job progress");
+  printHelpItem("job sample", "Start a budget-one triggered sample");
+  printHelpItem("job cancel", "Cancel active job without I2C");
   printHelpItem("mode [pd|strig|btrig|sbtrig|sc|bc|sbc]", "Set/show mode");
   printHelpItem("avg [0..7]", "Set/show averaging");
   printHelpItem("vbusct [0..7]", "Set/show bus conversion time");
@@ -456,6 +499,97 @@ void printVersionInfo() {
       INA3221::VERSION_MAJOR,
       INA3221::VERSION_MINOR,
       INA3221::VERSION_PATCH);
+}
+
+void printOwnerSample(const INA3221::SampleBatch& sample) {
+  out("Owner sample request=%lu profile=%lu valid=0x%02X\n",
+      static_cast<unsigned long>(sample.requestId),
+      static_cast<unsigned long>(sample.profileGeneration),
+      static_cast<unsigned>(sample.validChannels));
+  for (uint8_t i = 0; i < 3U; ++i) {
+    const INA3221::ChannelMask bit = static_cast<INA3221::ChannelMask>(1U << i);
+    if ((sample.validChannels & bit) == 0U) continue;
+    const INA3221::FixedChannelReading& reading = sample.channels[i];
+    out("  CH%u: shunt=%lduV bus=%ldmV current=%ldmA power=%ldmW\n",
+        static_cast<unsigned>(i + 1U),
+        static_cast<long>(reading.shuntMicroVolts),
+        static_cast<long>(reading.busMilliVolts),
+        static_cast<long>(reading.currentMilliAmps),
+        static_cast<long>(reading.powerMilliWatts));
+  }
+}
+
+INA3221::Status startOwnerSample() {
+  ++ownerRequestId;
+  if (ownerRequestId == 0U) ++ownerRequestId;
+  const uint64_t now = ownerNowMs();
+  INA3221::Status st = device.startTriggeredSample(
+      INA3221::Mode::SHUNT_BUS_TRIG, ownerRequestId,
+      now + OWNER_JOB_TIMEOUT_MS);
+  if (st.inProgress()) ownerDemoPhase = OwnerDemoPhase::SAMPLING;
+  return st;
+}
+
+void serviceOwnerJob() {
+  if (ownerDemoPhase == OwnerDemoPhase::IDLE) return;
+
+  INA3221::JobProgress progress{};
+  (void)device.getJobProgress(progress);
+  if (progress.state == INA3221::JobTerminalState::ACTIVE) {
+    INA3221::PollContext context{};
+    context.nowMs = ownerNowMs();
+    context.deadlineMs = progress.deadlineMs;
+    context.transferTimeoutMs = I2C_TIMEOUT_MS;
+    context.maxTransfers = 1U;  // At most one synchronous callback per service.
+    (void)device.pollJob(context);
+    (void)device.getJobProgress(progress);
+  }
+  if (!progress.resultPending) return;
+
+  INA3221::JobResult result{};
+  const INA3221::Status takeStatus = device.takeJobResult(result);
+  if (!takeStatus.ok()) {
+    printStatus(takeStatus);
+    ownerDemoPhase = OwnerDemoPhase::IDLE;
+    return;
+  }
+  out("Owner job kind=%u request=%lu transfers=%u terminal=%u\n",
+      static_cast<unsigned>(result.kind),
+      static_cast<unsigned long>(result.requestId),
+      static_cast<unsigned>(result.transfers),
+      static_cast<unsigned>(result.state));
+  printStatus(result.status);
+
+  if (result.kind == INA3221::JobKind::INITIALIZE && result.status.ok()) {
+    const INA3221::Status sampleStatus = startOwnerSample();
+    if (!sampleStatus.inProgress()) {
+      printStatus(sampleStatus);
+      ownerDemoPhase = OwnerDemoPhase::IDLE;
+    }
+    return;
+  }
+  if (result.kind == INA3221::JobKind::TRIGGERED_SAMPLE && result.sampleValid) {
+    printOwnerSample(result.sample);
+  }
+  ownerDemoPhase = OwnerDemoPhase::IDLE;
+}
+
+void printOwnerJobProgress() {
+  INA3221::JobProgress progress{};
+  const INA3221::Status st = device.getJobProgress(progress);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+  out("Owner job kind=%u stage=%u state=%u request=%lu transfers=%u "
+      "lastPoll=%u pending=%u\n",
+      static_cast<unsigned>(progress.kind),
+      static_cast<unsigned>(progress.stage),
+      static_cast<unsigned>(progress.state),
+      static_cast<unsigned long>(progress.requestId),
+      static_cast<unsigned>(progress.totalTransfers),
+      static_cast<unsigned>(progress.lastPollTransfers),
+      progress.resultPending ? 1U : 0U);
 }
 
 void printConfig() {
@@ -1014,6 +1148,13 @@ void processCommand(char* line) {
     printVersionInfo();
   } else if (std::strcmp(cmd, "scan") == 0) {
     scanBus();
+  } else if (std::strcmp(cmd, "job") == 0) {
+    printOwnerJobProgress();
+  } else if (std::strcmp(cmd, "job sample") == 0) {
+    printStatus(startOwnerSample());
+  } else if (std::strcmp(cmd, "job cancel") == 0) {
+    // Bus-silent cancellation; serviceOwnerJob() takes the terminal result.
+    printStatus(device.cancelJob());
   } else if (std::strcmp(cmd, "probe") == 0) {
     info("Probing device without health tracking");
     printStatus(device.probe());
@@ -1347,28 +1488,58 @@ void setupExample() {
     return;
   }
   scanBus();
-  INA3221::Config cfg = makeConfig(activeAddress);
-  INA3221::Status st = device.begin(cfg);
+  const INA3221::TransportConfig transportConfig = makeOwnerTransport();
+  const INA3221::DeviceProfile profile = makeOwnerProfile(activeAddress);
+  INA3221::Status st = device.bind(transportConfig, profile);
   if (!st.ok()) {
-    error("Failed to initialize device");
+    error("Failed to bind device contracts");
     printStatus(st);
     return;
   }
-  info("Device initialized successfully");
-  printDriverHealth();
+  ++ownerRequestId;
+  const uint64_t now = ownerNowMs();
+  st = device.startInitialize(ownerRequestId, now + OWNER_JOB_TIMEOUT_MS);
+  if (!st.inProgress()) {
+    error("Failed to start staged initialization");
+    printStatus(st);
+    device.unbind();
+    return;
+  }
+  ownerDemoPhase = OwnerDemoPhase::INITIALIZING;
+  info("Staged initialization started (budget=1 transfer/poll)");
+
+  // Finish the bring-up demonstration before entering the shell. The outer
+  // wait is bounded; every service call still admits at most one I2C callback.
+  const uint64_t demoDeadline = now + (2U * OWNER_JOB_TIMEOUT_MS);
+  while (ownerDemoPhase != OwnerDemoPhase::IDLE && ownerNowMs() < demoDeadline) {
+    serviceOwnerJob();
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  if (ownerDemoPhase != OwnerDemoPhase::IDLE) {
+    (void)device.cancelJob();
+    serviceOwnerJob();  // Cache-only take of the cancellation result.
+  }
 }
 
 }  // namespace
 
 extern "C" void app_main(void) {
   setupExample();
+  const int stdinFlags = fcntl(STDIN_FILENO, F_GETFL, 0);
+  if (stdinFlags >= 0) {
+    (void)fcntl(STDIN_FILENO, F_SETFL, stdinFlags | O_NONBLOCK);
+  }
   out("\nType 'help' for commands\n");
   prompt();
 
   char line[MAX_LINE_LEN];
   while (true) {
-    device.tick(nowMs());
+    serviceOwnerJob();
+    if (ownerDemoPhase == OwnerDemoPhase::IDLE && device.isInitialized()) {
+      (void)device.tickStatus(nowMs());
+    }
     if (std::fgets(line, sizeof(line), stdin) == nullptr) {
+      clearerr(stdin);
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
