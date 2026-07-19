@@ -134,6 +134,7 @@ struct AlertSnapshot {
   bool powerValid = false;        ///< Latest condition-level PVF value
   bool timingControl = false;     ///< Sticky TCF observation
   bool conversionReady = false;   ///< CVRF in the consuming read
+  bool evidenceUncertain = false; ///< Failed read may have cleared unknown events
 };
 
 enum class Quantity : uint8_t {

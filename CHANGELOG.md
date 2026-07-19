@@ -50,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated Arduino and native ESP-IDF examples to lead with budget-one staged
   initialization, triggered fixed-unit sampling, progress, bus-silent cancel,
   and take-once result handling while retaining the diagnostic CLI.
-- Pinned reproducible PlatformIO and ESP-IDF build inputs and added real
+- Version-pinned PlatformIO and ESP-IDF build inputs and added real
   ESP32-S3/ESP32-S2 IDF compiler jobs in CI.
 - Reclassified `Config`, `begin()`, direct measurement/configuration calls,
   `readBlocking()`, `probe()`, and `recover()` as bounded standalone/diagnostic
@@ -59,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Preserved latched alert events across destructive Mask/Enable reads until the
   application explicitly takes them.
+- Exposed uncertainty when a failed or short Mask/Enable transfer may already
+  have destructively cleared alert evidence.
 - Prevented terminal-result overwrite and request reuse before exactly-once
   result consumption.
 - Exposed partial and indeterminate hardware effects after confirmed or

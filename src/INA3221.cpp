@@ -900,7 +900,14 @@ Status INA3221::_readMaskEnableWithTimeout(uint16_t& value,
   Status st = tracked
                   ? _i2cWriteReadTracked(&reg, 1U, rx, sizeof(rx), timeoutMs)
                   : _i2cWriteReadRaw(&reg, 1U, rx, sizeof(rx), timeoutMs);
-  if (!st.ok()) return st;
+  if (!st.ok()) {
+    // A failed combined transfer may still have reached this destructive read.
+    // The callback does not expose a trustworthy partial-byte count, so make
+    // possible lost alert evidence observable until the application takes it.
+    _retainedAlerts.evidenceUncertain = true;
+    if (consumed != nullptr) consumed->evidenceUncertain = true;
+    return st;
+  }
   value = static_cast<uint16_t>((static_cast<uint16_t>(rx[0]) << 8U) | rx[1]);
   _retainMaskEnable(value, consumed);
   return Status::Ok();
@@ -1119,6 +1126,7 @@ Status INA3221::peekAlertEvents(AlertSnapshot& out) const {
 Status INA3221::takeAlertEvents(AlertSnapshot& out) {
   out = _retainedAlerts;
   _retainedAlerts.events = 0;
+  _retainedAlerts.evidenceUncertain = false;
   return Status::Ok();
 }
 

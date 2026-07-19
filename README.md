@@ -130,7 +130,9 @@ Mask/Enable reads are destructive for CVRF and latched alerts. Every library
 read of that register first retains destructive event bits. `peekAlertEvents()`
 is non-consuming; `takeAlertEvents()` clears only the retained event bits after
 copying them. The current raw value, writable bits, PVF, TCF, and CVRF remain
-explicit in `AlertSnapshot`.
+explicit in `AlertSnapshot`. If a failed transport attempt may have reached the
+destructive read, `evidenceUncertain` remains set until the application takes
+and acknowledges the retained alert record.
 
 ## Deterministic bounds
 

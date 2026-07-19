@@ -102,6 +102,26 @@ size_t buildExpectedProfile(const DeviceProfile& profile,
   return 11U;
 }
 
+DeviceProfile changedAtManagedRegister(const DeviceProfile& initial,
+                                       uint8_t index) {
+  DeviceProfile changed = initial;
+  switch (index) {
+    case 0U: changed.averaging = Averaging::AVG_4; break;
+    case 1U: changed.alerts.criticalLimitMicroVolts[0] += 40; break;
+    case 2U: changed.alerts.warningLimitMicroVolts[0] += 40; break;
+    case 3U: changed.alerts.criticalLimitMicroVolts[1] += 40; break;
+    case 4U: changed.alerts.warningLimitMicroVolts[1] += 40; break;
+    case 5U: changed.alerts.criticalLimitMicroVolts[2] += 40; break;
+    case 6U: changed.alerts.warningLimitMicroVolts[2] += 40; break;
+    case 7U: changed.alerts.shuntSumLimitMicroVolts += 40; break;
+    case 8U: changed.alerts.warningLatch = !initial.alerts.warningLatch; break;
+    case 9U: changed.alerts.powerValidUpperMilliVolts += 8U; break;
+    case 10U: changed.alerts.powerValidLowerMilliVolts -= 8U; break;
+    default: break;
+  }
+  return changed;
+}
+
 void forceAllProfileMismatches(ScriptedTransport& bus,
                                const ExpectedRegister (&expected)[11]) {
   for (size_t i = 0; i < 11U; ++i) {
@@ -679,6 +699,57 @@ void test_owner_cancel_is_bus_silent_before_and_after_hardware_effects() {
   }
 }
 
+void test_owner_cancel_is_bus_silent_across_profile_transfer_stages() {
+  const DeviceProfile initial = makeProfile();
+  for (uint8_t cancelAfter = 0U; cancelAfter < 35U; ++cancelAfter) {
+    ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+    INA3221::INA3221 device;
+    TEST_ASSERT_TRUE(device.bind(bus.makeTransportConfig(), initial).ok());
+    TEST_ASSERT_TRUE(queueProfileSequence(bus, initial, true));
+    TEST_ASSERT_TRUE(device.startInitialize(520U + cancelAfter, 1000U)
+                         .inProgress());
+    if (cancelAfter != 0U) {
+      TEST_ASSERT_TRUE(device.pollJob(pollContext(
+          1U, 1000U, DEFAULT_TIMEOUT_MS, cancelAfter)).inProgress());
+    }
+    const uint32_t before = static_cast<uint32_t>(bus.callCount());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CANCELLED),
+                            static_cast<uint8_t>(device.cancelJob().code));
+    TEST_ASSERT_EQUAL_UINT32(before, bus.callCount());
+    JobResult result{};
+    TEST_ASSERT_TRUE(device.takeJobResult(result).ok());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobTerminalState::CANCELLED),
+                            static_cast<uint8_t>(result.state));
+  }
+
+  DeviceProfile changed = initial;
+  changed.averaging = Averaging::AVG_4;
+  changed.alerts.criticalLimitMicroVolts[0] += 40;
+  changed.alerts.warningLimitMicroVolts[1] += 40;
+  changed.alerts.powerValidUpperMilliVolts += 8U;
+  for (uint8_t cancelAfter = 0U; cancelAfter < 33U; ++cancelAfter) {
+    ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+    INA3221::INA3221 device;
+    TEST_ASSERT_TRUE(initializeApplied(device, bus, initial));
+    bus.resetHarness();
+    TEST_ASSERT_TRUE(queueProfileSequence(bus, changed, false));
+    TEST_ASSERT_TRUE(device.startApplyProfile(
+        changed, 560U + cancelAfter, 1000U).inProgress());
+    if (cancelAfter != 0U) {
+      TEST_ASSERT_TRUE(device.pollJob(pollContext(
+          1U, 1000U, DEFAULT_TIMEOUT_MS, cancelAfter)).inProgress());
+    }
+    const uint32_t before = static_cast<uint32_t>(bus.callCount());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::CANCELLED),
+                            static_cast<uint8_t>(device.cancelJob().code));
+    TEST_ASSERT_EQUAL_UINT32(before, bus.callCount());
+    JobResult result{};
+    TEST_ASSERT_TRUE(device.takeJobResult(result).ok());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobTerminalState::CANCELLED),
+                            static_cast<uint8_t>(result.state));
+  }
+}
+
 void test_owner_permanently_low_cvrf_waits_until_owner_deadline() {
   const DeviceProfile profile =
       makeProfile(0x42, CHANNEL_1, Mode::SHUNT_BUS_TRIG);
@@ -839,6 +910,138 @@ void test_owner_commit_before_timeout_is_indeterminate_and_not_retried() {
                           static_cast<uint8_t>(result.hardwareEffect));
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::UNKNOWN),
                           static_cast<uint8_t>(device.measurementConfigState()));
+}
+
+void test_owner_every_managed_write_ambiguity_is_indeterminate_without_retry() {
+  const DeviceProfile initial = makeProfile();
+  for (uint8_t index = 0; index < 11U; ++index) {
+    ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+    INA3221::INA3221 device;
+    TEST_ASSERT_TRUE(initializeApplied(device, bus, initial));
+    bus.resetHarness();
+
+    const DeviceProfile changed = changedAtManagedRegister(initial, index);
+    ExpectedRegister expected[11]{};
+    buildExpectedProfile(changed, expected);
+    for (uint8_t prior = 0; prior < index; ++prior) {
+      bus.expectRead(expected[prior].reg);
+    }
+    bus.expectRead(expected[index].reg);
+    const Status timeout =
+        Status::Error(Err::I2C_TIMEOUT, "managed write ambiguous", -720 - index);
+    bus.expectWrite(expected[index].reg, expected[index].value, timeout,
+                    ScriptedTransport::WriteEffect::COMMIT_BEFORE_STATUS);
+
+    TEST_ASSERT_TRUE(device.startApplyProfile(
+        changed, 720U + index, 1000U).inProgress());
+    const Status status = device.pollJob(pollContext(1U));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                            static_cast<uint8_t>(status.code));
+    TEST_ASSERT_EQUAL_INT32(-720 - index, status.detail);
+    TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(index) + 2U,
+                             bus.callCount());
+    TEST_ASSERT_TRUE(bus.scriptConsumed());
+    TEST_ASSERT_EQUAL_HEX16(expected[index].value,
+                            bus.registerValue(expected[index].reg));
+
+    JobResult result{};
+    TEST_ASSERT_TRUE(device.takeJobResult(result).ok());
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(JobTerminalState::INDETERMINATE),
+        static_cast<uint8_t>(result.state));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareEffect::INDETERMINATE),
+                            static_cast<uint8_t>(result.hardwareEffect));
+    if (index == 0U) {
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::UNKNOWN),
+                              static_cast<uint8_t>(device.measurementConfigState()));
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::APPLIED),
+                              static_cast<uint8_t>(device.alertConfigState()));
+    } else {
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::APPLIED),
+                              static_cast<uint8_t>(device.measurementConfigState()));
+      TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::UNKNOWN),
+                              static_cast<uint8_t>(device.alertConfigState()));
+    }
+  }
+}
+
+void test_owner_every_managed_readback_mismatch_is_partial_and_dirty() {
+  const DeviceProfile initial = makeProfile();
+  for (uint8_t index = 0; index < 11U; ++index) {
+    ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+    INA3221::INA3221 device;
+    TEST_ASSERT_TRUE(initializeApplied(device, bus, initial));
+    bus.resetHarness();
+
+    const DeviceProfile changed = changedAtManagedRegister(initial, index);
+    ExpectedRegister expected[11]{};
+    buildExpectedProfile(changed, expected);
+    for (uint8_t prior = 0; prior < index; ++prior) {
+      bus.expectRead(expected[prior].reg);
+    }
+    bus.expectRead(expected[index].reg);
+    bus.expectWrite(expected[index].reg, expected[index].value);
+    uint16_t mismatch = static_cast<uint16_t>(expected[index].value ^ 0x0008U);
+    if (expected[index].reg == cmd::REG_CONFIG) {
+      mismatch = static_cast<uint16_t>(expected[index].value ^ cmd::MASK_CH2EN);
+    } else if (expected[index].reg == cmd::REG_MASK_ENABLE) {
+      mismatch = static_cast<uint16_t>(expected[index].value ^ cmd::MASK_WEN);
+    }
+    TEST_ASSERT_TRUE(bus.mutateAfterLastStep(expected[index].reg, mismatch));
+    bus.expectRead(expected[index].reg);
+
+    TEST_ASSERT_TRUE(device.startApplyProfile(
+        changed, 760U + index, 1000U).inProgress());
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(Err::PROFILE_MISMATCH),
+        static_cast<uint8_t>(device.pollJob(pollContext(1U)).code));
+    TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(index) + 3U,
+                             bus.callCount());
+    TEST_ASSERT_TRUE(bus.scriptConsumed());
+    JobResult result{};
+    TEST_ASSERT_TRUE(device.takeJobResult(result).ok());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobTerminalState::PARTIAL),
+                            static_cast<uint8_t>(result.state));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareEffect::PARTIAL),
+                            static_cast<uint8_t>(result.hardwareEffect));
+    const AppliedConfigState state = index == 0U
+                                         ? device.measurementConfigState()
+                                         : device.alertConfigState();
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::DIRTY),
+                            static_cast<uint8_t>(state));
+  }
+}
+
+void test_failed_partial_mask_read_exposes_alert_evidence_uncertainty() {
+  const DeviceProfile profile = makeProfile();
+  ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+  INA3221::INA3221 device;
+  TEST_ASSERT_TRUE(initializeApplied(device, bus, profile));
+  bus.resetHarness();
+  bus.setRegister(cmd::REG_MASK_ENABLE,
+                  static_cast<uint16_t>(cmd::MASK_CF1 | cmd::MASK_WF2));
+  const Status shortRead =
+      Status::Error(Err::I2C_ERROR, "partial destructive read", -811);
+  bus.expectRead(cmd::REG_MASK_ENABLE, shortRead,
+                 ScriptedTransport::ReadErrorEffect::FIRST_BYTE_ONLY);
+
+  AlertFlags flags{};
+  const Status status = device.readAlertFlags(flags);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_ERROR),
+                          static_cast<uint8_t>(status.code));
+  TEST_ASSERT_EQUAL_INT32(-811, status.detail);
+  TEST_ASSERT_TRUE(bus.scriptConsumed());
+  TEST_ASSERT_TRUE(bus.call(0)->destructiveReadOccurred);
+  TEST_ASSERT_EQUAL_HEX16(0U, bus.registerValue(cmd::REG_MASK_ENABLE));
+
+  AlertSnapshot retained{};
+  TEST_ASSERT_TRUE(device.peekAlertEvents(retained).ok());
+  TEST_ASSERT_TRUE(retained.evidenceUncertain);
+  TEST_ASSERT_TRUE(device.takeAlertEvents(retained).ok());
+  TEST_ASSERT_TRUE(retained.evidenceUncertain);
+  AlertSnapshot acknowledged{};
+  TEST_ASSERT_TRUE(device.peekAlertEvents(acknowledged).ok());
+  TEST_ASSERT_FALSE(acknowledged.evidenceUncertain);
 }
 
 void test_owner_reconcile_reads_first_and_verification_mismatch_is_partial() {
@@ -1475,10 +1678,14 @@ void runOwnerOperationTests() {
   RUN_TEST(test_owner_budget_zero_one_and_many_are_exact);
   RUN_TEST(test_owner_timeout_clamps_to_remaining_deadline_and_exact_deadline_expires);
   RUN_TEST(test_owner_cancel_is_bus_silent_before_and_after_hardware_effects);
+  RUN_TEST(test_owner_cancel_is_bus_silent_across_profile_transfer_stages);
   RUN_TEST(test_owner_permanently_low_cvrf_waits_until_owner_deadline);
   RUN_TEST(test_owner_triggered_sample_retains_alerts_across_low_cvrf_recheck);
   RUN_TEST(test_owner_result_identity_pending_take_once_and_stale_prevention);
   RUN_TEST(test_owner_commit_before_timeout_is_indeterminate_and_not_retried);
+  RUN_TEST(test_owner_every_managed_write_ambiguity_is_indeterminate_without_retry);
+  RUN_TEST(test_owner_every_managed_readback_mismatch_is_partial_and_dirty);
+  RUN_TEST(test_failed_partial_mask_read_exposes_alert_evidence_uncertainty);
   RUN_TEST(test_owner_reconcile_reads_first_and_verification_mismatch_is_partial);
   RUN_TEST(test_owner_active_job_excludes_legacy_hardware_io_without_callbacks);
   RUN_TEST(test_legacy_facade_rejected_starts_preserve_and_cannot_cross_drive_jobs);
