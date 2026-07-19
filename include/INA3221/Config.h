@@ -9,22 +9,35 @@
 namespace INA3221 {
 
 /// @brief I2C write callback signature.
+///
+/// The callback is synchronous and represents exactly one physical transfer
+/// attempt. Success means all requested bytes were transferred. It must not
+/// retry, recover or reconfigure the bus, interleave another bus user, or call
+/// back into the INA3221 object. The application owns those policies.
 /// @param addr     I2C device address (7-bit)
 /// @param data     Pointer to data to write
 /// @param len      Number of bytes to write
-/// @param timeoutMs Maximum time to wait for completion
+/// @param timeoutMs Hard maximum time to wait for completion; the callback
+///                  must return no later than this bound
 /// @param user     User context pointer passed through from Config
 /// @return Status indicating success or failure
 using I2cWriteFn = Status (*)(uint8_t addr, const uint8_t* data, size_t len,
                               uint32_t timeoutMs, void* user);
 
 /// @brief I2C write-then-read callback signature.
+///
+/// The callback is synchronous and represents one non-interleaved register
+/// pointer write followed by the exact requested read. Repeated-START versus
+/// STOP/START is a backend policy supported by the device. Success means both
+/// exact lengths completed. There must be no hidden retry, recovery, bus
+/// reconfiguration, or driver re-entry.
 /// @param addr     I2C device address (7-bit)
 /// @param txData   Pointer to data to write
 /// @param txLen    Number of bytes to write
 /// @param rxData   Pointer to buffer for read data
 /// @param rxLen    Number of bytes to read
-/// @param timeoutMs Maximum time to wait for completion
+/// @param timeoutMs Hard maximum time to wait for completion; the callback
+///                  must return no later than this bound
 /// @param user     User context pointer passed through from Config
 /// @return Status indicating success or failure
 using I2cWriteReadFn = Status (*)(uint8_t addr, const uint8_t* txData, size_t txLen,
@@ -84,6 +97,63 @@ enum class Channel : uint8_t {
   CH1 = 0,  ///< Channel 1
   CH2 = 1,  ///< Channel 2
   CH3 = 2   ///< Channel 3
+};
+
+/// @brief Fixed channel mask using bits 0 through 2 for CH1 through CH3.
+using ChannelMask = uint8_t;
+
+static constexpr ChannelMask CHANNEL_1 = 0x01U;
+static constexpr ChannelMask CHANNEL_2 = 0x02U;
+static constexpr ChannelMask CHANNEL_3 = 0x04U;
+static constexpr ChannelMask ALL_CHANNELS = 0x07U;
+
+/// @brief Sign convention applied after the shunt-voltage measurement.
+enum class CurrentDirection : uint8_t {
+  POSITIVE_SHUNT_IS_POSITIVE_CURRENT = 0,
+  POSITIVE_SHUNT_IS_NEGATIVE_CURRENT = 1
+};
+
+/// @brief Explicit fixed-unit calibration for one enabled channel.
+struct ShuntCalibration {
+  uint32_t resistanceMicroOhms = 0; ///< Must be non-zero for enabled channels
+  CurrentDirection direction =
+      CurrentDirection::POSITIVE_SHUNT_IS_POSITIVE_CURRENT;
+};
+
+/// @brief Complete desired state for all managed volatile alert registers.
+struct AlertProfile {
+  int32_t criticalLimitMicroVolts[3] = {163800, 163800, 163800};
+  int32_t warningLimitMicroVolts[3] = {163800, 163800, 163800};
+  ChannelMask summationChannels = 0;
+  int32_t shuntSumLimitMicroVolts = 655320;
+  uint32_t powerValidUpperMilliVolts = 10000;
+  uint32_t powerValidLowerMilliVolts = 9000;
+  bool warningLatch = false;
+  bool criticalLatch = false;
+};
+
+/// @brief Complete fixed-size desired device profile.
+struct DeviceProfile {
+  uint8_t i2cAddress = 0x40;
+  ChannelMask enabledChannels = ALL_CHANNELS;
+  Averaging averaging = Averaging::AVG_1;
+  ConvTime vBusCt = ConvTime::CT_1100US;
+  ConvTime vShCt = ConvTime::CT_1100US;
+  Mode mode = Mode::SHUNT_BUS_CONT;
+  ShuntCalibration shunts[3]{};
+  AlertProfile alerts{};
+};
+
+/// @brief Non-owning transport and compatibility timing hooks.
+struct TransportConfig {
+  I2cWriteFn i2cWrite = nullptr;
+  I2cWriteReadFn i2cWriteRead = nullptr;
+  void* i2cUser = nullptr;
+  NowMsFn nowMs = nullptr;
+  YieldFn cooperativeYield = nullptr;
+  void* timeUser = nullptr;
+  uint32_t defaultTransferTimeoutMs = 50;
+  uint8_t offlineThreshold = 5; ///< Passive diagnostic threshold only
 };
 
 /// @brief Configuration for INA3221 driver.

@@ -5,6 +5,7 @@
 
 #include <climits>
 #include <cmath>
+#include <limits>
 
 namespace INA3221 {
 
@@ -18,6 +19,10 @@ constexpr uint16_t kMaskEnableWritable =
 constexpr uint16_t kShuntLimitWritable = 0xFFF8;
 constexpr uint16_t kShuntSumLimitWritable = 0xFFFE;
 constexpr uint16_t kPowerValidLimitWritable = 0x7FF8;
+constexpr uint16_t kDestructiveAlertEvents =
+    cmd::MASK_CF1 | cmd::MASK_CF2 | cmd::MASK_CF3 | cmd::MASK_SF |
+    cmd::MASK_WF1 | cmd::MASK_WF2 | cmd::MASK_WF3 | cmd::MASK_CVRF;
+constexpr uint32_t kMaximumBusMilliVolts = 26000;
 
 bool isValidChannel(Channel ch) {
   return static_cast<uint8_t>(ch) <= static_cast<uint8_t>(Channel::CH3);
@@ -65,8 +70,11 @@ bool isValidRegister(uint8_t reg) {
          reg == cmd::REG_DIE_ID;
 }
 
-bool registerAffectsCachedHardwareConfig(uint8_t reg) {
-  return reg == cmd::REG_CONFIG || reg == cmd::REG_MASK_ENABLE;
+bool isWritableRegisterAddress(uint8_t reg) {
+  return reg == cmd::REG_CONFIG ||
+         (reg >= cmd::REG_CH1_CRIT_LIMIT && reg <= cmd::REG_CH3_WARN_LIMIT) ||
+         reg == cmd::REG_SHUNT_SUM_LIMIT || reg == cmd::REG_MASK_ENABLE ||
+         reg == cmd::REG_PV_UPPER_LIMIT || reg == cmd::REG_PV_LOWER_LIMIT;
 }
 
 bool isPositiveFinite(float value) {
@@ -163,6 +171,14 @@ uint32_t convTimeUs(ConvTime ct) {
   return table[idx];
 }
 
+uint32_t convTimeMaximumUs(ConvTime ct) {
+  static constexpr uint32_t table[] = {
+    154, 224, 365, 646, 1210, 2328, 4572, 9068
+  };
+  const uint8_t idx = static_cast<uint8_t>(ct);
+  return idx < sizeof(table) / sizeof(table[0]) ? table[idx] : 0U;
+}
+
 uint32_t averagingSampleCount(Averaging avg) {
   static constexpr uint32_t table[] = {
     1,     // AVG_1
@@ -183,127 +199,1528 @@ uint32_t averagingSampleCount(Averaging avg) {
 
 /// Get shunt register address for channel
 uint8_t shuntRegAddr(Channel ch) {
-  return cmd::SHUNT_REG_BASE + static_cast<uint8_t>(ch) * cmd::CHANNEL_STRIDE;
+  return static_cast<uint8_t>(cmd::SHUNT_REG_BASE +
+                              static_cast<uint8_t>(ch) * cmd::CHANNEL_STRIDE);
 }
 
 /// Get bus register address for channel
 uint8_t busRegAddr(Channel ch) {
-  return cmd::BUS_REG_BASE + static_cast<uint8_t>(ch) * cmd::CHANNEL_STRIDE;
+  return static_cast<uint8_t>(cmd::BUS_REG_BASE +
+                              static_cast<uint8_t>(ch) * cmd::CHANNEL_STRIDE);
 }
 
 /// Get critical limit register address for channel
 uint8_t critRegAddr(Channel ch) {
-  return cmd::CRIT_REG_BASE + static_cast<uint8_t>(ch) * cmd::CHANNEL_STRIDE;
+  return static_cast<uint8_t>(cmd::CRIT_REG_BASE +
+                              static_cast<uint8_t>(ch) * cmd::CHANNEL_STRIDE);
 }
 
 /// Get warning limit register address for channel
 uint8_t warnRegAddr(Channel ch) {
-  return cmd::WARN_REG_BASE + static_cast<uint8_t>(ch) * cmd::CHANNEL_STRIDE;
+  return static_cast<uint8_t>(cmd::WARN_REG_BASE +
+                              static_cast<uint8_t>(ch) * cmd::CHANNEL_STRIDE);
 }
 
-class ScopedOfflineI2cAllowance {
-public:
-  explicit ScopedOfflineI2cAllowance(bool& flag, bool allow) : _flag(flag), _old(flag) {
-    _flag = allow;
-  }
-
-  ~ScopedOfflineI2cAllowance() {
-    _flag = _old;
-  }
-
-  ScopedOfflineI2cAllowance(const ScopedOfflineI2cAllowance&) = delete;
-  ScopedOfflineI2cAllowance& operator=(const ScopedOfflineI2cAllowance&) = delete;
-
-private:
-  bool& _flag;
-  bool _old;
-};
-
 } // namespace
+
+// ============================================================================
+// Pure contracts and cooperative owner binding
+// ============================================================================
+
+bool INA3221::isReadableRegister(uint8_t reg) {
+  return isValidRegister(reg);
+}
+
+bool INA3221::isWritableRegister(uint8_t reg) {
+  return isWritableRegisterAddress(reg);
+}
+
+Status INA3221::conversionTiming(ConvTime ct, ConversionTiming& out) {
+  if (!isValidConvTime(ct)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid conversion time");
+  }
+  out.typicalUs = convTimeUs(ct);
+  out.maximumUs = convTimeMaximumUs(ct);
+  return Status::Ok();
+}
+
+Status INA3221::maximumCycleTimeUs(const DeviceProfile& profile, Mode mode,
+                                   uint64_t& outUs) {
+  outUs = 0;
+  if (!isValidMode(mode) || !isValidAveraging(profile.averaging) ||
+      !isValidConvTime(profile.vBusCt) || !isValidConvTime(profile.vShCt) ||
+      (profile.enabledChannels & static_cast<ChannelMask>(~ALL_CHANNELS)) != 0U) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid timing profile");
+  }
+  if (isPowerDownMode(mode)) {
+    return Status::Ok();
+  }
+  const uint8_t channelCount = static_cast<uint8_t>(
+      ((profile.enabledChannels & CHANNEL_1) != 0U ? 1U : 0U) +
+      ((profile.enabledChannels & CHANNEL_2) != 0U ? 1U : 0U) +
+      ((profile.enabledChannels & CHANNEL_3) != 0U ? 1U : 0U));
+  if (channelCount == 0U) {
+    return Status::Error(Err::INVALID_CONFIG, "No enabled channel");
+  }
+  uint64_t perChannel = 0;
+  if (modeReadsShunt(mode)) perChannel += convTimeMaximumUs(profile.vShCt);
+  if (modeReadsBus(mode)) perChannel += convTimeMaximumUs(profile.vBusCt);
+  const uint64_t samples = averagingSampleCount(profile.averaging);
+  if (perChannel > std::numeric_limits<uint64_t>::max() / channelCount ||
+      perChannel * channelCount > std::numeric_limits<uint64_t>::max() / samples) {
+    return Status::Error(Err::ARITHMETIC_OVERFLOW, "Cycle time overflow");
+  }
+  outUs = perChannel * channelCount * samples;
+  return Status::Ok();
+}
+
+Status INA3221::maximumJobTransfers(JobKind kind,
+                                    const DeviceProfile& profile,
+                                    uint16_t& outTransfers) {
+  Status st = _validateProfile(profile);
+  if (!st.ok()) return st;
+  const uint8_t channels = static_cast<uint8_t>(
+      ((profile.enabledChannels & CHANNEL_1) != 0U ? 1U : 0U) +
+      ((profile.enabledChannels & CHANNEL_2) != 0U ? 1U : 0U) +
+      ((profile.enabledChannels & CHANNEL_3) != 0U ? 1U : 0U));
+  switch (kind) {
+    case JobKind::INITIALIZE:
+      outTransfers = static_cast<uint16_t>(2U + 3U * MANAGED_PROFILE_REGISTER_COUNT);
+      return Status::Ok();
+    case JobKind::APPLY_PROFILE:
+    case JobKind::RECONCILE:
+      outTransfers = static_cast<uint16_t>(3U * MANAGED_PROFILE_REGISTER_COUNT);
+      return Status::Ok();
+    case JobKind::TRIGGERED_SAMPLE:
+      outTransfers = static_cast<uint16_t>(2U + 2U * channels);
+      return Status::Ok();
+    case JobKind::CONTINUOUS_SAMPLE:
+      outTransfers = static_cast<uint16_t>(1U + 2U * channels);
+      return Status::Ok();
+    case JobKind::POWER_DOWN:
+      outTransfers = 3U;
+      return Status::Ok();
+    case JobKind::NONE:
+    default:
+      return Status::Error(Err::INVALID_PARAM, "Invalid job kind");
+  }
+}
+
+Status INA3221::decodeShuntMicroVolts(uint16_t raw, int32_t& outMicroVolts) {
+  outMicroVolts = static_cast<int32_t>(signExtendField(raw, cmd::DATA_SHIFT, 13)) * 40;
+  return Status::Ok();
+}
+
+Status INA3221::decodeBusMilliVolts(uint16_t raw, int32_t& outMilliVolts) {
+  outMilliVolts = static_cast<int32_t>(signExtendField(raw, cmd::DATA_SHIFT, 13)) * 8;
+  return Status::Ok();
+}
+
+Status INA3221::channelIndex(Channel channel, uint8_t& outIndex) {
+  if (!isValidChannel(channel)) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid channel");
+  }
+  outIndex = static_cast<uint8_t>(channel);
+  return Status::Ok();
+}
+
+Status INA3221::channelBit(Channel channel, ChannelMask& outBit) {
+  uint8_t index = 0;
+  Status st = channelIndex(channel, index);
+  if (!st.ok()) return st;
+  outBit = static_cast<ChannelMask>(1U << index);
+  return Status::Ok();
+}
+
+Status INA3221::contains(ChannelMask mask, Channel channel,
+                         bool& outContains) {
+  outContains = false;
+  if ((mask & static_cast<ChannelMask>(~ALL_CHANNELS)) != 0U) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid channel mask");
+  }
+  ChannelMask bit = 0;
+  Status st = channelBit(channel, bit);
+  if (!st.ok()) return st;
+  outContains = (mask & bit) != 0U;
+  return Status::Ok();
+}
+
+Status INA3221::enabledChannelCount(ChannelMask mask, uint8_t& outCount) {
+  outCount = 0;
+  if ((mask & static_cast<ChannelMask>(~ALL_CHANNELS)) != 0U) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid channel mask");
+  }
+  if ((mask & CHANNEL_1) != 0U) ++outCount;
+  if ((mask & CHANNEL_2) != 0U) ++outCount;
+  if ((mask & CHANNEL_3) != 0U) ++outCount;
+  return Status::Ok();
+}
+
+int64_t INA3221::_roundDivide(int64_t numerator, int64_t denominator) {
+  if (denominator <= 0) return 0;
+  const int64_t half = denominator / 2;
+  return numerator >= 0 ? (numerator + half) / denominator
+                        : (numerator - half) / denominator;
+}
+
+Status INA3221::encodeShuntMicroVolts(int32_t microVolts, uint16_t& outRaw) {
+  const int64_t code = _roundDivide(microVolts, 40);
+  if (code < -4096 || code > 4095) {
+    return Status::Error(Err::OUT_OF_RANGE, "Shunt voltage out of range");
+  }
+  outRaw = static_cast<uint16_t>(static_cast<int16_t>(code)) << cmd::DATA_SHIFT;
+  return Status::Ok();
+}
+
+Status INA3221::encodeBusMilliVolts(int32_t milliVolts, uint16_t& outRaw) {
+  const int64_t code = _roundDivide(milliVolts, 8);
+  if (code < -4096 || code > 4095) {
+    return Status::Error(Err::OUT_OF_RANGE, "Bus voltage out of range");
+  }
+  outRaw = static_cast<uint16_t>(static_cast<int16_t>(code)) << cmd::DATA_SHIFT;
+  return Status::Ok();
+}
+
+Status INA3221::encodeShuntSumMicroVolts(int32_t microVolts, uint16_t& outRaw) {
+  const int64_t code = _roundDivide(microVolts, 40);
+  if (code < -16384 || code > 16383) {
+    return Status::Error(Err::OUT_OF_RANGE, "Shunt sum out of range");
+  }
+  outRaw = static_cast<uint16_t>(static_cast<int16_t>(code)) << cmd::SUM_DATA_SHIFT;
+  return Status::Ok();
+}
+
+Status INA3221::validatePowerValidWindow(uint32_t lowerMilliVolts,
+                                         uint32_t upperMilliVolts) {
+  if (lowerMilliVolts >= upperMilliVolts || upperMilliVolts > kMaximumBusMilliVolts) {
+    return Status::Error(Err::OUT_OF_RANGE, "Invalid power-valid window");
+  }
+  uint16_t ignored = 0;
+  Status st = encodeBusMilliVolts(static_cast<int32_t>(lowerMilliVolts), ignored);
+  if (!st.ok()) return st;
+  return encodeBusMilliVolts(static_cast<int32_t>(upperMilliVolts), ignored);
+}
+
+Status INA3221::calculateCurrentMilliAmps(
+    int32_t shuntMicroVolts, const ShuntCalibration& calibration,
+    int32_t& outMilliAmps) {
+  if (calibration.resistanceMicroOhms == 0U ||
+      static_cast<uint8_t>(calibration.direction) >
+          static_cast<uint8_t>(CurrentDirection::POSITIVE_SHUNT_IS_NEGATIVE_CURRENT)) {
+    return Status::Error(Err::INVALID_CONFIG, "Invalid shunt calibration");
+  }
+  int64_t numerator = static_cast<int64_t>(shuntMicroVolts) * 1000;
+  if (calibration.direction ==
+      CurrentDirection::POSITIVE_SHUNT_IS_NEGATIVE_CURRENT) {
+    numerator = -numerator;
+  }
+  const int64_t result = _roundDivide(numerator, calibration.resistanceMicroOhms);
+  if (result < INT32_MIN || result > INT32_MAX) {
+    return Status::Error(Err::ARITHMETIC_OVERFLOW, "Current overflow");
+  }
+  outMilliAmps = static_cast<int32_t>(result);
+  return Status::Ok();
+}
+
+Status INA3221::calculatePowerMilliWatts(int32_t busMilliVolts,
+                                         int32_t currentMilliAmps,
+                                         int32_t& outMilliWatts) {
+  const int64_t result = _roundDivide(
+      static_cast<int64_t>(busMilliVolts) * currentMilliAmps, 1000);
+  if (result < INT32_MIN || result > INT32_MAX) {
+    return Status::Error(Err::ARITHMETIC_OVERFLOW, "Power overflow");
+  }
+  outMilliWatts = static_cast<int32_t>(result);
+  return Status::Ok();
+}
+
+Status INA3221::convertRawChannel(uint16_t shuntRaw, uint16_t busRaw,
+                                  QuantityMask requestedRawQuantities,
+                                  const ShuntCalibration& calibration,
+                                  FixedChannelReading& out) {
+  out = FixedChannelReading{};
+  const QuantityMask shuntBit = static_cast<QuantityMask>(Quantity::SHUNT);
+  const QuantityMask busBit = static_cast<QuantityMask>(Quantity::BUS);
+  const QuantityMask allowed = static_cast<QuantityMask>(shuntBit | busBit);
+  if (requestedRawQuantities == 0U ||
+      (requestedRawQuantities & static_cast<QuantityMask>(~allowed)) != 0U) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid requested raw quantities");
+  }
+  if ((requestedRawQuantities & shuntBit) != 0U) {
+    Status st = decodeShuntMicroVolts(shuntRaw, out.shuntMicroVolts);
+    if (!st.ok()) return st;
+    out.validQuantities |= shuntBit;
+    st = calculateCurrentMilliAmps(out.shuntMicroVolts, calibration,
+                                   out.currentMilliAmps);
+    if (!st.ok()) return st;
+    out.validQuantities |= static_cast<QuantityMask>(Quantity::CURRENT);
+  }
+  if ((requestedRawQuantities & busBit) != 0U) {
+    Status st = decodeBusMilliVolts(busRaw, out.busMilliVolts);
+    if (!st.ok()) return st;
+    if (out.busMilliVolts >= 0 &&
+        out.busMilliVolts <= static_cast<int32_t>(kMaximumBusMilliVolts)) {
+      out.validQuantities |= busBit;
+    }
+  }
+  const QuantityMask powerInputs = static_cast<QuantityMask>(
+      busBit | static_cast<QuantityMask>(Quantity::CURRENT));
+  if ((out.validQuantities & powerInputs) == powerInputs) {
+    Status st = calculatePowerMilliWatts(out.busMilliVolts,
+                                         out.currentMilliAmps,
+                                         out.powerMilliWatts);
+    if (!st.ok()) return st;
+    out.validQuantities |= static_cast<QuantityMask>(Quantity::POWER);
+  }
+  return Status::Ok();
+}
+
+Status INA3221::_validateTransport(const TransportConfig& transport) const {
+  if (transport.i2cWrite == nullptr || transport.i2cWriteRead == nullptr) {
+    return Status::Error(Err::INVALID_CONFIG, "I2C callbacks required");
+  }
+  if (transport.defaultTransferTimeoutMs == 0U) {
+    return Status::Error(Err::INVALID_CONFIG, "Transfer timeout must be non-zero");
+  }
+  return Status::Ok();
+}
+
+Status INA3221::_validateProfile(const DeviceProfile& profile) {
+  if (profile.i2cAddress < kMinAddress || profile.i2cAddress > kMaxAddress) {
+    return Status::Error(Err::INVALID_CONFIG, "Invalid I2C address");
+  }
+  if ((profile.enabledChannels & static_cast<ChannelMask>(~ALL_CHANNELS)) != 0U ||
+      (profile.alerts.summationChannels & static_cast<ChannelMask>(~ALL_CHANNELS)) != 0U) {
+    return Status::Error(Err::INVALID_CONFIG, "Invalid channel mask");
+  }
+  if (!isValidAveraging(profile.averaging) || !isValidConvTime(profile.vBusCt) ||
+      !isValidConvTime(profile.vShCt) || !isValidMode(profile.mode)) {
+    return Status::Error(Err::INVALID_CONFIG, "Invalid profile enum");
+  }
+  if (!isPowerDownMode(profile.mode) && profile.enabledChannels == 0U) {
+    return Status::Error(Err::INVALID_CONFIG, "No enabled channel");
+  }
+  if ((profile.alerts.summationChannels &
+       static_cast<ChannelMask>(~profile.enabledChannels)) != 0U) {
+    return Status::Error(Err::INVALID_CONFIG, "Summation channel disabled");
+  }
+  for (uint8_t i = 0; i < 3U; ++i) {
+    const bool enabled = (profile.enabledChannels & static_cast<ChannelMask>(1U << i)) != 0U;
+    if (enabled && profile.shunts[i].resistanceMicroOhms == 0U) {
+      return Status::Error(Err::INVALID_CONFIG, "Enabled channel lacks shunt calibration");
+    }
+    if (static_cast<uint8_t>(profile.shunts[i].direction) > 1U) {
+      return Status::Error(Err::INVALID_CONFIG, "Invalid current direction");
+    }
+    uint16_t encoded = 0;
+    Status st = encodeShuntMicroVolts(profile.alerts.criticalLimitMicroVolts[i], encoded);
+    if (!st.ok()) return st;
+    st = encodeShuntMicroVolts(profile.alerts.warningLimitMicroVolts[i], encoded);
+    if (!st.ok()) return st;
+  }
+  uint16_t encoded = 0;
+  Status st = encodeShuntSumMicroVolts(profile.alerts.shuntSumLimitMicroVolts, encoded);
+  if (!st.ok()) return st;
+  return validatePowerValidWindow(profile.alerts.powerValidLowerMilliVolts,
+                                  profile.alerts.powerValidUpperMilliVolts);
+}
+
+Status INA3221::bind(const TransportConfig& transport,
+                     const DeviceProfile& profile) {
+  Status st = _validateTransport(transport);
+  if (!st.ok()) return st;
+  st = _validateProfile(profile);
+  if (!st.ok()) return st;
+  if (_jobState == JobTerminalState::ACTIVE) {
+    return Status::Error(Err::JOB_BUSY, "Owner job active");
+  }
+  if (_conversionStarted) {
+    return Status::Error(Err::CONVERSION_BUSY, "Legacy conversion active");
+  }
+  if (_hasPendingJobResult) {
+    return Status::Error(Err::RESULT_PENDING, "Take terminal result first");
+  }
+  unbind();
+  _transport = transport;
+  if (_transport.offlineThreshold == 0U) _transport.offlineThreshold = 1U;
+  _profile = profile;
+  _pendingProfile = profile;
+  _bound = true;
+  _measurementConfigState = AppliedConfigState::UNKNOWN;
+  _alertConfigState = AppliedConfigState::UNKNOWN;
+  _syncLegacyConfigFromProfile();
+  return Status::Ok();
+}
+
+void INA3221::unbind() {
+  _bound = false;
+  _initialized = false;
+  _driverState = DriverState::UNINIT;
+  _transport = TransportConfig{};
+  _config = Config{};
+  _measurementConfigState = AppliedConfigState::UNKNOWN;
+  _alertConfigState = AppliedConfigState::UNKNOWN;
+  _profileGeneration = 0;
+  _conversionStarted = false;
+  _conversionReady = false;
+  _conversionStartMs = 0;
+  _maskEnableWritableCache = 0;
+  _clearPollJob();
+  _resetOperationState();
+  _hasPendingJobResult = false;
+  _hasLastGoodSample = false;
+  _retainedAlerts = AlertSnapshot{};
+  _clearHardwareConfigDirty();
+}
+
+void INA3221::_syncLegacyConfigFromProfile() {
+  _config.i2cWrite = _transport.i2cWrite;
+  _config.i2cWriteRead = _transport.i2cWriteRead;
+  _config.i2cUser = _transport.i2cUser;
+  _config.nowMs = _transport.nowMs;
+  _config.cooperativeYield = _transport.cooperativeYield;
+  _config.timeUser = _transport.timeUser;
+  _config.i2cTimeoutMs = _transport.defaultTransferTimeoutMs;
+  _config.offlineThreshold = _transport.offlineThreshold;
+  _config.i2cAddress = _profile.i2cAddress;
+  _config.ch1Enable = (_profile.enabledChannels & CHANNEL_1) != 0U;
+  _config.ch2Enable = (_profile.enabledChannels & CHANNEL_2) != 0U;
+  _config.ch3Enable = (_profile.enabledChannels & CHANNEL_3) != 0U;
+  _config.averaging = _profile.averaging;
+  _config.vBusCt = _profile.vBusCt;
+  _config.vShCt = _profile.vShCt;
+  _config.mode = _profile.mode;
+  for (uint8_t i = 0; i < 3U; ++i) {
+    _config.shuntResistance[i] =
+        static_cast<float>(_profile.shunts[i].resistanceMicroOhms) / 1000000.0f;
+  }
+}
+
+Status INA3221::_legacyToContracts(const Config& config,
+                                   TransportConfig& transport,
+                                   DeviceProfile& profile) {
+  transport.i2cWrite = config.i2cWrite;
+  transport.i2cWriteRead = config.i2cWriteRead;
+  transport.i2cUser = config.i2cUser;
+  transport.nowMs = config.nowMs;
+  transport.cooperativeYield = config.cooperativeYield;
+  transport.timeUser = config.timeUser;
+  transport.defaultTransferTimeoutMs = config.i2cTimeoutMs;
+  transport.offlineThreshold = config.offlineThreshold;
+  profile.i2cAddress = config.i2cAddress;
+  profile.enabledChannels = static_cast<ChannelMask>(
+      (config.ch1Enable ? CHANNEL_1 : 0U) |
+      (config.ch2Enable ? CHANNEL_2 : 0U) |
+      (config.ch3Enable ? CHANNEL_3 : 0U));
+  profile.averaging = config.averaging;
+  profile.vBusCt = config.vBusCt;
+  profile.vShCt = config.vShCt;
+  profile.mode = config.mode;
+  for (uint8_t i = 0; i < 3U; ++i) {
+    if (!isPositiveFinite(config.shuntResistance[i])) {
+      return Status::Error(Err::INVALID_CONFIG, "Invalid shunt resistance");
+    }
+    const double microOhms = static_cast<double>(config.shuntResistance[i]) * 1000000.0;
+    if (microOhms < 1.0 || microOhms > UINT32_MAX) {
+      return Status::Error(Err::OUT_OF_RANGE, "Shunt resistance out of range");
+    }
+    profile.shunts[i].resistanceMicroOhms =
+        static_cast<uint32_t>(microOhms + 0.5);
+  }
+  return Status::Ok();
+}
+
+Status INA3221::_requireNoOwnerJob() const {
+  return _jobState == JobTerminalState::ACTIVE
+             ? Status::Error(Err::JOB_BUSY, "Owner job active")
+             : Status::Ok();
+}
+
+void INA3221::_resetOperationState() {
+  _jobKind = JobKind::NONE;
+  _jobStage = OperationStage::IDLE;
+  _jobState = JobTerminalState::IDLE;
+  _jobHardwareEffect = HardwareEffect::NONE;
+  _jobStatus = Status::Ok();
+  _jobRequestId = 0;
+  _jobDeadlineMs = 0;
+  _jobTransfers = 0;
+  _jobTransfersLastPoll = 0;
+  _jobProfileIndex = 0;
+  _jobChannelIndex = 0;
+  _jobReadBusNext = false;
+  _jobConsumeAlerts = false;
+  _jobAnyWriteConfirmed = false;
+  _jobSampleMode = Mode::SHUNT_BUS_TRIG;
+  _jobConversionStartMs = 0;
+  _jobReadyAtMs = 0;
+  _jobWaitDurationMs = 0;
+  _jobWaitOriginAfterMs = 0;
+  _jobDesiredRegisterValue = 0;
+  _jobDesiredRegisterAddress = 0;
+  _sampleWork = SampleBatch{};
+  for (uint8_t i = 0; i < 3U; ++i) _sampleRaw[i] = ChannelRawMeasurement{};
+}
+
+Status INA3221::_startJob(JobKind kind, uint32_t requestId,
+                          uint64_t deadlineMs) {
+  if (!_bound) return Status::Error(Err::NOT_INITIALIZED, "Driver not bound");
+  if (_hasPendingJobResult) {
+    return Status::Error(Err::RESULT_PENDING, "Take terminal result first");
+  }
+  if (_jobState == JobTerminalState::ACTIVE) {
+    return Status::Error(Err::JOB_BUSY, "Owner job active");
+  }
+  if (_conversionStarted) {
+    return Status::Error(Err::CONVERSION_BUSY, "Legacy conversion active");
+  }
+  if (deadlineMs == 0U) {
+    return Status::Error(Err::INVALID_PARAM, "Absolute deadline required");
+  }
+  if (requestId == 0U) {
+    return Status::Error(Err::INVALID_PARAM, "Request ID must be non-zero");
+  }
+  _clearPollJob();
+  _resetOperationState();
+  _jobKind = kind;
+  _jobState = JobTerminalState::ACTIVE;
+  _jobRequestId = requestId;
+  _jobDeadlineMs = deadlineMs;
+  return Status{Err::IN_PROGRESS, 0, "Owner job started"};
+}
+
+Status INA3221::_startProfileJob(JobKind kind, const DeviceProfile& profile,
+                                 uint32_t requestId, uint64_t deadlineMs) {
+  Status st = _validateProfile(profile);
+  if (!st.ok()) return st;
+  if (_bound && profile.i2cAddress != _profile.i2cAddress) {
+    return Status::Error(Err::INVALID_CONFIG,
+                         "Profile address change requires rebind");
+  }
+  st = _startJob(kind, requestId, deadlineMs);
+  if (!st.inProgress()) return st;
+  _pendingProfile = profile;
+  _jobStage = kind == JobKind::INITIALIZE
+                  ? OperationStage::READ_MANUFACTURER_ID
+                  : OperationStage::PROFILE_READ;
+  return st;
+}
+
+Status INA3221::startInitialize(uint32_t requestId, uint64_t deadlineMs) {
+  return _startProfileJob(JobKind::INITIALIZE, _profile, requestId, deadlineMs);
+}
+
+Status INA3221::startApplyProfile(const DeviceProfile& profile,
+                                  uint32_t requestId, uint64_t deadlineMs) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  return _startProfileJob(JobKind::APPLY_PROFILE, profile, requestId, deadlineMs);
+}
+
+Status INA3221::startReconcile(uint32_t requestId, uint64_t deadlineMs) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  return _startProfileJob(JobKind::RECONCILE, _profile, requestId, deadlineMs);
+}
+
+Status INA3221::startTriggeredSample(Mode mode, uint32_t requestId,
+                                     uint64_t deadlineMs) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  if (!isTriggeredMode(mode)) {
+    return Status::Error(Err::INVALID_PARAM, "Triggered sample mode required");
+  }
+  if (_profile.mode != mode) {
+    return Status::Error(Err::INVALID_CONFIG,
+                         "Triggered sample mode must match verified profile");
+  }
+  if (_measurementConfigState != AppliedConfigState::APPLIED) {
+    return Status::Error(Err::CONFIG_UNKNOWN, "Measurement profile not verified");
+  }
+  Status st = _startJob(JobKind::TRIGGERED_SAMPLE, requestId, deadlineMs);
+  if (!st.inProgress()) return st;
+  _jobSampleMode = mode;
+  _jobStage = OperationStage::SAMPLE_WRITE_CONFIG;
+  _sampleWork.enabledChannels = _profile.enabledChannels;
+  _sampleWork.coherence = SampleCoherence::TRIGGERED_ATOMIC;
+  _sampleWork.profileGeneration = _profileGeneration;
+  _sampleWork.requestId = requestId;
+  for (uint8_t i = 0; i < 3U; ++i) {
+    _sampleRaw[i].channelEnabled =
+        (_profile.enabledChannels & static_cast<ChannelMask>(1U << i)) != 0U;
+  }
+  return st;
+}
+
+Status INA3221::startContinuousSample(uint32_t requestId, uint64_t deadlineMs,
+                                      bool consumeAlertSnapshot) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  if (!isContinuousMode(_profile.mode)) {
+    return Status::Error(Err::INVALID_CONFIG, "Continuous profile required");
+  }
+  if (_measurementConfigState != AppliedConfigState::APPLIED) {
+    return Status::Error(Err::CONFIG_UNKNOWN, "Measurement profile not verified");
+  }
+  Status st = _startJob(JobKind::CONTINUOUS_SAMPLE, requestId, deadlineMs);
+  if (!st.inProgress()) return st;
+  _jobSampleMode = _profile.mode;
+  _jobConsumeAlerts = consumeAlertSnapshot;
+  _jobStage = consumeAlertSnapshot ? OperationStage::SAMPLE_READ_MASK
+                                    : OperationStage::SAMPLE_READ_CHANNELS;
+  _sampleWork.enabledChannels = _profile.enabledChannels;
+  _sampleWork.coherence = SampleCoherence::CONTINUOUS_MIXED_AGE;
+  _sampleWork.profileGeneration = _profileGeneration;
+  _sampleWork.requestId = requestId;
+  for (uint8_t i = 0; i < 3U; ++i) {
+    _sampleRaw[i].channelEnabled =
+        (_profile.enabledChannels & static_cast<ChannelMask>(1U << i)) != 0U;
+  }
+  return st;
+}
+
+Status INA3221::startPowerDown(uint32_t requestId, uint64_t deadlineMs) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
+  }
+  Status st = _startJob(JobKind::POWER_DOWN, requestId, deadlineMs);
+  if (!st.inProgress()) return st;
+  _pendingProfile = _profile;
+  _pendingProfile.mode = Mode::POWER_DOWN;
+  _jobStage = OperationStage::POWER_READ_CONFIG;
+  return st;
+}
+
+uint64_t INA3221::_effectiveDeadline(const PollContext& context) const {
+  if (_jobDeadlineMs == 0U) return context.deadlineMs;
+  if (context.deadlineMs == 0U) return _jobDeadlineMs;
+  return context.deadlineMs < _jobDeadlineMs ? context.deadlineMs : _jobDeadlineMs;
+}
+
+bool INA3221::_deadlineExpired(const PollContext& context) const {
+  const uint64_t deadline = _effectiveDeadline(context);
+  return deadline != 0U && context.nowMs >= deadline;
+}
+
+uint32_t INA3221::_clampedTransferTimeout(const PollContext& context) const {
+  uint32_t timeout = _transport.defaultTransferTimeoutMs;
+  if (context.transferTimeoutMs != 0U &&
+      context.transferTimeoutMs < timeout) {
+    timeout = context.transferTimeoutMs;
+  }
+  const uint64_t deadline = _effectiveDeadline(context);
+  if (deadline != 0U) {
+    if (context.nowMs >= deadline) return 0U;
+    const uint64_t remaining = deadline - context.nowMs;
+    const uint32_t remainingMs = remaining > UINT32_MAX
+                                     ? UINT32_MAX
+                                     : static_cast<uint32_t>(remaining);
+    const uint32_t perTransferDeadlineMs =
+        context.maxTransfers > 1U
+            ? remainingMs / static_cast<uint32_t>(context.maxTransfers)
+            : remainingMs;
+    if (timeout > perTransferDeadlineMs) timeout = perTransferDeadlineMs;
+  }
+  return timeout;
+}
+
+Status INA3221::_readRegister16WithTimeout(uint8_t reg, uint16_t& value,
+                                           uint32_t timeoutMs, bool tracked) {
+  if (reg == cmd::REG_MASK_ENABLE) {
+    return _readMaskEnableWithTimeout(value, nullptr, timeoutMs, tracked);
+  }
+  uint8_t rx[2] = {0, 0};
+  Status st = tracked
+                  ? _i2cWriteReadTracked(&reg, 1U, rx, sizeof(rx), timeoutMs)
+                  : _i2cWriteReadRaw(&reg, 1U, rx, sizeof(rx), timeoutMs);
+  if (!st.ok()) return st;
+  value = static_cast<uint16_t>((static_cast<uint16_t>(rx[0]) << 8U) | rx[1]);
+  return Status::Ok();
+}
+
+Status INA3221::_writeRegister16WithTimeout(uint8_t reg, uint16_t value,
+                                            uint32_t timeoutMs, bool tracked) {
+  const uint8_t tx[3] = {
+      reg,
+      static_cast<uint8_t>((value >> 8U) & 0xFFU),
+      static_cast<uint8_t>(value & 0xFFU)};
+  return tracked ? _i2cWriteTracked(tx, sizeof(tx), timeoutMs)
+                 : _i2cWriteRaw(tx, sizeof(tx), timeoutMs);
+}
+
+void INA3221::_retainMaskEnable(uint16_t raw, AlertSnapshot* consumed) {
+  AlertSnapshot current{};
+  current.raw = raw;
+  current.events = static_cast<uint16_t>(raw & kDestructiveAlertEvents);
+  current.writableBits = static_cast<uint16_t>(raw & kMaskEnableWritable);
+  current.powerValid = (raw & cmd::MASK_PVF) != 0U;
+  current.timingControl = (raw & cmd::MASK_TCF) != 0U;
+  current.conversionReady = (raw & cmd::MASK_CVRF) != 0U;
+  _retainedAlerts.raw = raw;
+  _retainedAlerts.events = static_cast<uint16_t>(
+      _retainedAlerts.events | current.events);
+  _retainedAlerts.writableBits = current.writableBits;
+  _retainedAlerts.powerValid = current.powerValid;
+  _retainedAlerts.timingControl =
+      _retainedAlerts.timingControl || current.timingControl;
+  _retainedAlerts.conversionReady = current.conversionReady;
+  _maskEnableWritableCache = current.writableBits;
+  if (consumed != nullptr) {
+    consumed->raw = current.raw;
+    consumed->events = static_cast<uint16_t>(consumed->events | current.events);
+    consumed->writableBits = current.writableBits;
+    consumed->powerValid = current.powerValid;
+    consumed->timingControl = consumed->timingControl || current.timingControl;
+    consumed->conversionReady = current.conversionReady;
+  }
+}
+
+void INA3221::_decodeAlertFlags(uint16_t raw, AlertFlags& flags) {
+  flags.criticalCh1 = (raw & cmd::MASK_CF1) != 0U;
+  flags.criticalCh2 = (raw & cmd::MASK_CF2) != 0U;
+  flags.criticalCh3 = (raw & cmd::MASK_CF3) != 0U;
+  flags.summation = (raw & cmd::MASK_SF) != 0U;
+  flags.warningCh1 = (raw & cmd::MASK_WF1) != 0U;
+  flags.warningCh2 = (raw & cmd::MASK_WF2) != 0U;
+  flags.warningCh3 = (raw & cmd::MASK_WF3) != 0U;
+  flags.powerValid = (raw & cmd::MASK_PVF) != 0U;
+  flags.timingControl = (raw & cmd::MASK_TCF) != 0U;
+  flags.conversionReady = (raw & cmd::MASK_CVRF) != 0U;
+}
+
+Status INA3221::_readMaskEnableWithTimeout(uint16_t& value,
+                                           AlertSnapshot* consumed,
+                                           uint32_t timeoutMs, bool tracked) {
+  const uint8_t reg = cmd::REG_MASK_ENABLE;
+  uint8_t rx[2] = {0, 0};
+  Status st = tracked
+                  ? _i2cWriteReadTracked(&reg, 1U, rx, sizeof(rx), timeoutMs)
+                  : _i2cWriteReadRaw(&reg, 1U, rx, sizeof(rx), timeoutMs);
+  if (!st.ok()) return st;
+  value = static_cast<uint16_t>((static_cast<uint16_t>(rx[0]) << 8U) | rx[1]);
+  _retainMaskEnable(value, consumed);
+  return Status::Ok();
+}
+
+Status INA3221::_jobReadRegister(uint8_t reg, uint16_t& value,
+                                 const PollContext& context,
+                                 uint8_t& transfersLeft) {
+  if (transfersLeft == 0U) return Status{Err::IN_PROGRESS, 0, "Transfer budget exhausted"};
+  const uint32_t timeout = _clampedTransferTimeout(context);
+  if (timeout == 0U) return Status::Error(Err::DEADLINE_EXPIRED, "Deadline expired");
+  --transfersLeft;
+  if (_jobTransfers < UINT16_MAX) ++_jobTransfers;
+  return _readRegister16WithTimeout(reg, value, timeout, true);
+}
+
+Status INA3221::_jobWriteRegister(uint8_t reg, uint16_t value,
+                                  const PollContext& context,
+                                  uint8_t& transfersLeft) {
+  if (transfersLeft == 0U) return Status{Err::IN_PROGRESS, 0, "Transfer budget exhausted"};
+  const uint32_t timeout = _clampedTransferTimeout(context);
+  if (timeout == 0U) return Status::Error(Err::DEADLINE_EXPIRED, "Deadline expired");
+  --transfersLeft;
+  if (_jobTransfers < UINT16_MAX) ++_jobTransfers;
+  return _writeRegister16WithTimeout(reg, value, timeout, true);
+}
+
+bool INA3221::_ambiguousWriteFailure(const Status& status) {
+  return status.code != Err::I2C_NACK_ADDR &&
+         status.code != Err::DEVICE_NOT_FOUND &&
+         status.code != Err::INVALID_CONFIG &&
+         status.code != Err::INVALID_PARAM;
+}
+
+bool INA3221::_registerIsMeasurementConfig(uint8_t reg) {
+  return reg == cmd::REG_CONFIG;
+}
+
+void INA3221::_markRegisterUnknown(uint8_t reg) {
+  if (_registerIsMeasurementConfig(reg)) {
+    _measurementConfigState = AppliedConfigState::UNKNOWN;
+  } else if (isWritableRegisterAddress(reg)) {
+    _alertConfigState = AppliedConfigState::UNKNOWN;
+  }
+  _hardwareConfigDirty = true;
+  _hardwareConfigDirtyStatus =
+      Status::Error(Err::CONFIG_UNKNOWN, "Hardware register state unknown", reg);
+}
+
+void INA3221::_markRegisterDirty(uint8_t reg) {
+  if (_registerIsMeasurementConfig(reg)) {
+    if (_measurementConfigState != AppliedConfigState::UNKNOWN)
+      _measurementConfigState = AppliedConfigState::DIRTY;
+  } else if (isWritableRegisterAddress(reg)) {
+    if (_alertConfigState != AppliedConfigState::UNKNOWN)
+      _alertConfigState = AppliedConfigState::DIRTY;
+  }
+  _hardwareConfigDirty = true;
+  _hardwareConfigDirtyStatus =
+      Status::Error(Err::CONFIG_UNKNOWN, "Hardware profile requires verification", reg);
+}
+
+Status INA3221::_desiredRegister(uint8_t index, const DeviceProfile& profile,
+                                 uint8_t& reg, uint16_t& value) const {
+  value = 0;
+  if (index == 0U) {
+    reg = cmd::REG_CONFIG;
+    if ((profile.enabledChannels & CHANNEL_1) != 0U) value |= cmd::MASK_CH1EN;
+    if ((profile.enabledChannels & CHANNEL_2) != 0U) value |= cmd::MASK_CH2EN;
+    if ((profile.enabledChannels & CHANNEL_3) != 0U) value |= cmd::MASK_CH3EN;
+    value |= static_cast<uint16_t>(
+        (static_cast<uint16_t>(profile.averaging) << cmd::BIT_AVG) & cmd::MASK_AVG);
+    value |= static_cast<uint16_t>(
+        (static_cast<uint16_t>(profile.vBusCt) << cmd::BIT_VBUSCT) & cmd::MASK_VBUSCT);
+    value |= static_cast<uint16_t>(
+        (static_cast<uint16_t>(profile.vShCt) << cmd::BIT_VSHCT) & cmd::MASK_VSHCT);
+    value |= static_cast<uint16_t>(
+        (static_cast<uint16_t>(profile.mode) << cmd::BIT_MODE) & cmd::MASK_MODE);
+    return Status::Ok();
+  }
+  if (index >= 1U && index <= 6U) {
+    const uint8_t channel = static_cast<uint8_t>((index - 1U) / 2U);
+    const bool warning = ((index - 1U) & 1U) != 0U;
+    reg = warning ? warnRegAddr(static_cast<Channel>(channel))
+                  : critRegAddr(static_cast<Channel>(channel));
+    return encodeShuntMicroVolts(
+        warning ? profile.alerts.warningLimitMicroVolts[channel]
+                : profile.alerts.criticalLimitMicroVolts[channel], value);
+  }
+  if (index == 7U) {
+    reg = cmd::REG_SHUNT_SUM_LIMIT;
+    return encodeShuntSumMicroVolts(profile.alerts.shuntSumLimitMicroVolts, value);
+  }
+  if (index == 8U) {
+    reg = cmd::REG_MASK_ENABLE;
+    if ((profile.alerts.summationChannels & CHANNEL_1) != 0U) value |= cmd::MASK_SCC1;
+    if ((profile.alerts.summationChannels & CHANNEL_2) != 0U) value |= cmd::MASK_SCC2;
+    if ((profile.alerts.summationChannels & CHANNEL_3) != 0U) value |= cmd::MASK_SCC3;
+    if (profile.alerts.warningLatch) value |= cmd::MASK_WEN;
+    if (profile.alerts.criticalLatch) value |= cmd::MASK_CEN;
+    return Status::Ok();
+  }
+  if (index == 9U || index == 10U) {
+    reg = index == 9U ? cmd::REG_PV_UPPER_LIMIT : cmd::REG_PV_LOWER_LIMIT;
+    return encodeBusMilliVolts(static_cast<int32_t>(
+        index == 9U ? profile.alerts.powerValidUpperMilliVolts
+                    : profile.alerts.powerValidLowerMilliVolts), value);
+  }
+  return Status::Error(Err::INVALID_PARAM, "Invalid profile register index");
+}
+
+bool INA3221::_registerMatches(uint8_t reg, uint16_t actual, uint16_t desired) {
+  if (reg == cmd::REG_MASK_ENABLE) {
+    return (actual & kMaskEnableWritable) == (desired & kMaskEnableWritable);
+  }
+  if (reg == cmd::REG_CONFIG) {
+    return (actual & static_cast<uint16_t>(~cmd::MASK_RST)) ==
+           (desired & static_cast<uint16_t>(~cmd::MASK_RST));
+  }
+  return actual == desired;
+}
+
+void INA3221::_finishJob(JobTerminalState state, const Status& status,
+                         HardwareEffect effect) {
+  _jobState = state;
+  _jobStatus = status;
+  _jobHardwareEffect = effect;
+  _pendingJobResult = JobResult{};
+  _pendingJobResult.kind = _jobKind;
+  _pendingJobResult.state = state;
+  _pendingJobResult.hardwareEffect = effect;
+  _pendingJobResult.status = status;
+  _pendingJobResult.requestId = _jobRequestId;
+  _pendingJobResult.transfers = _jobTransfers;
+  _pendingJobResult.profileGeneration = _profileGeneration;
+  _hasPendingJobResult = true;
+}
+
+void INA3221::_finishJobSuccess() {
+  const AppliedConfigState priorAlertState = _alertConfigState;
+  if (_jobKind == JobKind::INITIALIZE || _jobKind == JobKind::APPLY_PROFILE ||
+      _jobKind == JobKind::RECONCILE || _jobKind == JobKind::POWER_DOWN) {
+    _profile = _pendingProfile;
+    _syncLegacyConfigFromProfile();
+    _measurementConfigState = AppliedConfigState::APPLIED;
+    _alertConfigState = AppliedConfigState::APPLIED;
+    _initialized = true;
+    _driverState = DriverState::READY;
+    _consecutiveFailures = 0;
+    if (_profileGeneration < UINT32_MAX) ++_profileGeneration;
+    _clearHardwareConfigDirty();
+    if (_jobKind == JobKind::POWER_DOWN) {
+      _alertConfigState = priorAlertState;
+      if (_alertConfigState != AppliedConfigState::APPLIED) {
+        _hardwareConfigDirty = true;
+        _hardwareConfigDirtyStatus = Status::Error(
+            Err::CONFIG_UNKNOWN, "Alert profile remains unverified");
+      }
+    }
+  } else if (_jobKind == JobKind::TRIGGERED_SAMPLE ||
+             _jobKind == JobKind::CONTINUOUS_SAMPLE) {
+    _lastGoodSample = _sampleWork;
+    _hasLastGoodSample = true;
+  }
+  _finishJob(JobTerminalState::SUCCEEDED, Status::Ok(),
+             _jobAnyWriteConfirmed ? HardwareEffect::CONFIRMED
+                                   : HardwareEffect::NONE);
+  if (_jobKind == JobKind::TRIGGERED_SAMPLE ||
+      _jobKind == JobKind::CONTINUOUS_SAMPLE) {
+    _pendingJobResult.sampleValid = true;
+    _pendingJobResult.sample = _lastGoodSample;
+  }
+  _pendingJobResult.profileGeneration = _profileGeneration;
+}
+
+Status INA3221::cancelJob() {
+  if (_jobState != JobTerminalState::ACTIVE) {
+    return Status::Error(Err::NO_ACTIVE_JOB, "No active owner job");
+  }
+  if (_jobAnyWriteConfirmed) {
+    if (_jobKind == JobKind::TRIGGERED_SAMPLE || _jobKind == JobKind::POWER_DOWN)
+      _measurementConfigState = AppliedConfigState::DIRTY;
+  }
+  _sampleWork = SampleBatch{};
+  for (uint8_t i = 0; i < 3U; ++i) _sampleRaw[i] = ChannelRawMeasurement{};
+  const HardwareEffect effect = _jobAnyWriteConfirmed
+                                    ? HardwareEffect::PARTIAL
+                                    : HardwareEffect::NONE;
+  const Status cancelled = Status::Error(Err::CANCELLED, "Owner job cancelled");
+  _finishJob(JobTerminalState::CANCELLED, cancelled, effect);
+  return cancelled;
+}
+
+Status INA3221::takeJobResult(JobResult& out) {
+  if (!_hasPendingJobResult) {
+    return Status::Error(Err::NO_RESULT, "No terminal result pending");
+  }
+  out = _pendingJobResult;
+  _hasPendingJobResult = false;
+  _pendingJobResult = JobResult{};
+  _resetOperationState();
+  return Status::Ok();
+}
+
+Status INA3221::peekLastSample(SampleBatch& out) const {
+  if (!_hasLastGoodSample) return Status::Error(Err::NO_RESULT, "No completed sample");
+  out = _lastGoodSample;
+  return Status::Ok();
+}
+
+Status INA3221::peekAlertEvents(AlertSnapshot& out) const {
+  out = _retainedAlerts;
+  return Status::Ok();
+}
+
+Status INA3221::takeAlertEvents(AlertSnapshot& out) {
+  out = _retainedAlerts;
+  _retainedAlerts.events = 0;
+  return Status::Ok();
+}
+
+Status INA3221::getJobProgress(JobProgress& out) const {
+  out = JobProgress{};
+  out.kind = _jobKind;
+  out.state = _jobState;
+  out.requestId = _jobRequestId;
+  out.totalTransfers = _jobTransfers;
+  out.lastPollTransfers = _jobTransfersLastPoll;
+  out.deadlineMs = _jobDeadlineMs;
+  out.readyAtMs = _jobReadyAtMs;
+  out.resultPending = _hasPendingJobResult;
+  if (_hasPendingJobResult) {
+    out.stage = JobStage::TERMINAL;
+    return Status::Ok();
+  }
+  switch (_jobStage) {
+    case OperationStage::READ_MANUFACTURER_ID:
+    case OperationStage::READ_DIE_ID: out.stage = JobStage::READ_IDENTITY; break;
+    case OperationStage::PROFILE_READ: out.stage = JobStage::READ_PROFILE; break;
+    case OperationStage::PROFILE_WRITE: out.stage = JobStage::WRITE_PROFILE; break;
+    case OperationStage::PROFILE_VERIFY: out.stage = JobStage::VERIFY_PROFILE; break;
+    case OperationStage::SAMPLE_WRITE_CONFIG: out.stage = JobStage::TRIGGER_SAMPLE; break;
+    case OperationStage::SAMPLE_WAIT_ORIGIN:
+    case OperationStage::SAMPLE_WAIT: out.stage = JobStage::WAIT_CONVERSION; break;
+    case OperationStage::SAMPLE_READ_MASK: out.stage = JobStage::READ_ALERTS; break;
+    case OperationStage::SAMPLE_READ_CHANNELS: out.stage = JobStage::READ_CHANNELS; break;
+    case OperationStage::POWER_READ_CONFIG: out.stage = JobStage::READ_POWER_STATE; break;
+    case OperationStage::POWER_WRITE_CONFIG: out.stage = JobStage::WRITE_POWER_STATE; break;
+    case OperationStage::POWER_VERIFY_CONFIG: out.stage = JobStage::VERIFY_POWER_STATE; break;
+    case OperationStage::IDLE:
+    default:
+      out.stage = _hasPendingJobResult ? JobStage::TERMINAL : JobStage::IDLE;
+      break;
+  }
+  return Status::Ok();
+}
+
+Status INA3221::_driveCompatibilityJob(uint32_t maximumTransfers) {
+  const uint32_t maxPolls = maximumTransfers * 3U + 8U;
+  for (uint32_t poll = 0; poll < maxPolls && !_hasPendingJobResult; ++poll) {
+    PollContext context{};
+    context.nowMs = _nowMs();
+    context.transferTimeoutMs = _transport.defaultTransferTimeoutMs;
+    context.maxTransfers = 1U;
+    Status st = pollJob(context);
+    if (!st.ok() && !st.inProgress() && !_hasPendingJobResult) return st;
+  }
+  if (!_hasPendingJobResult) {
+    (void)cancelJob();
+  }
+  JobResult result{};
+  Status take = takeJobResult(result);
+  if (!take.ok()) return take;
+  return result.status;
+}
+
+Status INA3221::_compatibilityDurationMs(JobKind kind,
+                                         const DeviceProfile& profile,
+                                         Mode mode, uint64_t& outMs) const {
+  uint16_t transfers = 0;
+  Status st = maximumJobTransfers(kind, profile, transfers);
+  if (!st.ok()) return st;
+  uint64_t duration = static_cast<uint64_t>(transfers) *
+                      _transport.defaultTransferTimeoutMs;
+  if (kind == JobKind::TRIGGERED_SAMPLE) {
+    uint64_t cycleUs = 0;
+    st = maximumCycleTimeUs(profile, mode, cycleUs);
+    if (!st.ok()) return st;
+    if (cycleUs > UINT64_MAX - CONVERSION_WAKE_MARGIN_US) {
+      return Status::Error(Err::ARITHMETIC_OVERFLOW,
+                           "Compatibility duration overflow");
+    }
+    cycleUs += CONVERSION_WAKE_MARGIN_US;
+    const uint64_t waitMs = (cycleUs + 999U) / 1000U;
+    if (duration > UINT64_MAX - waitMs) {
+      return Status::Error(Err::ARITHMETIC_OVERFLOW,
+                           "Compatibility duration overflow");
+    }
+    duration += waitMs;
+  }
+  if (duration > UINT64_MAX - COMPATIBILITY_SCHEDULING_MARGIN_MS) {
+    return Status::Error(Err::ARITHMETIC_OVERFLOW,
+                         "Compatibility duration overflow");
+  }
+  outMs = duration + COMPATIBILITY_SCHEDULING_MARGIN_MS;
+  return Status::Ok();
+}
+
+Status INA3221::_prepareCompatibilityPoll(uint32_t nowMs,
+                                          uint8_t maxTransfers,
+                                          PollContext& out) {
+  if (!_pollTimeInitialized) {
+    _pollTimeInitialized = true;
+    _pollLastNowMs = nowMs;
+    _pollExtendedNowMs = nowMs;
+  } else {
+    _pollExtendedNowMs += static_cast<uint32_t>(nowMs - _pollLastNowMs);
+    _pollLastNowMs = nowMs;
+  }
+  if (_jobDeadlineMs == UINT64_MAX) {
+    if (_pollDeadlineDurationMs == 0U ||
+        _pollExtendedNowMs > UINT64_MAX - _pollDeadlineDurationMs) {
+      const Status st = Status::Error(Err::ARITHMETIC_OVERFLOW,
+                                      "Compatibility deadline overflow");
+      _finishJob(JobTerminalState::TIMED_OUT, st,
+                 _jobAnyWriteConfirmed ? HardwareEffect::PARTIAL
+                                       : HardwareEffect::NONE);
+      return st;
+    }
+    _jobDeadlineMs = _pollExtendedNowMs + _pollDeadlineDurationMs;
+  }
+  out = PollContext{};
+  out.nowMs = _pollExtendedNowMs;
+  out.transferTimeoutMs = _transport.defaultTransferTimeoutMs;
+  out.maxTransfers = maxTransfers;
+  return Status::Ok();
+}
+
+Status INA3221::_pollProfileJob(const PollContext& context,
+                                uint8_t& transfersLeft) {
+  while (_jobState == JobTerminalState::ACTIVE) {
+    if (_jobStage == OperationStage::READ_MANUFACTURER_ID) {
+      uint16_t value = 0;
+      Status st = _jobReadRegister(cmd::REG_MANUFACTURER_ID, value, context,
+                                   transfersLeft);
+      if (st.inProgress()) return st;
+      if (!st.ok()) {
+        _finishJob(JobTerminalState::FAILED, st, HardwareEffect::NONE);
+        return st;
+      }
+      if (value != cmd::MANUFACTURER_ID_VALUE) {
+        st = Status::Error(Err::MANUFACTURER_ID_MISMATCH,
+                           "Manufacturer ID mismatch", value);
+        _recordFailure(st);
+        _finishJob(JobTerminalState::FAILED, st, HardwareEffect::NONE);
+        return st;
+      }
+      _jobStage = OperationStage::READ_DIE_ID;
+      continue;
+    }
+    if (_jobStage == OperationStage::READ_DIE_ID) {
+      uint16_t value = 0;
+      Status st = _jobReadRegister(cmd::REG_DIE_ID, value, context,
+                                   transfersLeft);
+      if (st.inProgress()) return st;
+      if (!st.ok()) {
+        _finishJob(JobTerminalState::FAILED, st, HardwareEffect::NONE);
+        return st;
+      }
+      if (value != cmd::DIE_ID_VALUE) {
+        st = Status::Error(Err::DIE_ID_MISMATCH, "Die ID mismatch", value);
+        _recordFailure(st);
+        _finishJob(JobTerminalState::FAILED, st, HardwareEffect::NONE);
+        return st;
+      }
+      _jobStage = OperationStage::PROFILE_READ;
+      continue;
+    }
+    if (_jobProfileIndex >= MANAGED_PROFILE_REGISTER_COUNT) {
+      _finishJobSuccess();
+      return Status::Ok();
+    }
+    if (_jobStage == OperationStage::PROFILE_READ) {
+      Status st = _desiredRegister(_jobProfileIndex, _pendingProfile,
+                                   _jobDesiredRegisterAddress,
+                                   _jobDesiredRegisterValue);
+      if (!st.ok()) {
+        _finishJob(JobTerminalState::FAILED, st,
+                   _jobAnyWriteConfirmed ? HardwareEffect::PARTIAL
+                                         : HardwareEffect::NONE);
+        return st;
+      }
+      uint16_t actual = 0;
+      st = _jobReadRegister(_jobDesiredRegisterAddress, actual, context,
+                            transfersLeft);
+      if (st.inProgress()) return st;
+      if (!st.ok()) {
+        const HardwareEffect effect = _jobAnyWriteConfirmed
+                                          ? HardwareEffect::PARTIAL
+                                          : HardwareEffect::NONE;
+        _finishJob(_jobAnyWriteConfirmed ? JobTerminalState::PARTIAL
+                                         : JobTerminalState::FAILED,
+                   st, effect);
+        return st;
+      }
+      if (_registerMatches(_jobDesiredRegisterAddress, actual,
+                           _jobDesiredRegisterValue)) {
+        ++_jobProfileIndex;
+        continue;
+      }
+      _jobStage = OperationStage::PROFILE_WRITE;
+      continue;
+    }
+    if (_jobStage == OperationStage::PROFILE_WRITE) {
+      Status st = _jobWriteRegister(_jobDesiredRegisterAddress,
+                                    _jobDesiredRegisterValue, context,
+                                    transfersLeft);
+      if (st.inProgress()) return st;
+      if (!st.ok()) {
+        if (_ambiguousWriteFailure(st)) {
+          _markRegisterUnknown(_jobDesiredRegisterAddress);
+          _finishJob(JobTerminalState::INDETERMINATE, st,
+                     HardwareEffect::INDETERMINATE);
+        } else {
+          _finishJob(_jobAnyWriteConfirmed ? JobTerminalState::PARTIAL
+                                           : JobTerminalState::FAILED,
+                     st, _jobAnyWriteConfirmed ? HardwareEffect::PARTIAL
+                                               : HardwareEffect::NONE);
+        }
+        return st;
+      }
+      _jobAnyWriteConfirmed = true;
+      _markRegisterDirty(_jobDesiredRegisterAddress);
+      _jobStage = OperationStage::PROFILE_VERIFY;
+      continue;
+    }
+    if (_jobStage == OperationStage::PROFILE_VERIFY) {
+      uint16_t actual = 0;
+      Status st = _jobReadRegister(_jobDesiredRegisterAddress, actual, context,
+                                   transfersLeft);
+      if (st.inProgress()) return st;
+      if (!st.ok()) {
+        _markRegisterDirty(_jobDesiredRegisterAddress);
+        _finishJob(JobTerminalState::PARTIAL, st, HardwareEffect::PARTIAL);
+        return st;
+      }
+      if (!_registerMatches(_jobDesiredRegisterAddress, actual,
+                            _jobDesiredRegisterValue)) {
+        st = Status::Error(Err::PROFILE_MISMATCH,
+                           "Profile register verification mismatch",
+                           _jobDesiredRegisterAddress);
+        _markRegisterDirty(_jobDesiredRegisterAddress);
+        _finishJob(JobTerminalState::PARTIAL, st, HardwareEffect::PARTIAL);
+        return st;
+      }
+      ++_jobProfileIndex;
+      _jobStage = OperationStage::PROFILE_READ;
+      continue;
+    }
+    const Status bad = Status::Error(Err::INVALID_CONFIG,
+                                     "Invalid profile job stage");
+    _finishJob(JobTerminalState::FAILED, bad, HardwareEffect::NONE);
+    return bad;
+  }
+  return Status::Error(Err::RESULT_PENDING, "Terminal result pending");
+}
+
+Status INA3221::_buildFixedReading(uint8_t index, Mode mode,
+                                   FixedChannelReading& out) const {
+  if (index >= 3U) return Status::Error(Err::INVALID_PARAM, "Invalid channel");
+  const ChannelRawMeasurement& raw = _sampleRaw[index];
+  QuantityMask requested = 0;
+  if (modeReadsShunt(mode)) {
+    if (!raw.shuntValid) return Status::Error(Err::NO_RESULT, "Shunt raw value missing");
+    requested |= static_cast<QuantityMask>(Quantity::SHUNT);
+  }
+  if (modeReadsBus(mode)) {
+    if (!raw.busValid) return Status::Error(Err::NO_RESULT, "Bus raw value missing");
+    requested |= static_cast<QuantityMask>(Quantity::BUS);
+  }
+  return convertRawChannel(static_cast<uint16_t>(raw.shuntRaw),
+                           static_cast<uint16_t>(raw.busRaw), requested,
+                           _profile.shunts[index], out);
+}
+
+Status INA3221::_pollSampleOperation(const PollContext& context,
+                                     uint8_t& transfersLeft) {
+  while (_jobState == JobTerminalState::ACTIVE) {
+    if (_jobStage == OperationStage::SAMPLE_WRITE_CONFIG) {
+      uint8_t configReg = 0;
+      uint16_t configValue = 0;
+      DeviceProfile sampleProfile = _profile;
+      sampleProfile.mode = _jobSampleMode;
+      Status st = _desiredRegister(0U, sampleProfile, configReg, configValue);
+      if (!st.ok()) {
+        _finishJob(JobTerminalState::FAILED, st, HardwareEffect::NONE);
+        return st;
+      }
+      uint64_t cycleUs = 0;
+      st = maximumCycleTimeUs(_profile, _jobSampleMode, cycleUs);
+      if (!st.ok() || cycleUs > UINT64_MAX - CONVERSION_WAKE_MARGIN_US) {
+        if (st.ok()) st = Status::Error(Err::ARITHMETIC_OVERFLOW,
+                                        "Ready deadline overflow");
+        _finishJob(JobTerminalState::FAILED, st, HardwareEffect::NONE);
+        return st;
+      }
+      cycleUs += CONVERSION_WAKE_MARGIN_US;
+      const uint64_t waitMs = (cycleUs + 999U) / 1000U;
+
+      // Admission is bus-silent unless the success path's maximum conversion
+      // wait and callback bounds can fit the effective owner deadline. The
+      // caller still owns poll cadence, so it must schedule subsequent polls.
+      const uint64_t deadline = _effectiveDeadline(context);
+      if (deadline != 0U) {
+        uint16_t successTransfers = 0;
+        st = maximumJobTransfers(JobKind::TRIGGERED_SAMPLE, _profile,
+                                 successTransfers);
+        const uint64_t transferBoundMs =
+            static_cast<uint64_t>(successTransfers) *
+            _transport.defaultTransferTimeoutMs;
+        const bool overflow =
+            !st.ok() || waitMs > UINT64_MAX - transferBoundMs - 1U ||
+            context.nowMs > UINT64_MAX - waitMs - transferBoundMs - 1U;
+        const uint64_t completionBound =
+            overflow ? UINT64_MAX
+                     : context.nowMs + 1U + waitMs + transferBoundMs;
+        if (overflow || completionBound > deadline) {
+          st = Status::Error(Err::DEADLINE_EXPIRED,
+                             "Triggered profile cannot fit owner deadline");
+          _finishJob(JobTerminalState::TIMED_OUT, st, HardwareEffect::NONE);
+          return st;
+        }
+      }
+      st = _jobWriteRegister(configReg, configValue, context, transfersLeft);
+      if (st.inProgress()) return st;
+      if (!st.ok()) {
+        if (_ambiguousWriteFailure(st)) {
+          _markRegisterUnknown(cmd::REG_CONFIG);
+          _finishJob(JobTerminalState::INDETERMINATE, st,
+                     HardwareEffect::INDETERMINATE);
+        } else {
+          _finishJob(JobTerminalState::FAILED, st, HardwareEffect::NONE);
+        }
+        return st;
+      }
+      _jobAnyWriteConfirmed = true;
+      _jobWaitDurationMs = waitMs;
+      _jobWaitOriginAfterMs = context.nowMs;
+      _jobReadyAtMs = 0;
+      _jobStage = OperationStage::SAMPLE_WAIT_ORIGIN;
+      return Status{Err::IN_PROGRESS, 0, "Trigger accepted; fresh time required"};
+    }
+    if (_jobStage == OperationStage::SAMPLE_WAIT_ORIGIN) {
+      if (context.nowMs <= _jobWaitOriginAfterMs) {
+        return Status{Err::IN_PROGRESS, 0, "Fresh later time required"};
+      }
+      if (context.nowMs > UINT64_MAX - _jobWaitDurationMs) {
+        const Status st = Status::Error(Err::ARITHMETIC_OVERFLOW,
+                                        "Ready deadline overflow");
+        _finishJob(_jobAnyWriteConfirmed ? JobTerminalState::PARTIAL
+                                         : JobTerminalState::FAILED,
+                   st, _jobAnyWriteConfirmed ? HardwareEffect::PARTIAL
+                                             : HardwareEffect::NONE);
+        return st;
+      }
+      _jobConversionStartMs = context.nowMs;
+      _jobReadyAtMs = context.nowMs + _jobWaitDurationMs;
+      const uint64_t deadline = _effectiveDeadline(context);
+      if (deadline != 0U && _jobReadyAtMs >= deadline) {
+        const Status st = Status::Error(Err::DEADLINE_EXPIRED,
+                                        "Conversion wait exceeds owner deadline");
+        _measurementConfigState = AppliedConfigState::DIRTY;
+        _finishJob(JobTerminalState::TIMED_OUT, st, HardwareEffect::PARTIAL);
+        return st;
+      }
+      _jobStage = OperationStage::SAMPLE_WAIT;
+      return Status{Err::IN_PROGRESS, 0, "Waiting for maximum conversion time"};
+    }
+    if (_jobStage == OperationStage::SAMPLE_WAIT) {
+      if (context.nowMs < _jobReadyAtMs) {
+        return Status{Err::IN_PROGRESS, 0, "Waiting for maximum conversion time"};
+      }
+      _jobStage = OperationStage::SAMPLE_READ_MASK;
+      continue;
+    }
+    if (_jobStage == OperationStage::SAMPLE_READ_MASK) {
+      uint16_t raw = 0;
+      const uint32_t timeout = _clampedTransferTimeout(context);
+      if (transfersLeft == 0U)
+        return Status{Err::IN_PROGRESS, 0, "Transfer budget exhausted"};
+      if (timeout == 0U)
+        return Status::Error(Err::DEADLINE_EXPIRED, "Deadline expired");
+      --transfersLeft;
+      if (_jobTransfers < UINT16_MAX) ++_jobTransfers;
+      Status st = _readMaskEnableWithTimeout(raw, &_sampleWork.alerts,
+                                             timeout, true);
+      if (!st.ok()) {
+        _finishJob(_jobAnyWriteConfirmed ? JobTerminalState::PARTIAL
+                                         : JobTerminalState::FAILED,
+                   st, _jobAnyWriteConfirmed ? HardwareEffect::PARTIAL
+                                             : HardwareEffect::NONE);
+        return st;
+      }
+      _sampleWork.alertSnapshotValid = true;
+      if (_jobKind == JobKind::TRIGGERED_SAMPLE &&
+          (raw & cmd::MASK_CVRF) == 0U) {
+        _jobWaitDurationMs = 1U;
+        _jobWaitOriginAfterMs = context.nowMs;
+        _jobReadyAtMs = 0;
+        _jobStage = OperationStage::SAMPLE_WAIT_ORIGIN;
+        return Status{Err::IN_PROGRESS, 0, "CVRF not ready"};
+      }
+      _jobStage = OperationStage::SAMPLE_READ_CHANNELS;
+      continue;
+    }
+    if (_jobStage == OperationStage::SAMPLE_READ_CHANNELS) {
+      while (_jobChannelIndex < 3U &&
+             !_sampleRaw[_jobChannelIndex].channelEnabled) {
+        ++_jobChannelIndex;
+        _jobReadBusNext = false;
+      }
+      if (_jobChannelIndex >= 3U) {
+        QuantityMask required = 0;
+        if (modeReadsShunt(_jobSampleMode)) {
+          required |= static_cast<QuantityMask>(Quantity::SHUNT);
+          required |= static_cast<QuantityMask>(Quantity::CURRENT);
+        }
+        if (modeReadsBus(_jobSampleMode)) required |= static_cast<QuantityMask>(Quantity::BUS);
+        if (modeReadsBus(_jobSampleMode) && modeReadsShunt(_jobSampleMode))
+          required |= static_cast<QuantityMask>(Quantity::POWER);
+        for (uint8_t i = 0; i < 3U; ++i) {
+          if (!_sampleRaw[i].channelEnabled) continue;
+          Status st = _buildFixedReading(i, _jobSampleMode,
+                                         _sampleWork.channels[i]);
+          if (!st.ok()) {
+            _finishJob(JobTerminalState::PARTIAL, st, HardwareEffect::PARTIAL);
+            return st;
+          }
+          if ((_sampleWork.channels[i].validQuantities & required) == required) {
+            _sampleWork.validChannels |= static_cast<ChannelMask>(1U << i);
+          }
+        }
+        _sampleWork.captureUptimeMs = context.nowMs;
+        _finishJobSuccess();
+        return Status::Ok();
+      }
+      const Channel ch = static_cast<Channel>(_jobChannelIndex);
+      uint8_t reg = 0;
+      bool readingBus = false;
+      if (modeReadsShunt(_jobSampleMode) &&
+          !_sampleRaw[_jobChannelIndex].shuntValid) {
+        reg = shuntRegAddr(ch);
+      } else if (modeReadsBus(_jobSampleMode) &&
+                 !_sampleRaw[_jobChannelIndex].busValid) {
+        reg = busRegAddr(ch);
+        readingBus = true;
+      } else {
+        ++_jobChannelIndex;
+        continue;
+      }
+      uint16_t value = 0;
+      Status st = _jobReadRegister(reg, value, context, transfersLeft);
+      if (st.inProgress()) return st;
+      if (!st.ok()) {
+        _finishJob(_jobAnyWriteConfirmed ? JobTerminalState::PARTIAL
+                                         : JobTerminalState::FAILED,
+                   st, _jobAnyWriteConfirmed ? HardwareEffect::PARTIAL
+                                             : HardwareEffect::NONE);
+        return st;
+      }
+      if (readingBus) {
+        _sampleRaw[_jobChannelIndex].busRaw = static_cast<int16_t>(value);
+        _sampleRaw[_jobChannelIndex].busValid = true;
+      } else {
+        _sampleRaw[_jobChannelIndex].shuntRaw = static_cast<int16_t>(value);
+        _sampleRaw[_jobChannelIndex].shuntValid = true;
+      }
+      continue;
+    }
+    const Status bad = Status::Error(Err::INVALID_CONFIG,
+                                     "Invalid sample job stage");
+    _finishJob(JobTerminalState::FAILED, bad, HardwareEffect::NONE);
+    return bad;
+  }
+  return Status::Error(Err::RESULT_PENDING, "Terminal result pending");
+}
+
+Status INA3221::_pollPowerDownOperation(const PollContext& context,
+                                        uint8_t& transfersLeft) {
+  uint8_t reg = 0;
+  uint16_t desired = 0;
+  Status st = _desiredRegister(0U, _pendingProfile, reg, desired);
+  if (!st.ok()) {
+    _finishJob(JobTerminalState::FAILED, st, HardwareEffect::NONE);
+    return st;
+  }
+  if (_jobStage == OperationStage::POWER_READ_CONFIG) {
+    uint16_t actual = 0;
+    st = _jobReadRegister(reg, actual, context, transfersLeft);
+    if (st.inProgress()) return st;
+    if (!st.ok()) {
+      _finishJob(JobTerminalState::FAILED, st, HardwareEffect::NONE);
+      return st;
+    }
+    if (_registerMatches(reg, actual, desired)) {
+      _finishJobSuccess();
+      return Status::Ok();
+    }
+    _jobStage = OperationStage::POWER_WRITE_CONFIG;
+  }
+  if (_jobStage == OperationStage::POWER_WRITE_CONFIG) {
+    st = _jobWriteRegister(reg, desired, context, transfersLeft);
+    if (st.inProgress()) return st;
+    if (!st.ok()) {
+      if (_ambiguousWriteFailure(st)) {
+        _markRegisterUnknown(reg);
+        _finishJob(JobTerminalState::INDETERMINATE, st,
+                   HardwareEffect::INDETERMINATE);
+      } else {
+        _finishJob(JobTerminalState::FAILED, st, HardwareEffect::NONE);
+      }
+      return st;
+    }
+    _jobAnyWriteConfirmed = true;
+    _markRegisterDirty(reg);
+    _jobStage = OperationStage::POWER_VERIFY_CONFIG;
+  }
+  if (_jobStage == OperationStage::POWER_VERIFY_CONFIG) {
+    uint16_t actual = 0;
+    st = _jobReadRegister(reg, actual, context, transfersLeft);
+    if (st.inProgress()) return st;
+    if (!st.ok()) {
+      _finishJob(JobTerminalState::PARTIAL, st, HardwareEffect::PARTIAL);
+      return st;
+    }
+    if (!_registerMatches(reg, actual, desired)) {
+      st = Status::Error(Err::PROFILE_MISMATCH,
+                         "Power-down verification mismatch", reg);
+      _finishJob(JobTerminalState::PARTIAL, st, HardwareEffect::PARTIAL);
+      return st;
+    }
+    _finishJobSuccess();
+    return Status::Ok();
+  }
+  return Status{Err::IN_PROGRESS, 0, "Power-down in progress"};
+}
+
+Status INA3221::pollJob(const PollContext& context) {
+  _jobTransfersLastPoll = 0;
+  if (_hasPendingJobResult) {
+    return Status::Error(Err::RESULT_PENDING, "Take terminal result first");
+  }
+  if (_jobState != JobTerminalState::ACTIVE) {
+    return Status::Error(Err::NO_ACTIVE_JOB, "No active owner job");
+  }
+  if (_deadlineExpired(context)) {
+    if (_jobAnyWriteConfirmed &&
+        (_jobKind == JobKind::TRIGGERED_SAMPLE ||
+         _jobKind == JobKind::POWER_DOWN)) {
+      _measurementConfigState = AppliedConfigState::DIRTY;
+    }
+    const Status timeout = Status::Error(Err::DEADLINE_EXPIRED,
+                                         "Owner deadline expired");
+    _finishJob(JobTerminalState::TIMED_OUT, timeout,
+               _jobAnyWriteConfirmed ? HardwareEffect::PARTIAL
+                                     : HardwareEffect::NONE);
+    return timeout;
+  }
+  uint8_t transfersLeft = context.maxTransfers;
+  const uint16_t before = _jobTransfers;
+  Status st;
+  switch (_jobKind) {
+    case JobKind::INITIALIZE:
+    case JobKind::APPLY_PROFILE:
+    case JobKind::RECONCILE:
+      st = _pollProfileJob(context, transfersLeft);
+      break;
+    case JobKind::TRIGGERED_SAMPLE:
+    case JobKind::CONTINUOUS_SAMPLE:
+      st = _pollSampleOperation(context, transfersLeft);
+      break;
+    case JobKind::POWER_DOWN:
+      st = _pollPowerDownOperation(context, transfersLeft);
+      break;
+    case JobKind::NONE:
+    default:
+      st = Status::Error(Err::NO_ACTIVE_JOB, "No active owner job");
+      break;
+  }
+  const uint16_t used = static_cast<uint16_t>(_jobTransfers - before);
+  _jobTransfersLastPoll = used > UINT8_MAX ? UINT8_MAX
+                                           : static_cast<uint8_t>(used);
+  if (st.code == Err::DEADLINE_EXPIRED &&
+      _jobState == JobTerminalState::ACTIVE) {
+    _finishJob(JobTerminalState::TIMED_OUT, st,
+               _jobAnyWriteConfirmed ? HardwareEffect::PARTIAL
+                                     : HardwareEffect::NONE);
+  }
+  return st;
+}
 
 // ============================================================================
 // Lifecycle
 // ============================================================================
 
 Status INA3221::begin(const Config& config) {
-  const Config requestedConfig = config;
-
-  _config = Config{};
-  _initialized = false;
-  _driverState = DriverState::UNINIT;
-  _allowOfflineI2c = false;
-  _conversionStarted = false;
-  _conversionReady = false;
-  _conversionStartMs = 0;
-  _maskEnableWritableCache = 0;
-  _clearPollJob();
-
-  _lastOkMs = 0;
-  _lastErrorMs = 0;
-  _lastError = Status::Ok();
-  _consecutiveFailures = 0;
-  _totalFailures = 0;
-  _totalSuccess = 0;
-  _clearHardwareConfigDirty();
-
-  if (requestedConfig.i2cWrite == nullptr || requestedConfig.i2cWriteRead == nullptr) {
-    return Status::Error(Err::INVALID_CONFIG, "I2C callbacks required");
+  TransportConfig transport{};
+  DeviceProfile profile{};
+  Status st = _legacyToContracts(config, transport, profile);
+  if (!st.ok()) return st;
+  st = bind(transport, profile);
+  if (!st.ok()) return st;
+  st = startInitialize(1U, UINT64_MAX);
+  if (!st.inProgress()) {
+    unbind();
+    return st;
   }
-  if (requestedConfig.i2cTimeoutMs == 0) {
-    return Status::Error(Err::INVALID_CONFIG, "Timeout must be > 0");
-  }
-  if (requestedConfig.i2cAddress < kMinAddress || requestedConfig.i2cAddress > kMaxAddress) {
-    return Status::Error(Err::INVALID_CONFIG, "Invalid I2C address (0x40-0x43)");
-  }
-  if (!isValidAveraging(requestedConfig.averaging) ||
-      !isValidConvTime(requestedConfig.vBusCt) ||
-      !isValidConvTime(requestedConfig.vShCt) ||
-      !isValidMode(requestedConfig.mode)) {
-    return Status::Error(Err::INVALID_CONFIG, "Invalid config enum value");
-  }
-  if (!configHasRequiredChannels(requestedConfig)) {
-    return Status::Error(Err::INVALID_CONFIG, "At least one channel must be enabled");
-  }
-  for (int i = 0; i < 3; ++i) {
-    if (!isPositiveFinite(requestedConfig.shuntResistance[i])) {
-      return Status::Error(Err::INVALID_CONFIG, "Shunt resistance must be finite and > 0");
-    }
-  }
-
-  _config = requestedConfig;
-  if (_config.offlineThreshold == 0) {
-    _config.offlineThreshold = 1;
-  }
-
-  auto failBeginAfterConfig = [this](const Status& failure) {
-    _config = Config{};
-    _allowOfflineI2c = false;
-    _conversionStarted = false;
-    _conversionReady = false;
-    _conversionStartMs = 0;
-    _maskEnableWritableCache = 0;
-    _clearPollJob();
-    _clearHardwareConfigDirty();
-    return failure;
-  };
-
-  // Verify device identity
-  Status st = probe();
-  if (!st.ok()) {
-    return failBeginAfterConfig(st);
-  }
-
-  // Apply configuration
-  st = _applyConfig();
-  if (!st.ok()) {
-    return failBeginAfterConfig(st);
-  }
-
-  _initialized = true;
-  _driverState = DriverState::READY;
-  _handleConfigWriteSideEffects();
-  _clearHardwareConfigDirty();
-  return Status::Ok();
+  st = _driveCompatibilityJob(35U);
+  if (!st.ok()) unbind();
+  return st;
 }
 
 void INA3221::tick(uint32_t nowMs) {
@@ -315,6 +1732,9 @@ Status INA3221::tickStatus(uint32_t nowMs) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
 
+  if (_jobState == JobTerminalState::ACTIVE) {
+    return Status::Error(Err::JOB_BUSY, "Owner job active");
+  }
   if (_isTriggeredMode() && _conversionStarted && !_conversionReady) {
     bool ready = false;
     return _readConversionReadyAt(nowMs, ready);
@@ -326,22 +1746,15 @@ Status INA3221::powerDown() {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
-  return setMode(Mode::POWER_DOWN);
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
+  Status st = startPowerDown(UINT32_MAX, UINT64_MAX);
+  if (!st.inProgress()) return st;
+  return _driveCompatibilityJob(3U);
 }
 
 void INA3221::end() {
-  if (_initialized) {
-    (void)powerDown();
-  }
-
-  _initialized = false;
-  _driverState = DriverState::UNINIT;
-  _conversionStarted = false;
-  _conversionReady = false;
-  _conversionStartMs = 0;
-  _maskEnableWritableCache = 0;
-  _clearPollJob();
-  _clearHardwareConfigDirty();
+  unbind();
 }
 
 // ============================================================================
@@ -349,6 +1762,9 @@ void INA3221::end() {
 // ============================================================================
 
 Status INA3221::probe() {
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
+  if (!_bound) return Status::Error(Err::NOT_INITIALIZED, "Driver not bound");
   uint16_t mfgId = 0;
   Status st = _readRegister16Raw(cmd::REG_MANUFACTURER_ID, mfgId);
   if (!st.ok()) {
@@ -377,58 +1793,9 @@ Status INA3221::recover() {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
 
-  const bool startedOffline = (_driverState == DriverState::OFFLINE);
-  ScopedOfflineI2cAllowance allowOfflineI2c(_allowOfflineI2c, true);
-  Status result = [&]() -> Status {
-    uint16_t mfgId = 0;
-    Status st = readRegister16(cmd::REG_MANUFACTURER_ID, mfgId);
-    if (!st.ok()) {
-      return st;
-    }
-    if (mfgId != cmd::MANUFACTURER_ID_VALUE) {
-      return _recordFailure(Status::Error(Err::MANUFACTURER_ID_MISMATCH,
-                                          "Manufacturer ID mismatch",
-                                          static_cast<int32_t>(mfgId)));
-    }
-
-    uint16_t dieId = 0;
-    st = readRegister16(cmd::REG_DIE_ID, dieId);
-    if (!st.ok()) {
-      return st;
-    }
-    if (dieId != cmd::DIE_ID_VALUE) {
-      return _recordFailure(Status::Error(Err::DIE_ID_MISMATCH,
-                                          "Die ID mismatch",
-                                          static_cast<int32_t>(dieId)));
-    }
-
-    _conversionStarted = false;
-    _conversionReady = false;
-    _conversionStartMs = 0;
-    _clearPollJob();
-
-    st = _applyConfig();
-    if (!st.ok()) {
-      _markHardwareConfigDirty(st);
-      return st;
-    }
-    _handleConfigWriteSideEffects();
-
-    st = _writeRegister16Tracked(cmd::REG_MASK_ENABLE,
-                                 static_cast<uint16_t>(_maskEnableWritableCache &
-                                                       kMaskEnableWritable));
-    if (!st.ok()) {
-      _markHardwareConfigDirty(st);
-      return st;
-    }
-
-    _clearHardwareConfigDirty();
-    return Status::Ok();
-  }();
-  if (startedOffline && !result.ok() && !result.inProgress()) {
-    _reassertOfflineLatch();
-  }
-  return result;
+  Status st = startInitialize(UINT32_MAX - 1U, UINT64_MAX);
+  if (!st.inProgress()) return st;
+  return _driveCompatibilityJob(35U);
 }
 
 Status INA3221::getSettings(SettingsSnapshot& out) const {
@@ -627,8 +1994,10 @@ Status INA3221::startConversion() {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
   if (_isContinuousMode()) {
-    return Status::Error(Err::BUSY, "Continuous mode active");
+    return Status::Error(Err::CONVERSION_BUSY, "Continuous mode active");
   }
   if (!_isTriggeredMode()) {
     return Status::Error(Err::INVALID_CONFIG, "Triggered mode required");
@@ -637,16 +2006,17 @@ Status INA3221::startConversion() {
     return Status::Error(Err::INVALID_CONFIG, "At least one channel must be enabled");
   }
   if (_conversionStarted) {
-    return Status::Error(Err::BUSY, "Conversion already in progress");
+    return Status::Error(Err::CONVERSION_BUSY, "Conversion already in progress");
   }
 
   // Writing to config register triggers single-shot conversion
   uint16_t configReg = _buildConfigRegister();
   Status st = _writeRegister16Tracked(cmd::REG_CONFIG, configReg);
   if (!st.ok()) {
-    _markHardwareConfigDirty(st);
+    if (_ambiguousWriteFailure(st)) _markRegisterUnknown(cmd::REG_CONFIG);
     return st;
   }
+  _markRegisterDirty(cmd::REG_CONFIG);
 
   _conversionStarted = true;
   _conversionReady = false;
@@ -658,6 +2028,8 @@ Status INA3221::startConversion(Mode mode) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
   if (!isTriggeredMode(mode)) {
     return Status::Error(Err::INVALID_PARAM, "Must be a triggered mode");
   }
@@ -665,7 +2037,7 @@ Status INA3221::startConversion(Mode mode) {
     return Status::Error(Err::INVALID_CONFIG, "At least one channel must be enabled");
   }
   if (_conversionStarted) {
-    return Status::Error(Err::BUSY, "Conversion already in progress");
+    return Status::Error(Err::CONVERSION_BUSY, "Conversion already in progress");
   }
 
   Mode prevMode = _config.mode;
@@ -675,9 +2047,11 @@ Status INA3221::startConversion(Mode mode) {
   Status st = _writeRegister16Tracked(cmd::REG_CONFIG, configReg);
   if (!st.ok()) {
     _config.mode = prevMode;
-    _markHardwareConfigDirty(st);
+    if (_ambiguousWriteFailure(st)) _markRegisterUnknown(cmd::REG_CONFIG);
     return st;
   }
+  _profile.mode = mode;
+  _markRegisterDirty(cmd::REG_CONFIG);
 
   _conversionStarted = true;
   _conversionReady = false;
@@ -696,29 +2070,63 @@ bool INA3221::conversionReady() {
 }
 
 Status INA3221::startSingleShot(bool pollConversionReady) {
+  (void)pollConversionReady;
   Mode mode = _isTriggeredMode() ? _config.mode : Mode::SHUNT_BUS_TRIG;
-  return startSingleShot(mode, pollConversionReady);
+  return startSingleShot(mode, true);
 }
 
 Status INA3221::startSingleShot(Mode mode, bool pollConversionReady) {
+  (void)pollConversionReady;
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
   if (!isTriggeredMode(mode)) {
     return Status::Error(Err::INVALID_PARAM, "Must be a triggered mode");
   }
-  return _startSampleJob(PollJobKind::SINGLE_SHOT, mode, pollConversionReady);
+  uint64_t durationMs = 0;
+  Status st = _compatibilityDurationMs(JobKind::TRIGGERED_SAMPLE, _profile,
+                                       mode, durationMs);
+  if (!st.ok()) return st;
+  st = startTriggeredSample(mode, UINT32_MAX - 2U, UINT64_MAX);
+  if (st.inProgress()) {
+    _clearPollJob();
+    _pollJobKind = PollJobKind::SINGLE_SHOT;
+    _pollJobStage = PollJobStage::WRITE_CONFIG;
+    _pollSampleMode = mode;
+    _pollConversionReady = true;
+    _pollDeadlineDurationMs = durationMs;
+  }
+  return st;
 }
 
 Status INA3221::pollSingleShot(uint32_t nowMs, uint8_t maxInstructions) {
-  if (_pollJobKind == PollJobKind::NONE &&
-      _pollJobStage != PollJobStage::COMPLETE) {
-    return Status::Ok();
+  if (_pollJobKind != PollJobKind::SINGLE_SHOT ||
+      _jobKind != JobKind::TRIGGERED_SAMPLE)
+    return Status::Error(Err::JOB_KIND_MISMATCH, "Single-shot job is not active");
+  PollContext context{};
+  Status prepared = _prepareCompatibilityPoll(nowMs, maxInstructions, context);
+  if (!prepared.ok()) return prepared;
+  Status st = pollJob(context);
+  JobProgress progress{};
+  (void)getJobProgress(progress);
+  _pollInstructionsLast = progress.lastPollTransfers;
+  _pollInstructionsTotal = progress.totalTransfers;
+  if (progress.stage == JobStage::WAIT_CONVERSION) _pollJobStage = PollJobStage::WAIT_CONVERSION;
+  else if (progress.stage == JobStage::READ_ALERTS) _pollJobStage = PollJobStage::READ_READY;
+  else if (progress.stage == JobStage::READ_CHANNELS) _pollJobStage = PollJobStage::READ_CHANNELS;
+  if (_hasPendingJobResult) {
+    ChannelRawMeasurement completedRaw[3] = {
+        _sampleRaw[0], _sampleRaw[1], _sampleRaw[2]};
+    JobResult result{};
+    (void)takeJobResult(result);
+    if (result.sampleValid) {
+      for (uint8_t i = 0; i < 3U; ++i) _pollChannels[i] = completedRaw[i];
+      _pollObservedReady = result.sample.alerts.conversionReady;
+      _pollJobStage = PollJobStage::COMPLETE;
+    }
+    return result.status;
   }
-  if (_pollJobKind != PollJobKind::SINGLE_SHOT) {
-    return Status::Error(Err::BUSY, "Single-shot job is not active");
-  }
-  return _pollSampleJob(nowMs, maxInstructions);
+  return st;
 }
 
 Status INA3221::startContinuousRead(bool pollConversionReady) {
@@ -728,59 +2136,73 @@ Status INA3221::startContinuousRead(bool pollConversionReady) {
   if (!_isContinuousMode()) {
     return Status::Error(Err::INVALID_CONFIG, "Continuous mode required");
   }
-  return _startSampleJob(PollJobKind::CONTINUOUS_READ, _config.mode,
-                         pollConversionReady);
+  uint64_t durationMs = 0;
+  Status st = _compatibilityDurationMs(JobKind::CONTINUOUS_SAMPLE, _profile,
+                                       _profile.mode, durationMs);
+  if (!st.ok()) return st;
+  st = startContinuousSample(UINT32_MAX - 3U, UINT64_MAX,
+                             pollConversionReady);
+  if (st.inProgress()) {
+    _clearPollJob();
+    _pollJobKind = PollJobKind::CONTINUOUS_READ;
+    _pollJobStage = pollConversionReady ? PollJobStage::READ_READY
+                                        : PollJobStage::READ_CHANNELS;
+    _pollSampleMode = _config.mode;
+    _pollConversionReady = pollConversionReady;
+    _pollDeadlineDurationMs = durationMs;
+  }
+  return st;
 }
 
 Status INA3221::pollContinuousRead(uint32_t nowMs, uint8_t maxInstructions) {
-  if (_pollJobKind == PollJobKind::NONE &&
-      _pollJobStage != PollJobStage::COMPLETE) {
-    return Status::Ok();
+  if (_pollJobKind != PollJobKind::CONTINUOUS_READ ||
+      _jobKind != JobKind::CONTINUOUS_SAMPLE)
+    return Status::Error(Err::JOB_KIND_MISMATCH, "Continuous job is not active");
+  PollContext context{};
+  Status prepared = _prepareCompatibilityPoll(nowMs, maxInstructions, context);
+  if (!prepared.ok()) return prepared;
+  Status st = pollJob(context);
+  JobProgress progress{};
+  (void)getJobProgress(progress);
+  _pollInstructionsLast = progress.lastPollTransfers;
+  _pollInstructionsTotal = progress.totalTransfers;
+  _pollJobStage = progress.stage == JobStage::READ_ALERTS
+                      ? PollJobStage::READ_READY
+                      : PollJobStage::READ_CHANNELS;
+  if (_hasPendingJobResult) {
+    ChannelRawMeasurement completedRaw[3] = {
+        _sampleRaw[0], _sampleRaw[1], _sampleRaw[2]};
+    JobResult result{};
+    (void)takeJobResult(result);
+    if (result.sampleValid) {
+      for (uint8_t i = 0; i < 3U; ++i) _pollChannels[i] = completedRaw[i];
+      _pollJobStage = PollJobStage::COMPLETE;
+    }
+    return result.status;
   }
-  if (_pollJobKind != PollJobKind::CONTINUOUS_READ) {
-    return Status::Error(Err::BUSY, "Continuous-read job is not active");
-  }
-  return _pollSampleJob(nowMs, maxInstructions);
+  return st;
 }
 
 Status INA3221::pollJob(uint32_t nowMs, uint8_t maxInstructions) {
   switch (_pollJobKind) {
-    case PollJobKind::SINGLE_SHOT:
-      return pollSingleShot(nowMs, maxInstructions);
-    case PollJobKind::CONTINUOUS_READ:
-      return pollContinuousRead(nowMs, maxInstructions);
-    case PollJobKind::APPLY_MASK_ENABLE:
-      return pollApplyMaskEnable(nowMs, maxInstructions);
+    case PollJobKind::SINGLE_SHOT: return pollSingleShot(nowMs, maxInstructions);
+    case PollJobKind::CONTINUOUS_READ: return pollContinuousRead(nowMs, maxInstructions);
+    case PollJobKind::APPLY_MASK_ENABLE: return pollApplyMaskEnable(nowMs, maxInstructions);
     case PollJobKind::NONE:
-    default:
-      return Status::Ok();
+    default: return Status::Error(Err::NO_ACTIVE_JOB, "No compatibility job active");
   }
 }
 
 Status INA3221::readChannelRawStep(Channel ch) {
-  _pollInstructionsLast = 0;
-  const bool willTransfer =
-      isValidChannel(ch) &&
-      (_pollJobKind == PollJobKind::SINGLE_SHOT ||
-       _pollJobKind == PollJobKind::CONTINUOUS_READ) &&
-      _pollJobStage == PollJobStage::READ_CHANNELS &&
-      _pollChannels[static_cast<uint8_t>(ch)].channelEnabled &&
-      !_sampleChannelComplete(ch);
-  Status st = _readChannelRawStep(ch);
-  if (willTransfer && (st.ok() || st.inProgress())) {
-    _pollInstructionsLast = 1;
-    if (_pollInstructionsTotal < UINT16_MAX) {
-      _pollInstructionsTotal++;
-    }
-  }
-  return st;
+  (void)ch;
+  return Status::Error(Err::JOB_BUSY,
+                       "Manual channel stepping is unavailable during owner jobs");
 }
 
 Status INA3221::getPollJobSnapshot(PollJobSnapshot& out) const {
   out.kind = _pollJobKind;
   out.stage = _pollJobStage;
-  out.active = _pollJobKind != PollJobKind::NONE &&
-               _pollJobStage != PollJobStage::COMPLETE;
+  out.active = _jobState == JobTerminalState::ACTIVE;
   out.complete = _pollJobStage == PollJobStage::COMPLETE;
   out.pollConversionReady = _pollConversionReady;
   out.conversionReady = _pollObservedReady;
@@ -809,52 +2231,52 @@ Status INA3221::readBlocking(ChannelMeasurement* ch1,
     return Status::Error(Err::INVALID_PARAM, "Timeout too large");
   }
 
-  // If continuous mode, just read directly
-  if (_isContinuousMode()) {
-    if (ch1) { Status st = readChannel(Channel::CH1, *ch1); if (!st.ok()) return st; }
-    if (ch2) { Status st = readChannel(Channel::CH2, *ch2); if (!st.ok()) return st; }
-    if (ch3) { Status st = readChannel(Channel::CH3, *ch3); if (!st.ok()) return st; }
-    return Status::Ok();
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
+  if (_transport.nowMs == nullptr && _isTriggeredMode()) {
+    return Status::Error(Err::INVALID_CONFIG,
+                         "Blocking triggered sample requires monotonic time hook");
   }
-
-  // Triggered mode: start conversion if not already started
-  Status st = startConversion();
-  if (st.code != Err::IN_PROGRESS && st.code != Err::BUSY) {
-    return st;
+  if (timeoutMs == 0U) {
+    return Status::Error(Err::INVALID_PARAM, "Timeout must be non-zero");
   }
-
   const uint32_t startMs = _nowMs();
-  const uint32_t deadlineMs = startMs + timeoutMs;
-  const uint32_t minCycleMs = (getCycleTimeUs() + 999) / 1000 + 1;
-  const uint32_t maxPolls = timeoutMs + minCycleMs + 2U;
-  uint32_t polls = 0;
-
-  // Wait for conversion ready
-  while (static_cast<int32_t>(_nowMs() - deadlineMs) < 0 && polls < maxPolls) {
-    bool ready = false;
-    st = readConversionReady(ready);
-    if (!st.ok()) {
-      return st;
-    }
-    if (ready) {
-      break;
-    }
-    polls++;
-    _cooperativeYield();
+  const uint64_t deadlineMs = timeoutMs;
+  Status st = _isContinuousMode()
+                  ? startContinuousSample(UINT32_MAX - 5U, deadlineMs, false)
+                  : startTriggeredSample(_isTriggeredMode() ? _profile.mode
+                                                            : Mode::SHUNT_BUS_TRIG,
+                                           UINT32_MAX - 5U, deadlineMs);
+  if (!st.inProgress()) return st;
+  uint16_t maximumTransfers = 0;
+  (void)maximumJobTransfers(_jobKind, _profile, maximumTransfers);
+  const uint32_t maxPolls = timeoutMs + maximumTransfers * 3U + 4U;
+  for (uint32_t polls = 0; polls < maxPolls && !_hasPendingJobResult; ++polls) {
+    PollContext context{};
+    context.nowMs = static_cast<uint32_t>(_nowMs() - startMs);
+    context.deadlineMs = deadlineMs;
+    context.transferTimeoutMs = _transport.defaultTransferTimeoutMs;
+    context.maxTransfers = 1U;
+    st = pollJob(context);
+    if (!st.ok() && !st.inProgress() && !_hasPendingJobResult) return st;
+    if (!_hasPendingJobResult) _cooperativeYield();
   }
-
-  if (!_conversionReady) {
-    _conversionStarted = false;
-    _conversionReady = false;
-    return Status::Error(Err::TIMEOUT, "Conversion timeout");
-  }
-
-  // Read requested channels
-  if (ch1) { st = readChannel(Channel::CH1, *ch1); if (!st.ok()) return st; }
-  if (ch2) { st = readChannel(Channel::CH2, *ch2); if (!st.ok()) return st; }
-  if (ch3) { st = readChannel(Channel::CH3, *ch3); if (!st.ok()) return st; }
-
-  _conversionReady = false;
+  if (!_hasPendingJobResult) (void)cancelJob();
+  JobResult result{};
+  Status take = takeJobResult(result);
+  if (!take.ok()) return take;
+  if (!result.status.ok()) return result.status;
+  auto copyChannel = [&result](uint8_t index, ChannelMeasurement* output) {
+    if (output == nullptr) return;
+    const FixedChannelReading& input = result.sample.channels[index];
+    output->shuntVoltage_mV = static_cast<float>(input.shuntMicroVolts) / 1000.0f;
+    output->busVoltage_V = static_cast<float>(input.busMilliVolts) / 1000.0f;
+    output->current_mA = static_cast<float>(input.currentMilliAmps);
+    output->power_mW = static_cast<float>(input.powerMilliWatts);
+  };
+  copyChannel(0U, ch1);
+  copyChannel(1U, ch2);
+  copyChannel(2U, ch3);
   return Status::Ok();
 }
 
@@ -866,6 +2288,8 @@ Status INA3221::setMode(Mode mode) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
   if (!isValidMode(mode)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid mode");
   }
@@ -885,10 +2309,12 @@ Status INA3221::setMode(Mode mode) {
     _conversionStarted = prevStarted;
     _conversionReady = prevReady;
     _conversionStartMs = prevStartMs;
-    _markHardwareConfigDirty(st);
+    if (_ambiguousWriteFailure(st)) _markRegisterUnknown(cmd::REG_CONFIG);
     return st;
   }
   _handleConfigWriteSideEffects();
+  _profile.mode = mode;
+  _markRegisterDirty(cmd::REG_CONFIG);
   if (_isTriggeredMode()) {
     return Status{Err::IN_PROGRESS, 0, "Conversion started"};
   }
@@ -899,6 +2325,8 @@ Status INA3221::setAveraging(Averaging avg) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
   if (!isValidAveraging(avg)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid averaging");
   }
@@ -913,10 +2341,12 @@ Status INA3221::setAveraging(Averaging avg) {
     _conversionStarted = prevStarted;
     _conversionReady = prevReady;
     _conversionStartMs = prevStartMs;
-    _markHardwareConfigDirty(st);
+    if (_ambiguousWriteFailure(st)) _markRegisterUnknown(cmd::REG_CONFIG);
     return st;
   }
   _handleConfigWriteSideEffects();
+  _profile.averaging = avg;
+  _markRegisterDirty(cmd::REG_CONFIG);
   return Status::Ok();
 }
 
@@ -924,6 +2354,8 @@ Status INA3221::setVBusConvTime(ConvTime ct) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
   if (!isValidConvTime(ct)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid conversion time");
   }
@@ -938,10 +2370,12 @@ Status INA3221::setVBusConvTime(ConvTime ct) {
     _conversionStarted = prevStarted;
     _conversionReady = prevReady;
     _conversionStartMs = prevStartMs;
-    _markHardwareConfigDirty(st);
+    if (_ambiguousWriteFailure(st)) _markRegisterUnknown(cmd::REG_CONFIG);
     return st;
   }
   _handleConfigWriteSideEffects();
+  _profile.vBusCt = ct;
+  _markRegisterDirty(cmd::REG_CONFIG);
   return Status::Ok();
 }
 
@@ -949,6 +2383,8 @@ Status INA3221::setVShuntConvTime(ConvTime ct) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
   if (!isValidConvTime(ct)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid conversion time");
   }
@@ -963,10 +2399,12 @@ Status INA3221::setVShuntConvTime(ConvTime ct) {
     _conversionStarted = prevStarted;
     _conversionReady = prevReady;
     _conversionStartMs = prevStartMs;
-    _markHardwareConfigDirty(st);
+    if (_ambiguousWriteFailure(st)) _markRegisterUnknown(cmd::REG_CONFIG);
     return st;
   }
   _handleConfigWriteSideEffects();
+  _profile.vShCt = ct;
+  _markRegisterDirty(cmd::REG_CONFIG);
   return Status::Ok();
 }
 
@@ -974,18 +2412,32 @@ Status INA3221::setChannelEnable(Channel ch, bool enable) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
   if (!isValidChannel(ch)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid channel");
   }
   Config nextConfig = _config;
+  DeviceProfile nextProfile = _profile;
+  const ChannelMask bit =
+      static_cast<ChannelMask>(1U << static_cast<uint8_t>(ch));
   switch (ch) {
     case Channel::CH1: nextConfig.ch1Enable = enable; break;
     case Channel::CH2: nextConfig.ch2Enable = enable; break;
     case Channel::CH3: nextConfig.ch3Enable = enable; break;
   }
+  if (enable) {
+    nextProfile.enabledChannels =
+        static_cast<ChannelMask>(nextProfile.enabledChannels | bit);
+  } else {
+    nextProfile.enabledChannels = static_cast<ChannelMask>(
+        nextProfile.enabledChannels & static_cast<ChannelMask>(~bit));
+  }
   if (!configHasRequiredChannels(nextConfig)) {
     return Status::Error(Err::INVALID_CONFIG, "At least one channel must be enabled");
   }
+  Status st = _validateProfile(nextProfile);
+  if (!st.ok()) return st;
   const Config prevConfig = _config;
   const bool prevStarted = _conversionStarted;
   const bool prevReady = _conversionReady;
@@ -995,16 +2447,18 @@ Status INA3221::setChannelEnable(Channel ch, bool enable) {
     case Channel::CH2: _config.ch2Enable = enable; break;
     case Channel::CH3: _config.ch3Enable = enable; break;
   }
-  Status st = _applyConfig();
+  st = _applyConfig();
   if (!st.ok()) {
     _config = prevConfig;
     _conversionStarted = prevStarted;
     _conversionReady = prevReady;
     _conversionStartMs = prevStartMs;
-    _markHardwareConfigDirty(st);
+    if (_ambiguousWriteFailure(st)) _markRegisterUnknown(cmd::REG_CONFIG);
     return st;
   }
   _handleConfigWriteSideEffects();
+  _profile = nextProfile;
+  _markRegisterDirty(cmd::REG_CONFIG);
   return Status::Ok();
 }
 
@@ -1016,13 +2470,22 @@ Status INA3221::setShuntResistance(Channel ch, float ohms) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
   if (!isValidChannel(ch)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid channel");
   }
   if (!isPositiveFinite(ohms)) {
     return Status::Error(Err::INVALID_PARAM, "Shunt resistance must be finite and > 0");
   }
+  const double microOhms = static_cast<double>(ohms) * 1000000.0;
+  if (microOhms < 1.0 || microOhms > UINT32_MAX) {
+    return Status::Error(Err::OUT_OF_RANGE, "Shunt resistance out of range");
+  }
   _config.shuntResistance[static_cast<uint8_t>(ch)] = ohms;
+  _profile.shunts[static_cast<uint8_t>(ch)].resistanceMicroOhms =
+      static_cast<uint32_t>(microOhms + 0.5);
+  if (_profileGeneration < UINT32_MAX) ++_profileGeneration;
   return Status::Ok();
 }
 
@@ -1044,27 +2507,16 @@ Status INA3221::writeConfig(uint16_t config) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
 
   if ((config & cmd::MASK_RST) != 0U) {
     Status st = _writeRegister16Tracked(cmd::REG_CONFIG, config);
     if (!st.ok()) {
-      _markHardwareConfigDirty(st);
+      if (_ambiguousWriteFailure(st)) _handleResetWriteEffect(false);
       return st;
     }
-
-    _config.ch1Enable = true;
-    _config.ch2Enable = true;
-    _config.ch3Enable = true;
-    _config.averaging = Averaging::AVG_1;
-    _config.vBusCt = ConvTime::CT_1100US;
-    _config.vShCt = ConvTime::CT_1100US;
-    _config.mode = Mode::SHUNT_BUS_CONT;
-    _conversionStarted = false;
-    _conversionReady = false;
-    _conversionStartMs = 0;
-    _maskEnableWritableCache = 0;
-    _clearPollJob();
-    _clearHardwareConfigDirty();
+    _handleResetWriteEffect(true);
     return Status::Ok();
   }
 
@@ -1082,7 +2534,7 @@ Status INA3221::writeConfig(uint16_t config) {
 
   Status st = _writeRegister16Tracked(cmd::REG_CONFIG, config);
   if (!st.ok()) {
-    _markHardwareConfigDirty(st);
+    if (_ambiguousWriteFailure(st)) _markRegisterUnknown(cmd::REG_CONFIG);
     return st;
   }
 
@@ -1090,6 +2542,7 @@ Status INA3221::writeConfig(uint16_t config) {
   _config = nextConfig;
 
   _handleConfigWriteSideEffects();
+  _markRegisterUnknown(cmd::REG_CONFIG);
   return Status::Ok();
 }
 
@@ -1097,28 +2550,15 @@ Status INA3221::softReset() {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
 
   Status st = _writeRegister16Tracked(cmd::REG_CONFIG, cmd::MASK_RST);
   if (!st.ok()) {
-    _markHardwareConfigDirty(st);
+    if (_ambiguousWriteFailure(st)) _handleResetWriteEffect(false);
     return st;
   }
-
-  // RST bit is self-clearing; sync config to defaults
-  _config.ch1Enable = true;
-  _config.ch2Enable = true;
-  _config.ch3Enable = true;
-  _config.averaging = Averaging::AVG_1;
-  _config.vBusCt = ConvTime::CT_1100US;
-  _config.vShCt = ConvTime::CT_1100US;
-  _config.mode = Mode::SHUNT_BUS_CONT;
-  _conversionStarted = false;
-  _conversionReady = false;
-  _conversionStartMs = 0;
-  _maskEnableWritableCache = 0;
-  _clearPollJob();
-  _clearHardwareConfigDirty();
-
+  _handleResetWriteEffect(true);
   return Status::Ok();
 }
 
@@ -1133,8 +2573,14 @@ Status INA3221::setCriticalAlertLimit(Channel ch, int16_t raw) {
   if (!isValidChannel(ch)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid channel");
   }
-  return writeRegister16(critRegAddr(ch),
-                         static_cast<uint16_t>(raw) & kShuntLimitWritable);
+  const uint16_t encoded = static_cast<uint16_t>(raw) & kShuntLimitWritable;
+  Status st = writeRegister16(critRegAddr(ch), encoded);
+  if (st.ok()) {
+    int32_t microVolts = 0;
+    (void)decodeShuntMicroVolts(encoded, microVolts);
+    _profile.alerts.criticalLimitMicroVolts[static_cast<uint8_t>(ch)] = microVolts;
+  }
+  return st;
 }
 
 Status INA3221::getCriticalAlertLimit(Channel ch, int16_t& raw) {
@@ -1160,8 +2606,14 @@ Status INA3221::setWarningAlertLimit(Channel ch, int16_t raw) {
   if (!isValidChannel(ch)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid channel");
   }
-  return writeRegister16(warnRegAddr(ch),
-                         static_cast<uint16_t>(raw) & kShuntLimitWritable);
+  const uint16_t encoded = static_cast<uint16_t>(raw) & kShuntLimitWritable;
+  Status st = writeRegister16(warnRegAddr(ch), encoded);
+  if (st.ok()) {
+    int32_t microVolts = 0;
+    (void)decodeShuntMicroVolts(encoded, microVolts);
+    _profile.alerts.warningLimitMicroVolts[static_cast<uint8_t>(ch)] = microVolts;
+  }
+  return st;
 }
 
 Status INA3221::getWarningAlertLimit(Channel ch, int16_t& raw) {
@@ -1184,8 +2636,13 @@ Status INA3221::setShuntSumLimit(int16_t raw) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
-  return writeRegister16(cmd::REG_SHUNT_SUM_LIMIT,
-                         static_cast<uint16_t>(raw) & kShuntSumLimitWritable);
+  const uint16_t encoded = static_cast<uint16_t>(raw) & kShuntSumLimitWritable;
+  Status st = writeRegister16(cmd::REG_SHUNT_SUM_LIMIT, encoded);
+  if (st.ok()) {
+    _profile.alerts.shuntSumLimitMicroVolts =
+        static_cast<int32_t>(signExtendField(encoded, cmd::SUM_DATA_SHIFT, 15)) * 40;
+  }
+  return st;
 }
 
 Status INA3221::getShuntSumLimit(int16_t& raw) {
@@ -1205,8 +2662,20 @@ Status INA3221::setPowerValidUpperLimit(int16_t raw) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
-  return writeRegister16(cmd::REG_PV_UPPER_LIMIT,
-                         static_cast<uint16_t>(raw) & kPowerValidLimitWritable);
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
+  const uint16_t encoded = static_cast<uint16_t>(raw) & kPowerValidLimitWritable;
+  int32_t milliVolts = 0;
+  (void)decodeBusMilliVolts(encoded, milliVolts);
+  if (milliVolts < 0 ||
+      !validatePowerValidWindow(_profile.alerts.powerValidLowerMilliVolts,
+                                static_cast<uint32_t>(milliVolts)).ok()) {
+    return Status::Error(Err::OUT_OF_RANGE, "Invalid power-valid upper limit");
+  }
+  Status st = writeRegister16(cmd::REG_PV_UPPER_LIMIT, encoded);
+  if (st.ok()) _profile.alerts.powerValidUpperMilliVolts =
+      static_cast<uint32_t>(milliVolts);
+  return st;
 }
 
 Status INA3221::getPowerValidUpperLimit(int16_t& raw) {
@@ -1226,8 +2695,20 @@ Status INA3221::setPowerValidLowerLimit(int16_t raw) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
-  return writeRegister16(cmd::REG_PV_LOWER_LIMIT,
-                         static_cast<uint16_t>(raw) & kPowerValidLimitWritable);
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
+  const uint16_t encoded = static_cast<uint16_t>(raw) & kPowerValidLimitWritable;
+  int32_t milliVolts = 0;
+  (void)decodeBusMilliVolts(encoded, milliVolts);
+  if (milliVolts < 0 ||
+      !validatePowerValidWindow(static_cast<uint32_t>(milliVolts),
+                                _profile.alerts.powerValidUpperMilliVolts).ok()) {
+    return Status::Error(Err::OUT_OF_RANGE, "Invalid power-valid lower limit");
+  }
+  Status st = writeRegister16(cmd::REG_PV_LOWER_LIMIT, encoded);
+  if (st.ok()) _profile.alerts.powerValidLowerMilliVolts =
+      static_cast<uint32_t>(milliVolts);
+  return st;
 }
 
 Status INA3221::getPowerValidLowerLimit(int16_t& raw) {
@@ -1258,16 +2739,7 @@ Status INA3221::readAlertFlags(AlertFlags& flags) {
     return st;
   }
 
-  flags.criticalCh1     = (regVal & cmd::MASK_CF1)  != 0;
-  flags.criticalCh2     = (regVal & cmd::MASK_CF2)  != 0;
-  flags.criticalCh3     = (regVal & cmd::MASK_CF3)  != 0;
-  flags.summation       = (regVal & cmd::MASK_SF)   != 0;
-  flags.warningCh1      = (regVal & cmd::MASK_WF1)  != 0;
-  flags.warningCh2      = (regVal & cmd::MASK_WF2)  != 0;
-  flags.warningCh3      = (regVal & cmd::MASK_WF3)  != 0;
-  flags.powerValid      = (regVal & cmd::MASK_PVF)  != 0;
-  flags.timingControl   = (regVal & cmd::MASK_TCF)  != 0;
-  flags.conversionReady = (regVal & cmd::MASK_CVRF) != 0;
+  _decodeAlertFlags(regVal, flags);
 
   if (flags.conversionReady && _isTriggeredMode()) {
     _conversionStarted = false;
@@ -1285,6 +2757,15 @@ Status INA3221::setSummationChannels(bool ch1, bool ch2, bool ch3) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
+
+  DeviceProfile nextProfile = _profile;
+  nextProfile.alerts.summationChannels = static_cast<ChannelMask>(
+      (ch1 ? CHANNEL_1 : 0U) | (ch2 ? CHANNEL_2 : 0U) |
+      (ch3 ? CHANNEL_3 : 0U));
+  Status st = _validateProfile(nextProfile);
+  if (!st.ok()) return st;
 
   uint16_t regVal = static_cast<uint16_t>(_maskEnableWritableCache & kMaskEnableWritable);
   regVal &= static_cast<uint16_t>(~(cmd::MASK_SCC1 | cmd::MASK_SCC2 | cmd::MASK_SCC3));
@@ -1292,11 +2773,13 @@ Status INA3221::setSummationChannels(bool ch1, bool ch2, bool ch3) {
   if (ch2) regVal |= cmd::MASK_SCC2;
   if (ch3) regVal |= cmd::MASK_SCC3;
 
-  Status st = _writeRegister16Tracked(cmd::REG_MASK_ENABLE, regVal);
+  st = _writeRegister16Tracked(cmd::REG_MASK_ENABLE, regVal);
   if (st.ok()) {
     _maskEnableWritableCache = regVal;
+    _profile = nextProfile;
+    _markRegisterDirty(cmd::REG_MASK_ENABLE);
   } else {
-    _markHardwareConfigDirty(st);
+    if (_ambiguousWriteFailure(st)) _markRegisterUnknown(cmd::REG_MASK_ENABLE);
   }
   return st;
 }
@@ -1305,17 +2788,22 @@ Status INA3221::setAlertLatchEnable(bool warningLatch, bool criticalLatch) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
 
   uint16_t regVal = static_cast<uint16_t>(_maskEnableWritableCache & kMaskEnableWritable);
-  regVal &= ~(cmd::MASK_WEN | cmd::MASK_CEN);
+  regVal &= static_cast<uint16_t>(~(cmd::MASK_WEN | cmd::MASK_CEN));
   if (warningLatch) regVal |= cmd::MASK_WEN;
   if (criticalLatch) regVal |= cmd::MASK_CEN;
 
   Status st = _writeRegister16Tracked(cmd::REG_MASK_ENABLE, regVal);
   if (st.ok()) {
     _maskEnableWritableCache = regVal;
+    _profile.alerts.warningLatch = warningLatch;
+    _profile.alerts.criticalLatch = criticalLatch;
+    _markRegisterDirty(cmd::REG_MASK_ENABLE);
   } else {
-    _markHardwareConfigDirty(st);
+    if (_ambiguousWriteFailure(st)) _markRegisterUnknown(cmd::REG_MASK_ENABLE);
   }
   return st;
 }
@@ -1324,28 +2812,48 @@ Status INA3221::startApplyMaskEnable(uint16_t writableBits) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
-  if (_pollJobKind != PollJobKind::NONE &&
-      _pollJobStage != PollJobStage::COMPLETE) {
-    return Status::Error(Err::BUSY, "Poll job already active");
+  DeviceProfile next = _profile;
+  const uint16_t bits = static_cast<uint16_t>(writableBits & kMaskEnableWritable);
+  next.alerts.summationChannels = static_cast<ChannelMask>(
+      ((bits & cmd::MASK_SCC1) != 0U ? CHANNEL_1 : 0U) |
+      ((bits & cmd::MASK_SCC2) != 0U ? CHANNEL_2 : 0U) |
+      ((bits & cmd::MASK_SCC3) != 0U ? CHANNEL_3 : 0U));
+  next.alerts.warningLatch = (bits & cmd::MASK_WEN) != 0U;
+  next.alerts.criticalLatch = (bits & cmd::MASK_CEN) != 0U;
+  uint64_t durationMs = 0;
+  Status st = _compatibilityDurationMs(JobKind::APPLY_PROFILE, next,
+                                       next.mode, durationMs);
+  if (!st.ok()) return st;
+  st = startApplyProfile(next, UINT32_MAX - 4U, UINT64_MAX);
+  if (st.inProgress()) {
+    _clearPollJob();
+    _pollJobKind = PollJobKind::APPLY_MASK_ENABLE;
+    _pollJobStage = PollJobStage::WRITE_MASK_ENABLE;
+    _pollDeadlineDurationMs = durationMs;
   }
-
-  _clearPollJob();
-  _pollJobKind = PollJobKind::APPLY_MASK_ENABLE;
-  _pollJobStage = PollJobStage::WRITE_MASK_ENABLE;
-  _pendingMaskEnableWritable = static_cast<uint16_t>(writableBits & kMaskEnableWritable);
-  return Status{Err::IN_PROGRESS, 0, "Mask/Enable apply scheduled"};
+  return st;
 }
 
 Status INA3221::pollApplyMaskEnable(uint32_t nowMs, uint8_t maxInstructions) {
-  (void)nowMs;
-  if (_pollJobKind == PollJobKind::NONE &&
-      _pollJobStage != PollJobStage::COMPLETE) {
-    return Status::Ok();
+  if (_pollJobKind != PollJobKind::APPLY_MASK_ENABLE ||
+      _jobKind != JobKind::APPLY_PROFILE) {
+    return Status::Error(Err::JOB_KIND_MISMATCH, "Mask/Enable job is not active");
   }
-  if (_pollJobKind != PollJobKind::APPLY_MASK_ENABLE) {
-    return Status::Error(Err::BUSY, "Mask/Enable apply job is not active");
+  PollContext context{};
+  Status prepared = _prepareCompatibilityPoll(nowMs, maxInstructions, context);
+  if (!prepared.ok()) return prepared;
+  Status st = pollJob(context);
+  JobProgress progress{};
+  (void)getJobProgress(progress);
+  _pollInstructionsLast = progress.lastPollTransfers;
+  _pollInstructionsTotal = progress.totalTransfers;
+  if (_hasPendingJobResult) {
+    JobResult result{};
+    (void)takeJobResult(result);
+    if (result.status.ok()) _pollJobStage = PollJobStage::COMPLETE;
+    return result.status;
   }
-  return _pollApplyMaskEnableJob(maxInstructions);
+  return st;
 }
 
 // ============================================================================
@@ -1424,6 +2932,13 @@ uint32_t INA3221::getCycleTimeUs() const {
 
 Status INA3221::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
                                  uint8_t* rxBuf, size_t rxLen) {
+  return _i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen,
+                          _config.i2cTimeoutMs);
+}
+
+Status INA3221::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
+                                 uint8_t* rxBuf, size_t rxLen,
+                                 uint32_t timeoutMs) {
   if (_config.i2cWriteRead == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C read callback missing");
   }
@@ -1431,11 +2946,16 @@ Status INA3221::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C read parameters");
   }
   return _config.i2cWriteRead(_config.i2cAddress, txBuf, txLen,
-                              rxBuf, rxLen, _config.i2cTimeoutMs,
-                              _config.i2cUser);
+                               rxBuf, rxLen, timeoutMs,
+                               _config.i2cUser);
 }
 
 Status INA3221::_i2cWriteRaw(const uint8_t* buf, size_t len) {
+  return _i2cWriteRaw(buf, len, _config.i2cTimeoutMs);
+}
+
+Status INA3221::_i2cWriteRaw(const uint8_t* buf, size_t len,
+                             uint32_t timeoutMs) {
   if (_config.i2cWrite == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C write callback missing");
   }
@@ -1443,16 +2963,19 @@ Status INA3221::_i2cWriteRaw(const uint8_t* buf, size_t len) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C write parameters");
   }
   return _config.i2cWrite(_config.i2cAddress, buf, len,
-                          _config.i2cTimeoutMs, _config.i2cUser);
+                           timeoutMs, _config.i2cUser);
 }
 
 Status INA3221::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
                                      uint8_t* rxBuf, size_t rxLen) {
-  if (_initialized && _driverState == DriverState::OFFLINE && !_allowOfflineI2c) {
-    return Status::Error(Err::BUSY, "Driver is offline; call recover()");
-  }
+  return _i2cWriteReadTracked(txBuf, txLen, rxBuf, rxLen,
+                              _config.i2cTimeoutMs);
+}
 
-  Status st = _i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen);
+Status INA3221::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
+                                     uint8_t* rxBuf, size_t rxLen,
+                                     uint32_t timeoutMs) {
+  Status st = _i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen, timeoutMs);
   if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
     return st;
   }
@@ -1460,11 +2983,12 @@ Status INA3221::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
 }
 
 Status INA3221::_i2cWriteTracked(const uint8_t* buf, size_t len) {
-  if (_initialized && _driverState == DriverState::OFFLINE && !_allowOfflineI2c) {
-    return Status::Error(Err::BUSY, "Driver is offline; call recover()");
-  }
+  return _i2cWriteTracked(buf, len, _config.i2cTimeoutMs);
+}
 
-  Status st = _i2cWriteRaw(buf, len);
+Status INA3221::_i2cWriteTracked(const uint8_t* buf, size_t len,
+                                 uint32_t timeoutMs) {
+  Status st = _i2cWriteRaw(buf, len, timeoutMs);
   if (st.code == Err::INVALID_CONFIG || st.code == Err::INVALID_PARAM) {
     return st;
   }
@@ -1482,6 +3006,8 @@ Status INA3221::readRegister16(uint8_t reg, uint16_t& value) {
   if (!isValidRegister(reg)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid register address");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
   return _readRegister16Tracked(reg, value);
 }
 
@@ -1492,20 +3018,30 @@ Status INA3221::writeRegister16(uint8_t reg, uint16_t value) {
   if (!isValidRegister(reg)) {
     return Status::Error(Err::INVALID_PARAM, "Invalid register address");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
+  if (!isWritableRegisterAddress(reg)) {
+    return Status::Error(Err::READ_ONLY_REGISTER, "Register is read-only", reg);
+  }
   Status st = _writeRegister16Tracked(reg, value);
-  if (registerAffectsCachedHardwareConfig(reg)) {
-    if (st.ok()) {
-      _markHardwareConfigDirty(
-          Status{Err::OK, static_cast<int32_t>(reg),
-                 "Raw register write bypassed cached settings"});
-    } else {
-      _markHardwareConfigDirty(st);
-    }
+  const bool resetWrite = reg == cmd::REG_CONFIG &&
+                          (value & cmd::MASK_RST) != 0U;
+  if (resetWrite && st.ok()) {
+    _handleResetWriteEffect(true);
+  } else if (resetWrite && _ambiguousWriteFailure(st)) {
+    _handleResetWriteEffect(false);
+  } else if (st.ok()) {
+    _markRegisterUnknown(reg);
+  } else if (_ambiguousWriteFailure(st)) {
+    _markRegisterUnknown(reg);
   }
   return st;
 }
 
 Status INA3221::_readRegister16Tracked(uint8_t reg, uint16_t& value) {
+  if (reg == cmd::REG_MASK_ENABLE) {
+    return _readMaskEnableWithTimeout(value, nullptr, _config.i2cTimeoutMs, true);
+  }
   uint8_t rx[2] = {0, 0};
   Status st = _i2cWriteReadTracked(&reg, 1, rx, sizeof(rx));
   if (!st.ok()) {
@@ -1601,14 +3137,6 @@ Status INA3221::_recordFailure(const Status& st) {
   return st;
 }
 
-void INA3221::_reassertOfflineLatch() {
-  _driverState = DriverState::OFFLINE;
-  const uint8_t threshold = _config.offlineThreshold == 0 ? 1 : _config.offlineThreshold;
-  if (_consecutiveFailures < threshold) {
-    _consecutiveFailures = threshold;
-  }
-}
-
 void INA3221::_markHardwareConfigDirty(const Status& reason) {
   if (!_hardwareConfigDirty) {
     _hardwareConfigDirty = true;
@@ -1632,10 +3160,13 @@ void INA3221::_clearPollJob() {
   _pollConversionReady = false;
   _pollObservedReady = false;
   _pollConversionStartMs = 0;
+  _pollTimeInitialized = false;
+  _pollLastNowMs = 0;
+  _pollExtendedNowMs = 0;
+  _pollDeadlineDurationMs = 0;
   _pollNextChannel = 0;
   _pollInstructionsLast = 0;
   _pollInstructionsTotal = 0;
-  _pendingMaskEnableWritable = 0;
   _resetPollSampleCache();
 }
 
@@ -1643,250 +3174,6 @@ void INA3221::_resetPollSampleCache() {
   for (uint8_t i = 0; i < 3; ++i) {
     _pollChannels[i] = ChannelRawMeasurement{};
   }
-}
-
-Status INA3221::_startSampleJob(PollJobKind kind, Mode mode,
-                                bool pollConversionReady) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
-  }
-  if (kind != PollJobKind::SINGLE_SHOT &&
-      kind != PollJobKind::CONTINUOUS_READ) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid sample job kind");
-  }
-  if (_pollJobKind != PollJobKind::NONE &&
-      _pollJobStage != PollJobStage::COMPLETE) {
-    return Status::Error(Err::BUSY, "Poll job already active");
-  }
-  if (_enabledChannelCount() == 0) {
-    return Status::Error(Err::INVALID_CONFIG, "At least one channel must be enabled");
-  }
-  if (kind == PollJobKind::SINGLE_SHOT && !isTriggeredMode(mode)) {
-    return Status::Error(Err::INVALID_PARAM, "Must be a triggered mode");
-  }
-  if (kind == PollJobKind::CONTINUOUS_READ && !isContinuousMode(mode)) {
-    return Status::Error(Err::INVALID_CONFIG, "Continuous mode required");
-  }
-  if (!modeReadsShunt(mode) && !modeReadsBus(mode)) {
-    return Status::Error(Err::INVALID_CONFIG, "Sample mode required");
-  }
-
-  _clearPollJob();
-  _pollJobKind = kind;
-  _pollJobStage = kind == PollJobKind::SINGLE_SHOT
-                      ? PollJobStage::WRITE_CONFIG
-                      : (pollConversionReady ? PollJobStage::READ_READY
-                                             : PollJobStage::READ_CHANNELS);
-  _pollSampleMode = mode;
-  _pollConversionReady = pollConversionReady;
-  _pollObservedReady = !pollConversionReady &&
-                       kind == PollJobKind::CONTINUOUS_READ;
-  for (uint8_t i = 0; i < 3; ++i) {
-    const Channel ch = static_cast<Channel>(i);
-    _pollChannels[i].channelEnabled = _isChannelEnabled(ch);
-  }
-  return Status{Err::IN_PROGRESS, 0, "Poll job scheduled"};
-}
-
-Status INA3221::_pollSampleJob(uint32_t nowMs, uint8_t maxInstructions) {
-  _pollInstructionsLast = 0;
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
-  }
-  if (maxInstructions == 0) {
-    return Status::Error(Err::INVALID_PARAM, "maxInstructions must be > 0");
-  }
-  if (_pollJobStage == PollJobStage::COMPLETE) {
-    return Status::Ok();
-  }
-  if (_pollJobKind != PollJobKind::SINGLE_SHOT &&
-      _pollJobKind != PollJobKind::CONTINUOUS_READ) {
-    return Status::Error(Err::BUSY, "Sample job is not active");
-  }
-
-  uint8_t executed = 0;
-  auto recordInstruction = [&]() {
-    executed++;
-    _pollInstructionsLast = executed;
-    if (_pollInstructionsTotal < UINT16_MAX) {
-      _pollInstructionsTotal++;
-    }
-  };
-
-  while (executed < maxInstructions) {
-    if (_pollJobStage == PollJobStage::WRITE_CONFIG) {
-      Status st = _writeRegister16Tracked(cmd::REG_CONFIG,
-                                          _buildConfigRegisterForMode(_pollSampleMode));
-      recordInstruction();
-      if (!st.ok()) {
-        _markHardwareConfigDirty(st);
-        return st;
-      }
-      _config.mode = _pollSampleMode;
-      _conversionStarted = true;
-      _conversionReady = false;
-      _conversionStartMs = nowMs;
-      _pollConversionStartMs = nowMs;
-      _pollObservedReady = false;
-      _pollJobStage = PollJobStage::WAIT_CONVERSION;
-      continue;
-    }
-
-    if (_pollJobStage == PollJobStage::WAIT_CONVERSION) {
-      const uint32_t cycleUs = getCycleTimeUs();
-      const uint32_t cycleMs = (cycleUs + 999) / 1000 + 1;
-      if ((nowMs - _pollConversionStartMs) < cycleMs) {
-        return Status{Err::IN_PROGRESS, 0, "Waiting for conversion"};
-      }
-      if (_pollConversionReady) {
-        _pollJobStage = PollJobStage::READ_READY;
-      } else {
-        _pollObservedReady = true;
-        _conversionStarted = false;
-        _conversionReady = true;
-        _pollJobStage = PollJobStage::READ_CHANNELS;
-      }
-      continue;
-    }
-
-    if (_pollJobStage == PollJobStage::READ_READY) {
-      uint16_t maskEn = 0;
-      Status st = readRegister16(cmd::REG_MASK_ENABLE, maskEn);
-      recordInstruction();
-      if (!st.ok()) {
-        return st;
-      }
-      if ((maskEn & cmd::MASK_CVRF) == 0U) {
-        return Status{Err::IN_PROGRESS, 0, "Conversion not ready"};
-      }
-      _pollObservedReady = true;
-      _conversionStarted = false;
-      _conversionReady = true;
-      _pollJobStage = PollJobStage::READ_CHANNELS;
-      continue;
-    }
-
-    if (_pollJobStage == PollJobStage::READ_CHANNELS) {
-      while (_pollNextChannel < 3U) {
-        const Channel ch = static_cast<Channel>(_pollNextChannel);
-        if (!_pollChannels[_pollNextChannel].channelEnabled ||
-            _sampleChannelComplete(ch)) {
-          _pollNextChannel++;
-          continue;
-        }
-        Status st = _readChannelRawStep(ch);
-        recordInstruction();
-        if (!st.ok() && !st.inProgress()) {
-          return st;
-        }
-        if (_sampleChannelComplete(ch)) {
-          _pollNextChannel++;
-        }
-        break;
-      }
-
-      if (_pollNextChannel >= 3U) {
-        _pollJobStage = PollJobStage::COMPLETE;
-        _conversionStarted = false;
-        _conversionReady = true;
-        return Status::Ok();
-      }
-      continue;
-    }
-
-    if (_pollJobStage == PollJobStage::COMPLETE) {
-      return Status::Ok();
-    }
-
-    return Status::Error(Err::INVALID_CONFIG, "Invalid poll job stage");
-  }
-
-  return _pollJobStage == PollJobStage::COMPLETE
-             ? Status::Ok()
-             : Status{Err::IN_PROGRESS, 0, "Poll job in progress"};
-}
-
-Status INA3221::_pollApplyMaskEnableJob(uint8_t maxInstructions) {
-  _pollInstructionsLast = 0;
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
-  }
-  if (maxInstructions == 0) {
-    return Status::Error(Err::INVALID_PARAM, "maxInstructions must be > 0");
-  }
-  if (_pollJobStage == PollJobStage::COMPLETE) {
-    return Status::Ok();
-  }
-  if (_pollJobKind != PollJobKind::APPLY_MASK_ENABLE ||
-      _pollJobStage != PollJobStage::WRITE_MASK_ENABLE) {
-    return Status::Error(Err::BUSY, "Mask/Enable apply job is not active");
-  }
-
-  Status st = _writeRegister16Tracked(cmd::REG_MASK_ENABLE, _pendingMaskEnableWritable);
-  _pollInstructionsLast = 1;
-  if (_pollInstructionsTotal < UINT16_MAX) {
-    _pollInstructionsTotal++;
-  }
-  if (!st.ok()) {
-    _markHardwareConfigDirty(st);
-    return st;
-  }
-
-  _maskEnableWritableCache = _pendingMaskEnableWritable;
-  _pollJobStage = PollJobStage::COMPLETE;
-  return Status::Ok();
-}
-
-Status INA3221::_readChannelRawStep(Channel ch) {
-  if (!_initialized) {
-    return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
-  }
-  if (!isValidChannel(ch)) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid channel");
-  }
-  if (_pollJobKind != PollJobKind::SINGLE_SHOT &&
-      _pollJobKind != PollJobKind::CONTINUOUS_READ) {
-    return Status::Error(Err::INVALID_CONFIG, "Sample job is not active");
-  }
-  if (_pollJobStage != PollJobStage::READ_CHANNELS) {
-    return Status::Error(Err::BUSY, "Sample job is not ready for channel reads");
-  }
-
-  const uint8_t idx = static_cast<uint8_t>(ch);
-  ChannelRawMeasurement& sample = _pollChannels[idx];
-  if (!sample.channelEnabled) {
-    return Status::Error(Err::INVALID_CONFIG, "Channel disabled for sample job");
-  }
-  if (_sampleChannelComplete(ch)) {
-    return Status::Ok();
-  }
-
-  uint16_t regVal = 0;
-  if (_sampleModeReadsShunt() && !sample.shuntValid) {
-    Status st = readRegister16(shuntRegAddr(ch), regVal);
-    if (!st.ok()) {
-      return st;
-    }
-    sample.shuntRaw = static_cast<int16_t>(regVal);
-    sample.shuntValid = true;
-    return _sampleChannelComplete(ch)
-               ? Status::Ok()
-               : Status{Err::IN_PROGRESS, 0, "Channel raw read in progress"};
-  }
-
-  if (_sampleModeReadsBus() && !sample.busValid) {
-    Status st = readRegister16(busRegAddr(ch), regVal);
-    if (!st.ok()) {
-      return st;
-    }
-    sample.busRaw = static_cast<int16_t>(regVal);
-    sample.busValid = true;
-    return _sampleChannelComplete(ch)
-               ? Status::Ok()
-               : Status{Err::IN_PROGRESS, 0, "Channel raw read in progress"};
-  }
-
-  return Status::Ok();
 }
 
 Status INA3221::_applyConfig() {
@@ -1898,6 +3185,8 @@ Status INA3221::_readConversionReadyAt(uint32_t nowMs, bool& ready) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
 
   if (_conversionReady) {
     ready = true;
@@ -1909,8 +3198,11 @@ Status INA3221::_readConversionReadyAt(uint32_t nowMs, bool& ready) {
       return Status::Ok();
     }
 
-    const uint32_t cycleUs = getCycleTimeUs();
-    const uint32_t cycleMs = (cycleUs + 999) / 1000 + 1;
+    uint64_t cycleUs = 0;
+    Status timing = maximumCycleTimeUs(_profile, _profile.mode, cycleUs);
+    if (!timing.ok()) return timing;
+    cycleUs += CONVERSION_WAKE_MARGIN_US;
+    const uint32_t cycleMs = static_cast<uint32_t>((cycleUs + 999U) / 1000U);
     if ((nowMs - _conversionStartMs) < cycleMs) {
       return Status::Ok();
     }
@@ -1941,6 +3233,11 @@ Status INA3221::_ensureMeasurementReadyForRead() {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "Driver not initialized");
   }
+  Status available = _requireNoOwnerJob();
+  if (!available.ok()) return available;
+  if (_measurementConfigState != AppliedConfigState::APPLIED) {
+    return Status::Error(Err::CONFIG_UNKNOWN, "Measurement profile not verified");
+  }
   if (!_isTriggeredMode()) {
     return Status::Ok();
   }
@@ -1970,6 +3267,35 @@ void INA3221::_handleConfigWriteSideEffects() {
   _conversionStartMs = 0;
 }
 
+void INA3221::_handleResetWriteEffect(bool confirmed) {
+  _conversionStarted = false;
+  _conversionReady = false;
+  _conversionStartMs = 0;
+  _maskEnableWritableCache = 0;
+  _clearPollJob();
+  if (confirmed) {
+    _retainedAlerts.raw = 0;
+    _retainedAlerts.writableBits = 0;
+    _retainedAlerts.powerValid = false;
+    _retainedAlerts.timingControl = false;
+    _retainedAlerts.conversionReady = false;
+    _config.ch1Enable = true;
+    _config.ch2Enable = true;
+    _config.ch3Enable = true;
+    _config.averaging = Averaging::AVG_1;
+    _config.vBusCt = ConvTime::CT_1100US;
+    _config.vShCt = ConvTime::CT_1100US;
+    _config.mode = Mode::SHUNT_BUS_CONT;
+    _measurementConfigState = AppliedConfigState::DIRTY;
+    _alertConfigState = AppliedConfigState::DIRTY;
+    _markRegisterDirty(cmd::REG_CONFIG);
+  } else {
+    _measurementConfigState = AppliedConfigState::UNKNOWN;
+    _alertConfigState = AppliedConfigState::UNKNOWN;
+    _markRegisterUnknown(cmd::REG_CONFIG);
+  }
+}
+
 uint16_t INA3221::_buildConfigRegister() const {
   uint16_t config = 0;
   if (_config.ch1Enable) config |= cmd::MASK_CH1EN;
@@ -1979,13 +3305,6 @@ uint16_t INA3221::_buildConfigRegister() const {
   config |= (static_cast<uint16_t>(_config.vBusCt) << cmd::BIT_VBUSCT) & cmd::MASK_VBUSCT;
   config |= (static_cast<uint16_t>(_config.vShCt) << cmd::BIT_VSHCT) & cmd::MASK_VSHCT;
   config |= (static_cast<uint16_t>(_config.mode) << cmd::BIT_MODE) & cmd::MASK_MODE;
-  return config;
-}
-
-uint16_t INA3221::_buildConfigRegisterForMode(Mode mode) const {
-  uint16_t config = _buildConfigRegister();
-  config &= static_cast<uint16_t>(~cmd::MASK_MODE);
-  config |= (static_cast<uint16_t>(mode) << cmd::BIT_MODE) & cmd::MASK_MODE;
   return config;
 }
 
@@ -2026,28 +3345,6 @@ bool INA3221::_isTriggeredMode() const {
 
 bool INA3221::_isContinuousMode() const {
   return isContinuousMode(_config.mode);
-}
-
-bool INA3221::_sampleModeReadsShunt() const {
-  return modeReadsShunt(_pollSampleMode);
-}
-
-bool INA3221::_sampleModeReadsBus() const {
-  return modeReadsBus(_pollSampleMode);
-}
-
-bool INA3221::_sampleChannelComplete(Channel ch) const {
-  if (!isValidChannel(ch)) {
-    return true;
-  }
-  const uint8_t idx = static_cast<uint8_t>(ch);
-  const ChannelRawMeasurement& sample = _pollChannels[idx];
-  if (!sample.channelEnabled) {
-    return true;
-  }
-  const bool shuntDone = !_sampleModeReadsShunt() || sample.shuntValid;
-  const bool busDone = !_sampleModeReadsBus() || sample.busValid;
-  return shuntDone && busDone;
 }
 
 } // namespace INA3221

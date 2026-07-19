@@ -24,7 +24,21 @@ enum class Err : uint8_t {
   I2C_NACK_ADDR,             ///< I2C address phase was not acknowledged
   I2C_NACK_DATA,             ///< I2C data phase was not acknowledged
   I2C_TIMEOUT,               ///< I2C transaction timed out
-  I2C_BUS                    ///< I2C bus or arbitration error
+  I2C_BUS,                   ///< I2C bus or arbitration error
+  JOB_BUSY,                  ///< A cooperative owner operation is active
+  RESULT_PENDING,            ///< A terminal result must be taken first
+  NO_RESULT,                 ///< No terminal result is pending
+  CANCELLED,                 ///< Operation was cancelled without further I2C
+  DEADLINE_EXPIRED,          ///< Caller-owned absolute deadline expired
+  CONFIG_UNKNOWN,            ///< Required hardware configuration is unverified
+  PROFILE_MISMATCH,          ///< Hardware readback does not match the profile
+  READ_ONLY_REGISTER,        ///< Diagnostic write targeted a read-only register
+  ARITHMETIC_OVERFLOW,       ///< Checked fixed-unit calculation overflowed
+  OUT_OF_RANGE,              ///< Engineering-unit value is not representable
+  NO_ACTIVE_JOB,             ///< No cooperative operation is active
+  JOB_KIND_MISMATCH,         ///< Poll helper does not match the active job
+  CONVERSION_BUSY,           ///< Legacy conversion state is active
+  DEVICE_OFFLINE             ///< Passive diagnostic state value (never gates I2C)
 };
 
 /// @brief Status structure returned by all fallible operations.

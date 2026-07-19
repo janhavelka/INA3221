@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 #include "INA3221/CommandTable.h"
 #include "INA3221/Config.h"
@@ -112,9 +113,209 @@ struct SettingsSnapshot {
   Status hardwareConfigDirtyStatus = Status::Ok();
 };
 
-/// @brief Managed synchronous INA3221 driver.
+/// @brief Verification state for one controlled hardware-register family.
+enum class AppliedConfigState : uint8_t {
+  UNKNOWN, ///< Hardware effect or retained state is not known
+  APPLIED, ///< Desired state was verified by readback
+  DIRTY    ///< Desired state is known but has not been fully applied/verified
+};
+
+/// @brief Datasheet typical and maximum time for one ADC conversion.
+struct ConversionTiming {
+  uint32_t typicalUs = 0;
+  uint32_t maximumUs = 0;
+};
+
+/// @brief Decoded and retained Mask/Enable evidence.
+struct AlertSnapshot {
+  uint16_t raw = 0;               ///< Raw value from the consuming read
+  uint16_t events = 0;            ///< OR-latched destructive event bits
+  uint16_t writableBits = 0;      ///< SCC/WEN/CEN bits from the latest read
+  bool powerValid = false;        ///< Latest condition-level PVF value
+  bool timingControl = false;     ///< Sticky TCF observation
+  bool conversionReady = false;   ///< CVRF in the consuming read
+};
+
+enum class Quantity : uint8_t {
+  SHUNT = 0x01,
+  BUS = 0x02,
+  CURRENT = 0x04,
+  POWER = 0x08
+};
+
+using QuantityMask = uint8_t;
+
+/// @brief Fixed-unit reading for one physical channel.
+struct FixedChannelReading {
+  int32_t shuntMicroVolts = 0;
+  int32_t busMilliVolts = 0;
+  int32_t currentMilliAmps = 0;
+  int32_t powerMilliWatts = 0;
+  QuantityMask validQuantities = 0;
+};
+
+enum class SampleCoherence : uint8_t {
+  TRIGGERED_ATOMIC,
+  CONTINUOUS_MIXED_AGE
+};
+
+/// @brief Atomically committed fixed-capacity sample result.
+struct SampleBatch {
+  FixedChannelReading channels[3];
+  ChannelMask enabledChannels = 0;
+  ChannelMask validChannels = 0;
+  AlertSnapshot alerts{};
+  bool alertSnapshotValid = false; ///< True only when this sample consumed Mask/Enable
+  SampleCoherence coherence = SampleCoherence::TRIGGERED_ATOMIC;
+  uint64_t captureUptimeMs = 0;
+  uint32_t profileGeneration = 0;
+  uint32_t requestId = 0;
+};
+
+enum class JobKind : uint8_t {
+  NONE,
+  INITIALIZE,
+  APPLY_PROFILE,
+  RECONCILE,
+  TRIGGERED_SAMPLE,
+  CONTINUOUS_SAMPLE,
+  POWER_DOWN
+};
+
+enum class JobTerminalState : uint8_t {
+  IDLE,
+  ACTIVE,
+  SUCCEEDED,
+  FAILED,
+  CANCELLED,
+  TIMED_OUT,
+  PARTIAL,
+  INDETERMINATE
+};
+
+/// @brief Stable externally observable cooperative-operation stage.
+enum class JobStage : uint8_t {
+  IDLE,
+  READ_IDENTITY,
+  READ_PROFILE,
+  WRITE_PROFILE,
+  VERIFY_PROFILE,
+  TRIGGER_SAMPLE,
+  WAIT_CONVERSION,
+  READ_ALERTS,
+  READ_CHANNELS,
+  READ_POWER_STATE,
+  WRITE_POWER_STATE,
+  VERIFY_POWER_STATE,
+  TERMINAL
+};
+
+enum class HardwareEffect : uint8_t {
+  NONE,
+  CONFIRMED,
+  PARTIAL,
+  INDETERMINATE
+};
+
+/// @brief Caller-owned per-poll scheduling and transport budget.
+struct PollContext {
+  uint64_t nowMs = 0;
+  uint64_t deadlineMs = 0;       ///< Absolute deadline; 0 uses job deadline
+  uint32_t transferTimeoutMs = 0;///< Per-attempt cap, never above transport default
+  uint8_t maxTransfers = 1;      ///< Remaining deadline is divided across this budget
+};
+
+/// @brief Take-once terminal result for every cooperative operation.
+struct JobResult {
+  JobKind kind = JobKind::NONE;
+  JobTerminalState state = JobTerminalState::IDLE;
+  HardwareEffect hardwareEffect = HardwareEffect::NONE;
+  Status status = Status::Ok();
+  uint32_t requestId = 0;
+  uint16_t transfers = 0;
+  uint32_t profileGeneration = 0;
+  bool sampleValid = false;
+  SampleBatch sample{};
+};
+
+/// @brief Cache-only progress snapshot; performs no transport work.
+struct JobProgress {
+  JobKind kind = JobKind::NONE;
+  JobStage stage = JobStage::IDLE;
+  JobTerminalState state = JobTerminalState::IDLE;
+  uint32_t requestId = 0;
+  uint16_t totalTransfers = 0;
+  uint8_t lastPollTransfers = 0;
+  uint64_t deadlineMs = 0;
+  uint64_t readyAtMs = 0; ///< 0 means poll once with a fresh nowMs to arm the wait
+  bool resultPending = false;
+};
+
+static_assert(std::is_trivially_copyable<DeviceProfile>::value,
+              "DeviceProfile must remain fixed and trivially copyable");
+static_assert(std::is_trivially_copyable<SampleBatch>::value,
+              "SampleBatch must remain fixed and trivially copyable");
+static_assert(std::is_trivially_copyable<JobResult>::value,
+              "JobResult must remain fixed and trivially copyable");
+
+/// @brief Managed INA3221 driver with a cooperative external-owner path.
+///
+/// The object is single-owner, non-copyable, non-reentrant and not ISR-safe.
+/// The caller must serialize every method and keep all transport callbacks in
+/// that same ownership context. The library owns no task, lock, bus, retry,
+/// recovery policy, scheduling policy or deadline renewal.
 class INA3221 {
 public:
+  INA3221() = default;
+  ~INA3221() = default; ///< Bus-silent; call an explicit power-down operation if needed.
+  INA3221(const INA3221&) = delete;
+  INA3221& operator=(const INA3221&) = delete;
+  INA3221(INA3221&&) = delete;
+  INA3221& operator=(INA3221&&) = delete;
+
+  /// @name Owner-safe cooperative production API
+  /// @{
+  /// Validate and store a non-owning transport and complete profile without I2C.
+  Status bind(const TransportConfig& transport, const DeviceProfile& profile);
+  /// Bus-silent cancellation, result discard and binding release.
+  void unbind();
+  bool isBound() const { return _bound; }
+  const TransportConfig& transportConfig() const { return _transport; }
+  const DeviceProfile& deviceProfile() const { return _profile; }
+  AppliedConfigState measurementConfigState() const { return _measurementConfigState; }
+  AppliedConfigState alertConfigState() const { return _alertConfigState; }
+  uint32_t profileGeneration() const { return _profileGeneration; }
+
+  /// Request IDs must be non-zero. Reuse is allowed only after the preceding
+  /// terminal result has been taken; a pending result blocks every new job.
+  Status startInitialize(uint32_t requestId, uint64_t deadlineMs);
+  /// Apply a new profile after initialization. The physical I2C address cannot
+  /// be changed by a register write; use bind() again for another address.
+  Status startApplyProfile(const DeviceProfile& profile, uint32_t requestId,
+                           uint64_t deadlineMs);
+  Status startReconcile(uint32_t requestId, uint64_t deadlineMs);
+  /// Start an atomic triggered sample. The first poll may write the trigger;
+  /// a subsequent strictly later nowMs arms the maximum conversion wait.
+  /// A deadline that cannot contain that wait and the success callback bounds
+  /// is rejected before the trigger write.
+  Status startTriggeredSample(Mode mode, uint32_t requestId,
+                              uint64_t deadlineMs);
+  Status startContinuousSample(uint32_t requestId, uint64_t deadlineMs,
+                               bool consumeAlertSnapshot = false);
+  Status startPowerDown(uint32_t requestId, uint64_t deadlineMs);
+  Status pollJob(const PollContext& context);
+  /// Cancel without I2C. Partial sample work is discarded.
+  Status cancelJob();
+  Status getJobProgress(JobProgress& out) const;
+  /// Take a terminal result exactly once.
+  Status takeJobResult(JobResult& out);
+  /// Cache-only last-good sample access; never exposes partial work.
+  Status peekLastSample(SampleBatch& out) const;
+  /// Cache-only destructive-event access.
+  Status peekAlertEvents(AlertSnapshot& out) const;
+  Status takeAlertEvents(AlertSnapshot& out);
+  /// @}
+
   // === Lifecycle ===
   /// Initialize the driver with configuration and verify manufacturer/die IDs.
   Status begin(const Config& config);
@@ -193,18 +394,22 @@ public:
   /// @note Convenience-only: this hides Status detail and can still perform a
   ///       tracked Mask/Enable read with the same read-clear side effects.
   bool conversionReady();
-  /// Schedule a chunked single-shot job using the current triggered mode, or
-  /// SHUNT_BUS_TRIG if the current mode is not triggered.
-  /// @param pollConversionReady If true, pollSingleShot() reads Mask/Enable
-  ///        after the delay gate; that read clears CVRF and latched alerts.
+  /// Schedule a chunked single-shot job using the verified triggered profile.
+  /// @param pollConversionReady Retained for source compatibility and ignored;
+  ///        production safety always checks CVRF through Mask/Enable.
+  /// @return INVALID_CONFIG unless the verified profile is already triggered.
+  /// @note Compatibility-only. Prefer startTriggeredSample() with an explicit
+  ///       absolute owner deadline and 64-bit PollContext time.
   Status startSingleShot(bool pollConversionReady = true);
   /// Schedule a chunked single-shot job with an explicit triggered mode.
-  /// @param mode SHUNT_TRIG, BUS_TRIG, or SHUNT_BUS_TRIG.
-  /// @param pollConversionReady If true, pollSingleShot() reads Mask/Enable
-  ///        after the delay gate; that read clears CVRF and latched alerts.
+  /// @param mode Must exactly match the verified triggered profile mode.
+  /// @param pollConversionReady Retained for source compatibility and ignored;
+  ///        production safety always checks CVRF through Mask/Enable, clearing
+  ///        CVRF/latched alerts while retaining their evidence.
   Status startSingleShot(Mode mode, bool pollConversionReady = true);
   /// Advance a chunked single-shot job by at most maxInstructions register
   /// transfers. One 16-bit register read or write is one instruction.
+  /// The 32-bit time input is extended across one wrap while this job is active.
   Status pollSingleShot(uint32_t nowMs, uint8_t maxInstructions);
   /// Schedule a chunked read from the current continuous mode.
   /// @param pollConversionReady If true, pollContinuousRead() first reads
@@ -215,7 +420,8 @@ public:
   Status pollContinuousRead(uint32_t nowMs, uint8_t maxInstructions);
   /// Advance whichever chunked job is active.
   Status pollJob(uint32_t nowMs, uint8_t maxInstructions);
-  /// Read one pending raw register for a channel in the active sample job.
+  /// Compatibility placeholder; manual channel stepping is unavailable and
+  /// returns JOB_BUSY without I2C. Use the typed poll method instead.
   Status readChannelRawStep(Channel ch);
   /// Get cached raw results from the last or active chunked sample job.
   Status getPollJobSnapshot(PollJobSnapshot& out) const;
@@ -349,10 +555,11 @@ public:
   /// @param criticalLatch true latches critical alerts.
   /// @return Status from register write.
   Status setAlertLatchEnable(bool warningLatch, bool criticalLatch);
-  /// @brief Schedule one Mask/Enable writable-bit register write.
+  /// @brief Schedule complete read/conditional-write/verify reconciliation
+  /// after replacing the desired Mask/Enable writable bits.
   /// @param writableBits New SCC/WEN/CEN bits; read-only flags are masked out.
   Status startApplyMaskEnable(uint16_t writableBits);
-  /// @brief Advance the scheduled Mask/Enable write by instruction budget.
+  /// @brief Advance the scheduled complete profile reconciliation by budget.
   Status pollApplyMaskEnable(uint32_t nowMs, uint8_t maxInstructions);
 
   // === Device Identification ===
@@ -374,17 +581,137 @@ public:
   static float busRawToVolts(int16_t raw);
   static int16_t mvToShuntRaw(float mV);
   static int16_t voltsToBusRaw(float volts);
+  static Status conversionTiming(ConvTime ct, ConversionTiming& out);
+  static Status maximumCycleTimeUs(const DeviceProfile& profile, Mode mode,
+                                   uint64_t& outUs);
+  static Status decodeShuntMicroVolts(uint16_t raw, int32_t& outMicroVolts);
+  static Status decodeBusMilliVolts(uint16_t raw, int32_t& outMilliVolts);
+  /// Convert a checked channel enum to its fixed array index.
+  static Status channelIndex(Channel channel, uint8_t& outIndex);
+  /// Convert a checked channel enum to its CH1-through-CH3 mask bit.
+  static Status channelBit(Channel channel, ChannelMask& outBit);
+  /// Check mask membership after validating both mask and channel.
+  static Status contains(ChannelMask mask, Channel channel, bool& outContains);
+  /// Count enabled channels after rejecting bits outside CH1 through CH3.
+  static Status enabledChannelCount(ChannelMask mask, uint8_t& outCount);
+  static Status encodeShuntMicroVolts(int32_t microVolts, uint16_t& outRaw);
+  static Status encodeBusMilliVolts(int32_t milliVolts, uint16_t& outRaw);
+  static Status encodeShuntSumMicroVolts(int32_t microVolts, uint16_t& outRaw);
+  static Status validatePowerValidWindow(uint32_t lowerMilliVolts,
+                                         uint32_t upperMilliVolts);
+  static Status calculateCurrentMilliAmps(int32_t shuntMicroVolts,
+                                           const ShuntCalibration& calibration,
+                                           int32_t& outMilliAmps);
+  static Status calculatePowerMilliWatts(int32_t busMilliVolts,
+                                          int32_t currentMilliAmps,
+                                          int32_t& outMilliWatts);
+  /// Pure raw-register to fixed-unit conversion with quantity validity.
+  /// @param shuntRaw Raw 16-bit shunt-voltage register value.
+  /// @param busRaw Raw 16-bit bus-voltage register value.
+  /// @param requestedRawQuantities SHUNT and/or BUS; derived CURRENT/POWER are
+  ///        produced when their inputs are valid.
+  /// @param calibration Explicit shunt calibration used when SHUNT is requested.
+  /// @param out Fully replaced fixed-unit result and validity mask.
+  static Status convertRawChannel(uint16_t shuntRaw, uint16_t busRaw,
+                                  QuantityMask requestedRawQuantities,
+                                  const ShuntCalibration& calibration,
+                                  FixedChannelReading& out);
+  static bool isReadableRegister(uint8_t reg);
+  static bool isWritableRegister(uint8_t reg);
+  /// Maximum callbacks on the success path when CVRF is set at its first
+  /// eligible check. A low CVRF is rechecked no sooner than 1 ms later and is
+  /// bounded by the caller's absolute deadline and poll cadence.
+  static Status maximumJobTransfers(JobKind kind, const DeviceProfile& profile,
+                                    uint16_t& outTransfers);
   uint32_t getConversionTimeUs() const;
   uint32_t getCycleTimeUs() const;
 
 private:
+  enum class OperationStage : uint8_t {
+    IDLE,
+    READ_MANUFACTURER_ID,
+    READ_DIE_ID,
+    PROFILE_READ,
+    PROFILE_WRITE,
+    PROFILE_VERIFY,
+    SAMPLE_WRITE_CONFIG,
+    SAMPLE_WAIT_ORIGIN,
+    SAMPLE_WAIT,
+    SAMPLE_READ_MASK,
+    SAMPLE_READ_CHANNELS,
+    POWER_READ_CONFIG,
+    POWER_WRITE_CONFIG,
+    POWER_VERIFY_CONFIG
+  };
+
+  static constexpr uint8_t MANAGED_PROFILE_REGISTER_COUNT = 11;
+  static constexpr uint32_t CONVERSION_WAKE_MARGIN_US = 100;
+  static constexpr uint32_t COMPATIBILITY_SCHEDULING_MARGIN_MS = 1000;
+
+  Status _validateTransport(const TransportConfig& transport) const;
+  static Status _validateProfile(const DeviceProfile& profile);
+  Status _startJob(JobKind kind, uint32_t requestId, uint64_t deadlineMs);
+  Status _startProfileJob(JobKind kind, const DeviceProfile& profile,
+                          uint32_t requestId, uint64_t deadlineMs);
+  Status _pollProfileJob(const PollContext& context, uint8_t& transfersLeft);
+  Status _pollSampleOperation(const PollContext& context, uint8_t& transfersLeft);
+  Status _pollPowerDownOperation(const PollContext& context, uint8_t& transfersLeft);
+  Status _jobReadRegister(uint8_t reg, uint16_t& value,
+                          const PollContext& context, uint8_t& transfersLeft);
+  Status _jobWriteRegister(uint8_t reg, uint16_t value,
+                           const PollContext& context, uint8_t& transfersLeft);
+  Status _readRegister16WithTimeout(uint8_t reg, uint16_t& value,
+                                    uint32_t timeoutMs, bool tracked);
+  Status _writeRegister16WithTimeout(uint8_t reg, uint16_t value,
+                                     uint32_t timeoutMs, bool tracked);
+  Status _readMaskEnableWithTimeout(uint16_t& value, AlertSnapshot* consumed,
+                                    uint32_t timeoutMs, bool tracked);
+  void _retainMaskEnable(uint16_t raw, AlertSnapshot* consumed);
+  static void _decodeAlertFlags(uint16_t raw, AlertFlags& flags);
+  uint32_t _clampedTransferTimeout(const PollContext& context) const;
+  bool _deadlineExpired(const PollContext& context) const;
+  uint64_t _effectiveDeadline(const PollContext& context) const;
+  Status _desiredRegister(uint8_t index, const DeviceProfile& profile,
+                          uint8_t& reg, uint16_t& value) const;
+  static bool _registerMatches(uint8_t reg, uint16_t actual, uint16_t desired);
+  static bool _registerIsMeasurementConfig(uint8_t reg);
+  static bool _ambiguousWriteFailure(const Status& status);
+  void _markRegisterUnknown(uint8_t reg);
+  void _markRegisterDirty(uint8_t reg);
+  void _finishJob(JobTerminalState state, const Status& status,
+                  HardwareEffect effect);
+  void _finishJobSuccess();
+  void _resetOperationState();
+  Status _requireNoOwnerJob() const;
+  void _syncLegacyConfigFromProfile();
+  static Status _legacyToContracts(const Config& config,
+                                   TransportConfig& transport,
+                                   DeviceProfile& profile);
+  Status _driveCompatibilityJob(uint32_t maximumTransfers);
+  Status _compatibilityDurationMs(JobKind kind,
+                                  const DeviceProfile& profile, Mode mode,
+                                  uint64_t& outMs) const;
+  Status _prepareCompatibilityPoll(uint32_t nowMs, uint8_t maxTransfers,
+                                   PollContext& out);
+  Status _buildFixedReading(uint8_t index, Mode mode,
+                            FixedChannelReading& out) const;
+  static int64_t _roundDivide(int64_t numerator, int64_t denominator);
+
   // === Transport Wrappers ===
   Status _i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
                           uint8_t* rxBuf, size_t rxLen);
+  Status _i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
+                          uint8_t* rxBuf, size_t rxLen, uint32_t timeoutMs);
   Status _i2cWriteRaw(const uint8_t* buf, size_t len);
+  Status _i2cWriteRaw(const uint8_t* buf, size_t len, uint32_t timeoutMs);
   Status _i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
                               uint8_t* rxBuf, size_t rxLen);
+  Status _i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
+                              uint8_t* rxBuf, size_t rxLen,
+                              uint32_t timeoutMs);
   Status _i2cWriteTracked(const uint8_t* buf, size_t len);
+  Status _i2cWriteTracked(const uint8_t* buf, size_t len,
+                          uint32_t timeoutMs);
 
   // === Register Access ===
   Status _readRegister16Raw(uint8_t reg, uint16_t& value);
@@ -394,7 +721,6 @@ private:
   // === Health Tracking ===
   Status _updateHealth(const Status& st);
   Status _recordFailure(const Status& st);
-  void _reassertOfflineLatch();
   void _markHardwareConfigDirty(const Status& reason);
   void _clearHardwareConfigDirty();
 
@@ -403,14 +729,10 @@ private:
   Status _readConversionReadyAt(uint32_t nowMs, bool& ready);
   Status _ensureMeasurementReadyForRead();
   void _handleConfigWriteSideEffects();
+  void _handleResetWriteEffect(bool confirmed);
   void _clearPollJob();
   void _resetPollSampleCache();
-  Status _startSampleJob(PollJobKind kind, Mode mode, bool pollConversionReady);
-  Status _pollSampleJob(uint32_t nowMs, uint8_t maxInstructions);
-  Status _pollApplyMaskEnableJob(uint8_t maxInstructions);
-  Status _readChannelRawStep(Channel ch);
   uint16_t _buildConfigRegister() const;
-  uint16_t _buildConfigRegisterForMode(Mode mode) const;
   uint32_t _nowMs() const;
   void _cooperativeYield() const;
 
@@ -418,15 +740,19 @@ private:
   bool _isChannelEnabled(Channel ch) const;
   bool _isTriggeredMode() const;
   bool _isContinuousMode() const;
-  bool _sampleModeReadsShunt() const;
-  bool _sampleModeReadsBus() const;
-  bool _sampleChannelComplete(Channel ch) const;
 
   // === State ===
+  TransportConfig _transport{};
+  DeviceProfile _profile{};
+  DeviceProfile _pendingProfile{};
+  bool _bound = false;
+  AppliedConfigState _measurementConfigState = AppliedConfigState::UNKNOWN;
+  AppliedConfigState _alertConfigState = AppliedConfigState::UNKNOWN;
+  uint32_t _profileGeneration = 0;
+
   Config _config;
   bool _initialized = false;
   DriverState _driverState = DriverState::UNINIT;
-  bool _allowOfflineI2c = false;
 
   // === Health Counters ===
   uint32_t _lastOkMs = 0;
@@ -451,11 +777,44 @@ private:
   bool _pollConversionReady = false;
   bool _pollObservedReady = false;
   uint32_t _pollConversionStartMs = 0;
+  bool _pollTimeInitialized = false;
+  uint32_t _pollLastNowMs = 0;
+  uint64_t _pollExtendedNowMs = 0;
+  uint64_t _pollDeadlineDurationMs = 0;
   uint8_t _pollNextChannel = 0;
   uint8_t _pollInstructionsLast = 0;
   uint16_t _pollInstructionsTotal = 0;
-  uint16_t _pendingMaskEnableWritable = 0;
   ChannelRawMeasurement _pollChannels[3];
+
+  // === Cooperative owner operation ===
+  JobKind _jobKind = JobKind::NONE;
+  OperationStage _jobStage = OperationStage::IDLE;
+  JobTerminalState _jobState = JobTerminalState::IDLE;
+  HardwareEffect _jobHardwareEffect = HardwareEffect::NONE;
+  Status _jobStatus = Status::Ok();
+  uint32_t _jobRequestId = 0;
+  uint64_t _jobDeadlineMs = 0;
+  uint16_t _jobTransfers = 0;
+  uint8_t _jobTransfersLastPoll = 0;
+  uint8_t _jobProfileIndex = 0;
+  uint8_t _jobChannelIndex = 0;
+  bool _jobReadBusNext = false;
+  bool _jobConsumeAlerts = false;
+  bool _jobAnyWriteConfirmed = false;
+  Mode _jobSampleMode = Mode::SHUNT_BUS_TRIG;
+  uint64_t _jobConversionStartMs = 0;
+  uint64_t _jobReadyAtMs = 0;
+  uint64_t _jobWaitDurationMs = 0;
+  uint64_t _jobWaitOriginAfterMs = 0;
+  uint16_t _jobDesiredRegisterValue = 0;
+  uint8_t _jobDesiredRegisterAddress = 0;
+  ChannelRawMeasurement _sampleRaw[3];
+  SampleBatch _sampleWork{};
+  SampleBatch _lastGoodSample{};
+  bool _hasLastGoodSample = false;
+  JobResult _pendingJobResult{};
+  bool _hasPendingJobResult = false;
+  AlertSnapshot _retainedAlerts{};
 };
 
 } // namespace INA3221
