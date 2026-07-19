@@ -2,6 +2,134 @@
 
 ## INA3221 three-channel power monitor library
 
+## 2026-07-19 superseding re-audit and implementation disposition
+
+This section supersedes the 2026-07-18 v2.0.0 conclusions below. The original
+audit is retained unchanged as historical evidence; its source line numbers and
+recommendations do not describe the v3.0.0 candidate.
+
+### Re-audit basis
+
+| Item | Exact basis |
+|---|---|
+| INA3221 implementation base | `defb750f082238509d1ca299e120dcebb8bf6a8b` on `main`; this commit added the historical audit over v2.0.0 |
+| Owner-engine and fault-test implementation | `6620a04` (`feat: add bounded owner-safe INA3221 operations`) |
+| Documentation, examples, release metadata, and CI | `aa8bceb` (`build: qualify owner-safe 3.0.0 release`) |
+| Independent-review fault-coverage closeout | `aae9b03` (`fix: expose uncertain destructive alert reads`) |
+| TunnelMonitor-node contract inspection | `602114ea6c723e31c41f0eb7cd8ac2b56a46d40e` on `prompt-44b-sequence` |
+
+The INA3221 checkout was clean at the implementation base. TunnelMonitor-node
+was used read-only and already had a modified `.vscode/extensions.json` plus an
+untracked
+`docs/reports/i2c_library_latest_branch_audit_revalidation_20260718.md`; neither
+was edited, staged, or removed by this work. Its checkout was one commit behind
+its remote branch at inspection time.
+
+The authoritative TunnelMonitor-node contract still selects one optional
+INA228 at address `0x41`, one `I2cTask` bus owner, a 20 ms optional-device
+transfer cap, the original 1000 ms `ReadPower` deadline, fixed-capacity command
+and result storage, tuple request identity, and a scalar INA228-shaped power
+result. No INA3221 address strap, channel names, shunts, directions, alert
+policy, sampling profile, or public three-channel result contract has been
+approved. Therefore no TunnelMonitor source change was authorized.
+
+### Architecture implemented
+
+The v3 candidate has one fixed-memory, single-owner cooperative operation
+engine. `bind()` is zero-I2C and stores a non-owning single-attempt transport
+plus a complete typed `DeviceProfile`. Initialization, profile application,
+reconciliation, triggered/continuous sampling, and verified power-down share
+one admission/exclusion model, absolute deadlines, caller-selected callback
+budget, cache-only progress, bus-silent cancellation, and take-once terminal
+results carrying request identity and hardware-effect certainty.
+
+Triggered timing uses checked datasheet maximum conversion times plus a named
+100 us wake margin. The trigger callback must return within its supplied hard
+timeout. A strictly later owner timestamp, obtained only after that callback
+returns, establishes the wait origin. Deadline admission includes that clock
+advance, the maximum conversion delay, and successful-path callback bounds; an
+unfit profile is rejected before I2C. A low CVRF read retains alert evidence,
+then requires another strictly later timestamp and an additional 1 ms wait
+before retry. Every retry remains bounded by the original absolute deadline.
+
+All eleven managed volatile configuration registers are read, conditionally
+written, and verified. Measurement and alert configuration have separate
+`UNKNOWN`/`DIRTY`/`APPLIED` certainty. Destructive Mask/Enable events are
+centrally retained until explicit take. Triggered samples commit atomically to
+a fixed-unit `SampleBatch`; continuous samples explicitly report mixed-age
+coherence. Raw/reset and ambiguous-write paths invalidate certainty without
+blind retry. Health is passive telemetry and never takes I2C admission or
+recovery authority from the application owner.
+
+Synchronous and staged compatibility APIs remain for diagnostics and source
+migration. Staged sample/profile compatibility calls share the owner engine;
+direct `startConversion()`/`tickStatus()` compatibility retains its isolated
+legacy conversion flags. Mutual exclusion prevents either compatibility path
+from interfering with an owner job. These APIs use finite callback bounds and
+are documented outside the production steady path. The 32-bit staged clock is
+extended through wrap for an active operation and receives a derived finite
+deadline; `readBlocking()` uses wrap-safe unsigned elapsed time. INA3221 has
+only volatile registers, so EEPROM endurance/program-cycle procedures are not
+applicable.
+
+### Finding disposition
+
+| Finding | Revalidated disposition | Implementation/test evidence | Final status |
+|---|---|---|---|
+| H-01 | Still applies as a product/integration decision, not a chip-library defect. Current hardware 2.0.0 remains INA228. | TunnelMonitor board, I2C-owner, request/result, deadline, and capacity contracts inspected read-only at the revision above. | **OPEN — external product decision** |
+| H-02 | Typical-time and stale pre-callback origin defects resolved. Profiles that cannot fit are rejected bus-silently. | Cartesian maximum-timing tests, 64-bit boundary tests, delayed-origin/same-timestamp tests, low-CVRF deadline tests, and short-deadline zero-callback test. | **RESOLVED** |
+| H-03 | Initialization now establishes and verifies identity plus the complete eleven-register desired profile. | Exact sequence, retained-register/restart, mismatch, per-stage failure, and budget tests. | **RESOLVED** |
+| H-04 | Manual recovery/reconciliation uses the same complete desired profile and exposes partial/unknown effects. | Reset restoration, read-first reconciliation, and table-driven ambiguity/readback-mismatch tests for all eleven managed registers. | **RESOLVED** |
+| H-05 | Every Mask/Enable consumer centrally retains destructive events; peek/take is explicit. | Warning, critical, summation, CVRF, TCF, PVF, multi-consumer, and low-CVRF retention tests. | **RESOLVED** |
+| H-06 | All production multi-step jobs use an immutable absolute deadline, bounded callback budget, bus-silent cancel, and exact terminal result. | Deadline-edge, cancellation across every initialize/apply transfer stage plus representative sample/power stages, exhaustive initialize/apply failures, sample mid-stage failures, zero-I2C wait, timeout-share, result-identity, and exact-once tests. | **RESOLVED** |
+| H-07 | One owner engine sequences all production and staged compatibility jobs. Direct legacy conversion flags remain isolated for source compatibility; mutual exclusion removes the old interference defect. | Active-job API matrix and rejected-start/stale-facade regression tests. | **RESOLVED with documented legacy exception** |
+| H-08 | Shared-owner production work is chunked; compatibility blocking work is explicitly bounded and classified as diagnostic. | Maximum-transfer helper, budget-zero/one/many tests, derived compatibility deadlines, and documented synchronous callback ceilings. | **RESOLVED for production path** |
+| H-09 | READY/DEGRADED/OFFLINE is passive diagnostic state; OFFLINE never suppresses owner-requested I2C and recovery remains manual. | Offline-threshold and post-offline admitted-I2C tests. | **RESOLVED** |
+| H-10 | Separate measurement/alert certainty records confirmed, dirty, and ambiguous effects. | Table-driven commit-before-timeout and readback mismatch for Configuration, Mask/Enable, and every limit register, plus raw reset, reconcile, and power-down tests. | **RESOLVED** |
+| H-11 | Fixed-size `SampleBatch` carries fixed units, validity, coherence, profile generation, request ID, capture time, and alert provenance; partial work never replaces last-good. | Atomic triggered failure matrix, continuous mutation/mixed-age test, and compile-time size/layout assertions. | **RESOLVED** |
+| H-12 | Typed fixed-unit calibration/direction and checked pure encode/decode/current/power helpers replace permissive production conversions. | Negative/full-scale, operating-range, rounding, reverse-direction, overflow, NaN/infinity, window, enum, and channel-mask tests. | **RESOLVED** |
+| H-13 | Register access is classified, raw mutation invalidates certainty, transport status remains typed, callbacks are exact single attempts, and the configured timeout is a hard upper cap. | Wrong address/timeout/shape/length, NACK/bus/timeout, partial destructive-read uncertainty, raw-reset, active-exclusion, and strict compile tests. | **RESOLVED** |
+| H-14 | Native, Arduino, documentation, metadata, packaging, and compiled ESP-IDF CI coverage were strengthened. CI inputs are version-pinned, not immutable. Physical exact-board evidence and a local IDF transcript were not produced. | Validation record below and version-pinned CI jobs for ESP32-S3/S2 using ESP-IDF 6.0.1. | **AUTOMATION IMPLEMENTED; EXTERNAL EVIDENCE GATES OPEN** |
+
+### Validation record
+
+Validation was performed on the complete candidate after independent review
+fixes:
+
+- native PlatformIO/Unity suite: **115/115 passed**;
+- strict framework-neutral C++17 warning-as-error compile: **passed**;
+- core timing, Arduino CLI, native IDF example, generated version, and metadata
+  consistency guards: **passed**;
+- Doxygen with warnings treated as errors: **passed**;
+- HIL CLI parser self-test: **passed** (parser only, not hardware evidence);
+- PlatformIO package creation for `INA3221-3.0.0.tar.gz`: **passed**; the local
+  generated archive was then removed;
+- pinned Arduino ESP32-S3 compile: **passed**, 42,464/327,680 bytes RAM and
+  448,766/1,310,720 bytes flash;
+- pinned Arduino ESP32-S2 compile: **passed**, 37,712/327,680 bytes RAM and
+  400,425/1,310,720 bytes flash;
+- local native ESP-IDF compile: **not run** because neither `idf.py` nor Docker
+  was available locally; CI is configured but configuration is not claimed as
+  a passing build;
+- connected INA3221/TunnelMonitor hardware qualification: **not run**.
+
+The unchanged TunnelMonitor INA228 baseline was separately validated at its
+inspected revision: native tests **1046/1046 passed**, and its pinned firmware
+build passed (178,760 bytes RAM, 1,757,446 bytes flash). This proves only the
+existing INA228 integration and does not constitute INA3221 HIL.
+
+### Superseding recommendation
+
+The v3 library candidate is technically suitable for a future owner-private
+TunnelMonitor INA3221 adapter without weakening the single-I2C-owner model. It
+is **not integration-approved for current TunnelMonitor hardware**. H-01 must
+first be closed by approving a board profile, address strap, channel semantics,
+calibration/direction, alert/sampling policy, and scalar-versus-versioned result
+contract. The exact selected profile must then prove its maximum cycle and
+callback budget inside the 1000 ms owner deadline and pass native private-adapter
+tests plus connected-board INA3221 qualification, including alert-pin/read-clear,
+negative-current, reset/reconcile, fault, and recovery evidence.
+
 Date: 2026-07-18
 
 Audit result: **good protocol base, product decision and focused refactor
