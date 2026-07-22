@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Expanded the hardware-validation runner across every operating mode,
+  averaging and conversion-time value, all three channel configuration paths,
+  alert-register write/readback/restore paths, and a readable identity register.
 - Reorganized and expanded the README with hardware/address guidance, profile
   validation/defaults, the complete cooperative job lifecycle, fixed-unit
   sample semantics, alert/configuration certainty, error recovery, installation,
@@ -27,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Made the default `readBlocking()` deadline derive from the active profile and
+  transport callback bound, so the default 50 ms per-transfer ceiling cannot
+  make a healthy three-channel triggered read fail admission against the former
+  fixed 200 ms deadline.
 - Removed stale documentation that referred to the released v3 API as a future
   major version, claimed `0.1.x` was the supported release, and referenced a
   nonexistent formatter configuration.

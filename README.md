@@ -361,8 +361,11 @@ or `UNKNOWN`; reconcile before returning to the production engine.
 
 The staged compatibility methods extend their 32-bit monotonic time input
 through one wrap for the active job; callers must poll at least once per 32-bit
-clock period. `readBlocking()` uses wrap-safe elapsed time. Prefer the explicit
-64-bit production API for new code.
+clock period. `readBlocking()` uses wrap-safe elapsed time. When its timeout is
+omitted, it derives a finite bound from the verified profile, maximum conversion
+time, successful-path transfer count, and configured per-transfer timeout. An
+explicit timeout remains available when the application needs a tighter bound.
+Prefer the explicit 64-bit production API for new code.
 
 ## Installation and integration
 

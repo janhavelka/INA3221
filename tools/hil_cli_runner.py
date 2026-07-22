@@ -280,6 +280,8 @@ def default_steps(stress_count: int, stress_mix_count: int) -> list[Step]:
         Step("DATA-001", "Timing", "timing", ("Timing Info", "Cycle time")),
         Step("DATA-002", "Config", "config", ("Config:", "Mode:")),
         Step("DATA-003", "Aggregate read", "read", ("CH1:",)),
+        Step("DATA-003A", "Direct-read precondition", "mode sbc", ("Status: OK",)),
+        Step("DATA-003B", "Direct-read profile verification", "recover", ("Status: OK",)),
         Step("DATA-004", "Channel read", "ch 1", ("CH1:",)),
         Step("DATA-005", "Raw shunt read", "shuntraw 1", ("CH1 shunt raw",)),
         Step("DATA-006", "Raw bus read", "busraw 1", ("CH1 bus raw",)),
@@ -292,28 +294,49 @@ def default_steps(stress_count: int, stress_mix_count: int) -> list[Step]:
         Step("MODE-001", "Mode show", "mode", ("Mode:",)),
         Step("MODE-002", "Power-down mode", "mode pd", ("Status: OK",)),
         Step("MODE-003", "Continuous restore", "mode sbc", ("Status: OK",)),
-        Step("MODE-004", "Triggered mode", "mode sbtrig", ("Status: IN_PROGRESS",),
+        Step("MODE-004", "Shunt triggered mode", "mode strig", ("Status: IN_PROGRESS",),
              failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
-        Step("MODE-005", "Triggered mode poll", "poll", ("Conversion ready",)),
-        Step("MODE-006", "Continuous restore", "mode sbc", ("Status: OK",)),
-        Step("MODE-007", "Explicit triggered start", "start sbtrig", ("Status: IN_PROGRESS",),
+        Step("MODE-005", "Shunt triggered poll", "poll", ("Conversion ready",)),
+        Step("MODE-006", "Bus triggered mode", "mode btrig", ("Status: IN_PROGRESS",),
              failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
-        Step("MODE-008", "Triggered start poll", "poll", ("Conversion ready",)),
-        Step("MODE-009", "Continuous restore", "mode sbc", ("Status: OK",)),
-        Step("CFG-001", "Averaging lower bound", "avg 0", ("Status: OK",)),
-        Step("CFG-002", "Averaging upper bound", "avg 7", ("Status: OK",)),
-        Step("CFG-003", "Averaging restore", "avg 0", ("Status: OK",)),
-        Step("CFG-004", "Bus CT lower bound", "vbusct 0", ("Status: OK",)),
-        Step("CFG-005", "Bus CT upper bound", "vbusct 7", ("Status: OK",)),
-        Step("CFG-006", "Bus CT restore", "vbusct 4", ("Status: OK",)),
-        Step("CFG-007", "Shunt CT lower bound", "vshct 0", ("Status: OK",)),
-        Step("CFG-008", "Shunt CT upper bound", "vshct 7", ("Status: OK",)),
-        Step("CFG-009", "Shunt CT restore", "vshct 4", ("Status: OK",)),
+        Step("MODE-007", "Bus triggered poll", "poll", ("Conversion ready",)),
+        Step("MODE-008", "Shunt+bus triggered mode", "mode sbtrig", ("Status: IN_PROGRESS",),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("MODE-009", "Shunt+bus triggered poll", "poll", ("Conversion ready",)),
+        Step("MODE-010", "Shunt continuous mode", "mode sc", ("Status: OK",)),
+        Step("MODE-011", "Bus continuous mode", "mode bc", ("Status: OK",)),
+        Step("MODE-012", "Shunt+bus continuous mode", "mode sbc", ("Status: OK",)),
+        Step("MODE-013", "Explicit triggered start", "start sbtrig", ("Status: IN_PROGRESS",),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("MODE-014", "Triggered start poll", "poll", ("Conversion ready",)),
+        Step("MODE-015", "Continuous restore", "mode sbc", ("Status: OK",)),
+        *[Step(f"CFG-AVG-{value}", f"Averaging value {value}", f"avg {value}",
+               ("Status: OK",)) for value in range(8)],
+        Step("CFG-AVG-R", "Averaging restore", "avg 0", ("Status: OK",)),
+        *[Step(f"CFG-BCT-{value}", f"Bus CT value {value}", f"vbusct {value}",
+               ("Status: OK",)) for value in range(8)],
+        Step("CFG-BCT-R", "Bus CT restore", "vbusct 4", ("Status: OK",)),
+        *[Step(f"CFG-SCT-{value}", f"Shunt CT value {value}", f"vshct {value}",
+               ("Status: OK",)) for value in range(8)],
+        Step("CFG-SCT-R", "Shunt CT restore", "vshct 4", ("Status: OK",)),
         Step("CFG-010", "Disable channel", "chen 3 0", ("Status: OK",)),
         Step("CFG-011", "Disabled-channel read rejection", "ch 3",
              ("Status: INVALID_CONFIG", "Channel disabled"),
              failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
         Step("CFG-012", "Restore channel", "chen 3 1", ("Status: OK",)),
+        Step("CFG-012A", "Disable channel 1", "chen 1 0", ("Status: OK",)),
+        Step("CFG-012B", "Restore channel 1", "chen 1 1", ("Status: OK",)),
+        Step("CFG-012C", "Disable channel 2", "chen 2 0", ("Status: OK",)),
+        Step("CFG-012D", "Restore channel 2", "chen 2 1", ("Status: OK",)),
+        Step("CFG-013", "Shunt calibration update", "rshunt 1 0.2", ("Status: OK",)),
+        Step("CFG-014", "Shunt calibration inspect", "rshunt", ("Rshunt:", "CH1=0.2000")),
+        Step("CFG-015", "Shunt calibration restore", "rshunt 1 0.1", ("Status: OK",)),
+        Step("CFG-016", "Channel 2 calibration update", "rshunt 2 0.2", ("Status: OK",)),
+        Step("CFG-017", "Channel 2 calibration inspect", "rshunt", ("CH2=0.2000",)),
+        Step("CFG-018", "Channel 2 calibration restore", "rshunt 2 0.1", ("Status: OK",)),
+        Step("CFG-019", "Channel 3 calibration update", "rshunt 3 0.2", ("Status: OK",)),
+        Step("CFG-020", "Channel 3 calibration inspect", "rshunt", ("CH3=0.2000",)),
+        Step("CFG-021", "Channel 3 calibration restore", "rshunt 3 0.1", ("Status: OK",)),
         Step("ALERT-001", "Alert flags", "alerts", ("Alert Flags",)),
         Step("ALERT-002", "Mask/Enable decode", "mask",
              ("Mask/Enable Register", "clears latched alert")),
@@ -324,6 +347,50 @@ def default_steps(stress_count: int, stress_mix_count: int) -> list[Step]:
         Step("ALERT-007", "Power-valid low", "pvlo", ("Power valid lower limit",)),
         Step("ALERT-008", "Summation channels", "sumch", ("Mask/Enable Register",)),
         Step("ALERT-009", "Alert latch", "latch", ("Mask/Enable Register",)),
+        Step("ALERT-010", "Critical limit write", "crit 1 8", ("Status: OK",)),
+        Step("ALERT-011", "Critical limit readback", "crit 1", ("critical limit: 8",)),
+        Step("ALERT-012", "Critical limit restore", "crit 1 32760", ("Status: OK",)),
+        Step("ALERT-012A", "CH2 critical limit write", "crit 2 16", ("Status: OK",)),
+        Step("ALERT-012B", "CH2 critical limit readback", "crit 2", ("critical limit: 16",)),
+        Step("ALERT-012C", "CH2 critical limit restore", "crit 2 32760", ("Status: OK",)),
+        Step("ALERT-012D", "CH3 critical limit write", "crit 3 24", ("Status: OK",)),
+        Step("ALERT-012E", "CH3 critical limit readback", "crit 3", ("critical limit: 24",)),
+        Step("ALERT-012F", "CH3 critical limit restore", "crit 3 32760", ("Status: OK",)),
+        Step("ALERT-013", "Warning limit write", "warn 1 8", ("Status: OK",)),
+        Step("ALERT-014", "Warning limit readback", "warn 1", ("warning limit: 8",)),
+        Step("ALERT-015", "Warning limit restore", "warn 1 32760", ("Status: OK",)),
+        Step("ALERT-015A", "CH2 warning limit write", "warn 2 16", ("Status: OK",)),
+        Step("ALERT-015B", "CH2 warning limit readback", "warn 2", ("warning limit: 16",)),
+        Step("ALERT-015C", "CH2 warning limit restore", "warn 2 32760", ("Status: OK",)),
+        Step("ALERT-015D", "CH3 warning limit write", "warn 3 24", ("Status: OK",)),
+        Step("ALERT-015E", "CH3 warning limit readback", "warn 3", ("warning limit: 24",)),
+        Step("ALERT-015F", "CH3 warning limit restore", "warn 3 32760", ("Status: OK",)),
+        Step("ALERT-016", "Summation limit write", "sumlim 2", ("Status: OK",)),
+        Step("ALERT-017", "Summation limit readback", "sumlim", ("Shunt sum limit: 2",)),
+        Step("ALERT-018", "Summation limit restore", "sumlim 32766", ("Status: OK",)),
+        Step("ALERT-019", "Power-valid upper write", "pvhi 10008", ("Status: OK",)),
+        Step("ALERT-020", "Power-valid upper readback", "pvhi", ("Power valid upper limit: 10008",)),
+        Step("ALERT-021", "Power-valid upper restore", "pvhi 10000", ("Status: OK",)),
+        Step("ALERT-022", "Power-valid lower write", "pvlo 8992", ("Status: OK",)),
+        Step("ALERT-023", "Power-valid lower readback", "pvlo", ("Power valid lower limit: 8992",)),
+        Step("ALERT-024", "Power-valid lower restore", "pvlo 9000", ("Status: OK",)),
+        Step("ALERT-025", "Summation channel enable", "sumch 1 1", ("Status: OK",)),
+        Step("ALERT-026", "Summation channel inspect", "sumch", ("Sum channels: CH1=ON",)),
+        Step("ALERT-027", "Summation channel restore", "sumch 1 0", ("Status: OK",)),
+        Step("ALERT-027A", "Summation channel 2 enable", "sumch 2 1", ("Status: OK",)),
+        Step("ALERT-027B", "Summation channel 2 inspect", "sumch", ("CH2=ON",)),
+        Step("ALERT-027C", "Summation channel 2 restore", "sumch 2 0", ("Status: OK",)),
+        Step("ALERT-027D", "Summation channel 3 enable", "sumch 3 1", ("Status: OK",)),
+        Step("ALERT-027E", "Summation channel 3 inspect", "sumch", ("CH3=ON",)),
+        Step("ALERT-027F", "Summation channel 3 restore", "sumch 3 0", ("Status: OK",)),
+        Step("ALERT-028", "Warning latch enable", "latch 1 0", ("Status: OK",)),
+        Step("ALERT-029", "Warning latch inspect", "latch", ("Latch: warning=ON  critical=OFF",)),
+        Step("ALERT-030", "Critical latch enable", "latch 0 1", ("Status: OK",)),
+        Step("ALERT-031", "Critical latch inspect", "latch", ("Latch: warning=OFF  critical=ON",)),
+        Step("ALERT-032", "Both latches enable", "latch 1 1", ("Status: OK",)),
+        Step("ALERT-033", "Both latches inspect", "latch", ("Latch: warning=ON  critical=ON",)),
+        Step("ALERT-034", "Alert latch restore", "latch 0 0", ("Status: OK",)),
+        Step("REG-001", "Readable register", "reg 0xFE", ("Reg 0xFE = 0x5449",)),
         Step("RESET-001", "Manual recovery", "recover", ("Status: OK",)),
         Step("RESET-002", "Software reset", "reset", ("Status: OK",)),
         Step("RESET-003", "Post-reset recovery", "recover", ("Status: OK",)),
@@ -367,6 +434,22 @@ def benchmark_steps(count: int) -> list[Step]:
         Step("BENCH-003", "Mixed-operation benchmark", f"stress_mix {count}",
              ("stress_mix summary", "fail=0"), timeout_s=timeout_s),
     ]
+
+
+def qualification_steps(
+    stress_count: int,
+    stress_mix_count: int,
+    include_benchmarks: bool,
+    benchmark_count: int,
+) -> list[Step]:
+    steps = default_steps(stress_count, stress_mix_count)
+    final_health = steps.pop()
+    if final_health.test_id != "FINAL-001":
+        raise RuntimeError("default suite must end with FINAL-001")
+    if include_benchmarks:
+        steps.extend(benchmark_steps(benchmark_count))
+    steps.append(final_health)
+    return steps
 
 
 def run_step(
@@ -680,9 +763,12 @@ def write_markdown_report(
 
 
 def dry_run(args: argparse.Namespace) -> int:
-    steps = default_steps(args.stress_count, args.stress_mix_count)
-    if args.sample_benchmark:
-        steps.extend(benchmark_steps(args.benchmark_count))
+    steps = qualification_steps(
+        args.stress_count,
+        args.stress_mix_count,
+        args.sample_benchmark,
+        args.benchmark_count,
+    )
     print("Dry run: no serial port opened.")
     print(f"Port: {args.port or 'not set'} baud={args.baud}")
     for step in steps:
@@ -770,9 +856,12 @@ def main(argv: list[str]) -> int:
         transcript.append("===== BOOT / PRE-COMMAND TRANSCRIPT =====\n")
         transcript.append(boot_transcript)
 
-        steps = default_steps(args.stress_count, args.stress_mix_count)
-        if args.sample_benchmark:
-            steps.extend(benchmark_steps(args.benchmark_count))
+        steps = qualification_steps(
+            args.stress_count,
+            args.stress_mix_count,
+            args.sample_benchmark,
+            args.benchmark_count,
+        )
         suite_aborted = False
         for index, step in enumerate(steps):
             result = run_step(

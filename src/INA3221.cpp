@@ -2235,6 +2235,22 @@ Status INA3221::readBlocking(ChannelMeasurement* ch1,
   if (ch1 == nullptr && ch2 == nullptr && ch3 == nullptr) {
     return Status::Error(Err::INVALID_PARAM, "At least one output channel is required");
   }
+  if (timeoutMs == AUTO_BLOCKING_TIMEOUT_MS) {
+    const JobKind kind = _isContinuousMode()
+                             ? JobKind::CONTINUOUS_SAMPLE
+                             : JobKind::TRIGGERED_SAMPLE;
+    const Mode sampleMode = _isTriggeredMode() ? _profile.mode
+                                                : Mode::SHUNT_BUS_TRIG;
+    uint64_t durationMs = 0;
+    Status durationStatus =
+        _compatibilityDurationMs(kind, _profile, sampleMode, durationMs);
+    if (!durationStatus.ok()) return durationStatus;
+    if (durationMs == 0U || durationMs > static_cast<uint64_t>(INT32_MAX)) {
+      return Status::Error(Err::ARITHMETIC_OVERFLOW,
+                           "Derived blocking timeout out of range");
+    }
+    timeoutMs = static_cast<uint32_t>(durationMs);
+  }
   if (timeoutMs > static_cast<uint32_t>(INT32_MAX)) {
     return Status::Error(Err::INVALID_PARAM, "Timeout too large");
   }
@@ -2258,8 +2274,9 @@ Status INA3221::readBlocking(ChannelMeasurement* ch1,
   if (!st.inProgress()) return st;
   uint16_t maximumTransfers = 0;
   (void)maximumJobTransfers(_jobKind, _profile, maximumTransfers);
-  const uint32_t maxPolls = timeoutMs + maximumTransfers * 3U + 4U;
-  for (uint32_t polls = 0; polls < maxPolls && !_hasPendingJobResult; ++polls) {
+  const uint64_t maxPolls = static_cast<uint64_t>(timeoutMs) +
+                            static_cast<uint64_t>(maximumTransfers) * 3U + 4U;
+  for (uint64_t polls = 0; polls < maxPolls && !_hasPendingJobResult; ++polls) {
     PollContext context{};
     context.nowMs = static_cast<uint32_t>(_nowMs() - startMs);
     context.deadlineMs = deadlineMs;
@@ -3145,13 +3162,6 @@ Status INA3221::_recordFailure(const Status& st) {
   return st;
 }
 
-void INA3221::_markHardwareConfigDirty(const Status& reason) {
-  if (!_hardwareConfigDirty) {
-    _hardwareConfigDirty = true;
-    _hardwareConfigDirtyStatus = reason;
-  }
-}
-
 void INA3221::_clearHardwareConfigDirty() {
   _hardwareConfigDirty = false;
   _hardwareConfigDirtyStatus = Status::Ok();
@@ -3336,15 +3346,6 @@ uint8_t INA3221::_enabledChannelCount() const {
   if (_config.ch2Enable) count++;
   if (_config.ch3Enable) count++;
   return count;
-}
-
-bool INA3221::_isChannelEnabled(Channel ch) const {
-  switch (ch) {
-    case Channel::CH1: return _config.ch1Enable;
-    case Channel::CH2: return _config.ch2Enable;
-    case Channel::CH3: return _config.ch3Enable;
-    default: return false;
-  }
 }
 
 bool INA3221::_isTriggeredMode() const {

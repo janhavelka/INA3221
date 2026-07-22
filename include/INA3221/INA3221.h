@@ -606,20 +606,27 @@ public:
   /// @param out Replaced with compatibility job state and raw channel slots.
   /// @return Always OK.
   Status getPollJobSnapshot(PollJobSnapshot& out) const;
+  /// Sentinel selecting a bounded timeout derived from the active profile and
+  /// configured per-transfer ceiling.
+  static constexpr uint32_t AUTO_BLOCKING_TIMEOUT_MS = UINT32_MAX;
+
   /// Convenience-only helper that may start a conversion, poll repeatedly,
   /// yield cooperatively, clear Mask/Enable flags through readiness polling,
   /// and read multiple channel registers in one call. Keep explicit staged
   /// operations in deadline-owned steady polling paths.
   /// @return INVALID_PARAM if no channel output pointer is provided or the
-  ///         timeout is too large for wrap-safe local deadline math.
+  ///         explicit timeout is zero or too large for wrap-safe local
+  ///         deadline math; timeout derivation failures are returned directly.
   /// @param ch1 Optional channel 1 output.
   /// @param ch2 Optional channel 2 output.
   /// @param ch3 Optional channel 3 output.
-  /// @param timeoutMs Non-zero overall timeout, at most INT32_MAX milliseconds.
-  Status readBlocking(ChannelMeasurement* ch1 = nullptr,
-                      ChannelMeasurement* ch2 = nullptr,
-                      ChannelMeasurement* ch3 = nullptr,
-                      uint32_t timeoutMs = 200);
+  /// @param timeoutMs Non-zero explicit overall timeout at most INT32_MAX, or
+  ///                  AUTO_BLOCKING_TIMEOUT_MS to derive a safe bound.
+  Status readBlocking(
+      ChannelMeasurement* ch1 = nullptr,
+      ChannelMeasurement* ch2 = nullptr,
+      ChannelMeasurement* ch3 = nullptr,
+      uint32_t timeoutMs = AUTO_BLOCKING_TIMEOUT_MS);
 
   // === Configuration ===
   /// Set operating mode.
@@ -1062,7 +1069,6 @@ private:
   // === Health Tracking ===
   Status _updateHealth(const Status& st);
   Status _recordFailure(const Status& st);
-  void _markHardwareConfigDirty(const Status& reason);
   void _clearHardwareConfigDirty();
 
   // === Internal ===
@@ -1078,7 +1084,6 @@ private:
   void _cooperativeYield() const;
 
   uint8_t _enabledChannelCount() const;
-  bool _isChannelEnabled(Channel ch) const;
   bool _isTriggeredMode() const;
   bool _isContinuousMode() const;
 
