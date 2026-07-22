@@ -1,19 +1,40 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
+Security fixes are provided for the current major release line.
 
-## Reporting a Vulnerability
+| Version | Supported |
+|---|---|
+| `3.x` | Yes |
+| `2.x` and earlier | No |
 
-If you discover a security vulnerability within this library, please follow responsible disclosure:
+Users of an unsupported release should reproduce the issue on the latest v3
+release before reporting it when practical.
 
-1. **Do NOT** open a public GitHub issue.
-2. Email the maintainer at: `info@thymos.cz`.
-3. Include:
-   - A description of the vulnerability
-   - Steps to reproduce
-   - Potential impact
-   - Any suggested fixes (optional)
+## Reporting a vulnerability
+
+Do not open a public issue for a suspected vulnerability. Email
+`info@thymos.cz` with:
+
+- affected version, target, framework, and transport backend;
+- a concise description and potential impact;
+- reproduction steps or a minimal test case;
+- whether physical access or unusual hardware conditions are required; and
+- any suggested mitigation, if known.
+
+Do not include credentials, private keys, or unrelated device data. Use a
+minimal fixture and avoid destructive testing on production hardware.
+
+The maintainer will coordinate validation and disclosure privately. No fixed
+response-time or embargo SLA is promised by this community project.
+
+## Scope notes
+
+This driver does not implement network protocols, authentication, encryption,
+or firmware update. Relevant reports can still include memory-safety issues,
+unbounded blocking, incorrect validation that permits unsafe register writes,
+or transport behavior that violates the documented timeout/ownership contract.
+Application bus adapters, board wiring, and higher-level recovery policy remain
+application responsibilities, but cross-boundary issues are welcome when the
+library contributes to the impact.

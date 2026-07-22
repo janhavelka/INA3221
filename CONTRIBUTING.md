@@ -1,51 +1,89 @@
 # Contributing
 
-Thank you for considering contributing to this project!
+Contributions are welcome when they preserve the library's deterministic,
+framework-neutral embedded boundary. Read the repository's `AGENTS.md` before
+changing public API or core behavior; it contains the binding engineering
+rules.
 
-## Quick Start
+## Development setup
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Make your changes
-4. Ensure examples build: `pio run -e esp32s3dev -e esp32s2dev`
-5. Commit with a clear message: `git commit -m "feat: add X"`
-6. Push and open a Pull Request
+Required for the full host/documentation pass:
 
-## Guidelines
+- Python 3
+- PlatformIO
+- a C++17 host compiler
+- Doxygen
 
-### Code Style
-- Follow existing code style (see `.clang-format`)
-- Use `constexpr` instead of macros for constants
-- Prefer explicit over implicit
-- No heap allocations in steady-state library code
+ESP-IDF 6.x is additionally required to compile the native example locally.
+Hardware-in-the-loop checks require a supported ESP32-S2/S3 fixture and are not
+implied by a successful host build.
 
-### Commits
-- Use [Conventional Commits](https://www.conventionalcommits.org/) format:
-  - `feat:` new feature
-  - `fix:` bug fix
-  - `docs:` documentation only
-  - `refactor:` code change that neither fixes a bug nor adds a feature
-  - `test:` adding or updating tests
-  - `chore:` maintenance tasks
+Create a focused branch, make the smallest coherent change, and preserve any
+unrelated worktree changes. `library.json` is the version source of truth;
+`include/INA3221/Version.h` is generated and must not be edited manually.
 
-### Pull Requests
-- Keep PRs focused (one feature/fix per PR)
-- Update documentation if needed
-- Add changelog entry under `[Unreleased]`
-- Ensure CI passes
+## Engineering expectations
 
-### What We Accept
-- Bug fixes
-- Documentation improvements
-- Performance improvements (with benchmarks)
-- New examples (if they demonstrate a common use case)
+- Keep public headers in `include/INA3221/` and implementation in `src/`.
+- Keep Arduino/ESP-IDF headers and board-specific pins out of the library core.
+- Preserve application ownership of I2C, deadlines, retries, recovery, and
+  serialization.
+- Keep steady-state paths allocation-free, bounded, observable, and free of
+  library logging.
+- Return `Status` for fallible operations; do not add exceptions or silent
+  fallback behavior.
+- Follow the existing C++ layout and naming conventions. The repository does
+  not currently publish an automated formatter configuration.
+- Add or update tests for behavior changes, including failure and boundary
+  cases where relevant.
+- Document every public symbol and parameter in Doxygen.
+- Add a concise entry under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
 
-### What We Probably Won't Accept
-- Breaking API changes without discussion
-- Heavy dependencies
-- Platform-specific code in the library core
-- Features that add heap allocations in steady state
+Do not add speculative managers, services, portability layers, fake production
+devices, or dependencies without a concrete current caller and a clear reason.
 
-## Questions?
+## Validation
 
-Open an issue or start a discussion on GitHub.
+Run the checks relevant to the change. A full local pass is:
+
+```bash
+python tools/check_cli_contract.py
+python tools/check_idf_example_contract.py
+python tools/check_core_timing_guard.py
+python tools/check_metadata_consistency.py
+python scripts/generate_version.py check
+python tools/check_strict_compile.py
+doxygen Doxyfile
+python -m platformio test -e native
+python -m platformio run -e esp32s3dev
+python -m platformio run -e esp32s2dev
+```
+
+When ESP-IDF is installed, also run both native targets:
+
+```bash
+idf.py -C examples/esp_idf/basic set-target esp32s3 build
+idf.py -C examples/esp_idf/basic set-target esp32s2 build
+```
+
+Report unavailable toolchains as `NOT RUN`; do not treat a static contract check
+as compiler, linker, or hardware evidence.
+
+## Commits and pull requests
+
+Use clear, scoped commits. Conventional prefixes such as `feat:`, `fix:`,
+`docs:`, `refactor:`, `test:`, and `chore:` are preferred.
+
+A pull request should explain:
+
+- the problem and intended contract;
+- the implementation and any compatibility impact;
+- validation actually run, including explicit not-run items; and
+- documentation/changelog changes.
+
+Breaking API, `Config`, or enum changes require prior discussion and a major
+version. New backward-compatible features use a minor version; fixes and
+documentation use a patch version when released.
+
+For questions, open a GitHub issue or discussion. Report security concerns
+privately as described in [SECURITY.md](SECURITY.md).

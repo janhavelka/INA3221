@@ -6,43 +6,131 @@ native ESP-IDF.
 
 Library version: `v3.0.0`
 
-The next major API separates transport ownership from the complete device
-profile and provides one cooperative, deadline-aware job engine. The library
-does not own or configure the I2C bus, create a task, take a lock, retry a
-transfer, recover a bus, or allocate in steady operation.
+The v3 production API separates application-owned I2C transport from a complete
+device profile and executes hardware work through one cooperative,
+deadline-aware job engine. The core does not own or configure the bus, create a
+task, take a lock, retry a transfer, recover a bus, log, or allocate in steady
+operation.
+
+## Features
+
+- Three independently enabled shunt/bus-voltage channels.
+- All INA3221 averaging settings, conversion times, triggered/continuous modes,
+  software reset, identity checks, and power-down behavior.
+- Per-channel critical and warning limits, shunt summation, power-valid window,
+  latch policy, CVRF readiness, and retained destructive alert evidence.
+- Correct signed 13-bit decoding with 40 µV shunt and 8 mV bus LSBs.
+- Host-side fixed-unit current and power calculation with explicit shunt
+  resistance and current-direction calibration.
+- Strict per-poll transfer budgets, absolute deadlines, take-once results,
+  configuration certainty, and passive transport-health telemetry.
+- No Arduino or ESP-IDF headers in public/core library code; application
+  adapters provide the actual I2C callbacks.
+- Bounded synchronous compatibility API for standalone bring-up and diagnostics.
+
+The library requires C++17. This repository validates ESP32-S2 and ESP32-S3;
+other targets are not claimed by the package metadata.
+
+## Hardware and address selection
+
+The library never selects SDA/SCL pins, bus frequency, pull-ups, or controller
+timeouts. Configure those in the application. `DeviceProfile::i2cAddress` is a
+seven-bit address determined by the INA3221 A0 connection:
+
+| A0 connection | Address |
+|---|---:|
+| GND | `0x40` |
+| VS | `0x41` |
+| SDA | `0x42` |
+| SCL | `0x43` |
+
+Use Kelvin connections at each shunt and choose a resistance/power rating that
+keeps the expected shunt voltage inside the device range. The resistance in the
+profile is host-side calibration; it does not program an INA3221 calibration
+register.
 
 ## Production API
 
-Use `TransportConfig` plus `DeviceProfile` for new integrations.
+Use `TransportConfig`, `DeviceProfile`, and the cooperative owner methods for
+new integrations.
 
-- `TransportConfig` is a non-owning callback contract. Each callback represents
-  exactly one synchronous physical attempt, must transfer the exact lengths,
-  must honor its supplied timeout, and must not retry, recover, reconfigure the
-  bus, interleave another client, or re-enter the driver.
-- `DeviceProfile` is the complete desired volatile state: address, channel
-  mask, averaging, conversion times, mode, fixed-unit shunt calibration and
-  direction, alert thresholds, summation selection, power-valid window, and
-  latch policy.
-- `bind()` validates and stores both contracts with zero I2C. `unbind()` is
-  bus-silent and discards active/pending/cached state. Use `startPowerDown()` and
-  finish its result before `unbind()` when the device must be powered down.
-- `startInitialize()`, `startApplyProfile()`, and `startReconcile()` use the
-  same staged read/write/verify engine. Initialization additionally verifies
-  Manufacturer ID `0x5449` and Die ID `0x3220`.
-- `pollJob(PollContext)` admits no more than `maxTransfers` callbacks. A normal
-  shared-bus owner should use `maxTransfers = 1`.
-- `cancelJob()` performs no I2C. It discards partial sample work and publishes a
-  terminal cancellation result. `takeJobResult()` consumes that result exactly
-  once; a pending result blocks admission of another job.
+### Transport contract
 
-Request IDs must be nonzero. Reuse an ID only after its previous terminal
-result has been taken. A start call returning `IN_PROGRESS` means admission,
-not completion.
+`TransportConfig` is non-owning. Both callbacks are required, and
+`defaultTransferTimeoutMs` must be non-zero. Each callback represents exactly
+one synchronous physical attempt and must:
+
+- transfer the exact requested lengths before returning `OK`;
+- return no later than the supplied timeout;
+- map backend failures to `Status` without leaking framework-specific types;
+- avoid hidden retry, recovery, bus reconfiguration, or interleaving; and
+- avoid calling back into the same `INA3221` object.
+
+`nowMs` and `cooperativeYield` exist for legacy blocking helpers. The production
+job API receives 64-bit monotonic time directly through `PollContext`.
+
+### Complete device profile
+
+`DeviceProfile` is the desired state of every managed volatile register plus
+host calibration. A default-constructed profile intentionally has zero shunt
+resistance: set `resistanceMicroOhms` for every enabled channel before `bind()`.
+
+Important validation rules include:
+
+- address must be `0x40` through `0x43`;
+- channel masks may use only bits 0 through 2;
+- every enabled channel needs a non-zero shunt calibration;
+- a non-power-down mode needs at least one enabled channel;
+- summation channels must be a subset of enabled channels;
+- alert limits must fit their register formats; and
+- the power-valid lower limit must be below the upper limit, with both no
+  greater than 26,000 mV.
+
+The initial defaults are:
+
+| Profile field | Default |
+|---|---|
+| Enabled channels | CH1, CH2, CH3 |
+| Averaging | 1 sample |
+| Bus/shunt conversion time | 1.1 ms each |
+| Mode | Continuous shunt + bus |
+| Shunt resistance | 0 µΩ; must be configured for enabled channels |
+| Critical/warning limits | 163,800 µV per channel |
+| Summation channels | None |
+| Shunt-sum limit | 655,320 µV |
+| Power-valid window | 9,000–10,000 mV |
+| Warning/critical latch | Disabled |
+
+### Job lifecycle
+
+The normal lifecycle is:
+
+1. `bind()` validates and stores the transport/profile without I2C.
+2. `startInitialize()` admits identity verification and full profile
+   reconciliation.
+3. The bus owner calls `pollJob()` from one serialized, non-ISR context.
+4. Cache-only `getJobProgress()` reports the current stage and whether a result
+   is pending.
+5. `takeJobResult()` consumes every terminal result exactly once.
+6. Start sample, profile, reconcile, or power-down jobs under the same policy.
+7. Finish `startPowerDown()` when required, then call bus-silent `unbind()`.
+
+Every start call requires a non-zero request ID and a non-zero absolute deadline
+in the same monotonic millisecond domain as `PollContext::nowMs`. `IN_PROGRESS`
+means admission, not completion. A pending result blocks admission of another
+job, including after cancellation or failure.
+
+`PollContext::deadlineMs` may be zero to use the job deadline or may shorten it.
+`transferTimeoutMs` may be zero to use the configured default or may shorten it.
+Set `maxTransfers` to at least one to make progress; a shared-bus owner normally
+uses exactly one.
 
 ### Minimal owner loop
 
-The transport functions below are application adapters; see the Arduino and
-native ESP-IDF examples for complete single-attempt implementations.
+The transport functions below are application adapters. See the complete
+<a href="examples/01_basic_bringup_cli/README.md">Arduino example</a> and
+<a href="examples/esp_idf/basic/README.md">native ESP-IDF example</a> for real
+single-attempt implementations.
 
 ```cpp
 #include "INA3221/INA3221.h"
@@ -50,95 +138,119 @@ native ESP-IDF examples for complete single-attempt implementations.
 INA3221::INA3221 monitor;
 uint32_t nextRequestId = 1;
 
-INA3221::TransportConfig transportConfig() {
-  INA3221::TransportConfig t{};
-  t.i2cWrite = appI2cWrite;          // exactly one bounded attempt
-  t.i2cWriteRead = appI2cWriteRead;  // exactly one bounded attempt
-  t.i2cUser = &applicationBus;
-  t.defaultTransferTimeoutMs = 20;
-  t.offlineThreshold = 5;            // passive telemetry only
-  return t;
+INA3221::TransportConfig makeTransport() {
+  INA3221::TransportConfig transport{};
+  transport.i2cWrite = appI2cWrite;
+  transport.i2cWriteRead = appI2cWriteRead;
+  transport.i2cUser = &applicationBus;
+  transport.defaultTransferTimeoutMs = 20;
+  transport.offlineThreshold = 5;  // Passive telemetry only.
+  return transport;
 }
 
-INA3221::DeviceProfile deviceProfile() {
-  INA3221::DeviceProfile p{};
-  p.i2cAddress = 0x40;
-  p.enabledChannels = INA3221::ALL_CHANNELS;
-  p.mode = INA3221::Mode::SHUNT_BUS_TRIG;
-  for (auto& shunt : p.shunts) {
-    shunt.resistanceMicroOhms = 100000;  // 100 milliohms
+INA3221::DeviceProfile makeProfile() {
+  INA3221::DeviceProfile profile{};
+  profile.i2cAddress = 0x40;
+  profile.enabledChannels = INA3221::ALL_CHANNELS;
+  profile.mode = INA3221::Mode::SHUNT_BUS_TRIG;
+  for (auto& shunt : profile.shunts) {
+    shunt.resistanceMicroOhms = 100000;  // 100 mΩ.
   }
-  return p;
+  return profile;
 }
 
 void start(uint64_t nowMs) {
-  auto status = monitor.bind(transportConfig(), deviceProfile()); // no I2C
+  INA3221::Status status = monitor.bind(makeTransport(), makeProfile());
   if (!status.ok()) return;
+
   status = monitor.startInitialize(nextRequestId++, nowMs + 1000);
-  // Require status.inProgress(); completion arrives through JobResult.
+  if (!status.inProgress()) {
+    monitor.unbind();
+  }
 }
 
-void service(uint64_t nowMs, uint64_t ownerDeadlineMs) {
-  INA3221::PollContext poll{};
-  poll.nowMs = nowMs;
-  poll.deadlineMs = ownerDeadlineMs; // effective deadline is the earlier limit
-  poll.transferTimeoutMs = 20;
-  poll.maxTransfers = 1;
-  (void)monitor.pollJob(poll);
-
+void service(uint64_t nowMs) {
   INA3221::JobProgress progress{};
-  (void)monitor.getJobProgress(progress); // cache-only
+  (void)monitor.getJobProgress(progress);
+
+  if (!progress.resultPending && progress.state == INA3221::JobTerminalState::ACTIVE) {
+    INA3221::PollContext poll{};
+    poll.nowMs = nowMs;
+    poll.deadlineMs = progress.deadlineMs;
+    poll.transferTimeoutMs = 20;
+    poll.maxTransfers = 1;
+    (void)monitor.pollJob(poll);
+    (void)monitor.getJobProgress(progress);
+  }
+
   if (!progress.resultPending) return;
 
   INA3221::JobResult result{};
-  if (!monitor.takeJobResult(result).ok()) return; // exactly once
+  if (!monitor.takeJobResult(result).ok()) return;
   if (!result.status.ok()) {
     // Inspect result.state and result.hardwareEffect before retry/reconcile.
     return;
   }
   if (result.sampleValid) {
-    consume(result.sample); // fixed-size, fixed-unit, provenance-bearing batch
+    consume(result.sample);
   }
 }
 ```
 
-After successful initialization, start an atomic triggered acquisition with
-`startTriggeredSample(SHUNT_BUS_TRIG, id, deadline)`, or a mixed-age continuous
-read with `startContinuousSample(id, deadline, consumeAlertSnapshot)`.
+After successful initialization, use
+`startTriggeredSample(Mode::SHUNT_BUS_TRIG, id, deadline)` for an atomic
+triggered batch, or `startContinuousSample(id, deadline, consumeAlerts)` for a
+mixed-age continuous read.
 
-## Result, certainty, and alert contracts
+## Samples, units, and provenance
 
-`SampleBatch` contains exactly three fixed slots, enabled/valid channel masks,
-per-quantity validity, integer microvolts/millivolts/milliamps/milliwatts, an
-alert snapshot, coherence (`TRIGGERED_ATOMIC` or `CONTINUOUS_MIXED_AGE`), capture
-uptime, profile generation, and request ID. Partial work is never exposed as a
-last-good sample. `peekLastSample()` is cache-only.
+`SampleBatch` contains exactly three fixed channel slots. Always inspect
+`enabledChannels`, `validChannels`, and each reading's `validQuantities`; zero is
+a valid measurement and is not itself a validity signal.
 
-Every terminal `JobResult` reports its job kind, request ID, terminal state,
-transport count, `Status`, profile generation, and hardware effect
-(`NONE`, `CONFIRMED`, `PARTIAL`, or `INDETERMINATE`). Ambiguous write failures
-are not reported as clean rollback. Inspect `measurementConfigState()` and
-`alertConfigState()`:
+| Field | Unit | Source |
+|---|---|---|
+| `shuntMicroVolts` | µV | Signed 13-bit shunt register |
+| `busMilliVolts` | mV | Bus register; physical range checked through validity |
+| `currentMilliAmps` | mA | Shunt voltage / calibrated resistance |
+| `powerMilliWatts` | mW | Bus voltage × current |
 
-- `APPLIED`: the managed profile was read back and verified.
-- `DIRTY`: a confirmed side effect changed a managed register and reconciliation
-  is required.
-- `UNKNOWN`: hardware acceptance is ambiguous. Do not admit measurement work;
-  run `startReconcile()` or a full `startInitialize()` under owner policy.
+Each committed batch also carries coherence, capture uptime, request ID, and
+profile generation. Triggered samples use `TRIGGERED_ATOMIC`; continuous reads
+use `CONTINUOUS_MIXED_AGE` because channel registers are read sequentially.
+Partial work is never published as the last-good sample, and `peekLastSample()`
+performs no I2C.
 
-Mask/Enable reads are destructive for CVRF and latched alerts. Every library
-read of that register first retains destructive event bits. `peekAlertEvents()`
-is non-consuming; `takeAlertEvents()` clears only the retained event bits after
-copying them. The current raw value, writable bits, PVF, TCF, and CVRF remain
-explicit in `AlertSnapshot`. If a failed transport attempt may have reached the
-destructive read, `evidenceUncertain` remains set until the application takes
-and acknowledges the retained alert record.
+## Alert evidence and configuration certainty
+
+Reading Mask/Enable is destructive for CVRF and latched CF/SF/WF events. Every
+library read retains those event bits before exposing the current value.
+`peekAlertEvents()` is non-consuming; `takeAlertEvents()` acknowledges the
+retained events after copying them. `AlertSnapshot` separately exposes the raw
+read, writable SCC/WEN/CEN bits, condition-level PVF, sticky TCF observation,
+CVRF, and `evidenceUncertain`.
+
+If a failed or short transport attempt may already have reached a destructive
+read, `evidenceUncertain` remains set until the application takes the retained
+record. The library never fabricates alert evidence that could have been lost.
+
+Every terminal `JobResult` includes its `HardwareEffect`. Inspect that together
+with `measurementConfigState()` and `alertConfigState()`:
+
+| State | Meaning | Owner action |
+|---|---|---|
+| `APPLIED` | Desired managed state was read back and verified | Measurement may be admitted |
+| `DIRTY` | A confirmed side effect changed managed state | Reconcile before measurement |
+| `UNKNOWN` | Hardware acceptance or retained state is ambiguous | Reconcile or fully initialize |
+
+`HardwareEffect::PARTIAL` and `INDETERMINATE` deliberately avoid claiming
+rollback after confirmed or ambiguous writes.
 
 ## Deterministic bounds
 
-`maximumJobTransfers()` returns the successful-path ceiling for a validated
-profile when triggered CVRF is high on its first eligible check. With all three
-channels enabled:
+`maximumJobTransfers()` returns the successful-path ceiling for a valid profile
+when triggered CVRF is high on its first eligible check. With all three channels
+enabled:
 
 | Job | Maximum callbacks |
 |---|---:|
@@ -149,36 +261,29 @@ channels enabled:
 | `CONTINUOUS_SAMPLE` | 7 |
 | `POWER_DOWN` | 3 |
 
-For `N` enabled channels, triggered sampling is bounded by `2 + 2N` and
-continuous sampling by `1 + 2N`. Profile jobs are conservative read, optional
-write, and readback-verify bounds; already-matching registers use fewer calls.
-Power-down is read, optional write, and verify.
+For `N` enabled channels, triggered sampling is bounded by `2 + 2N` on this
+success path and continuous sampling by `1 + 2N`. Profile jobs conservatively
+count read, optional write, and readback verification for every managed
+register; already-matching profiles use fewer calls.
 
 If triggered CVRF is low at the first eligible check, the engine retains the
-observed alert bits, waits for a strictly later caller timestamp, then arms an
-additional 1 ms wait before reading Mask/Enable again. Therefore the fault-path
-read count is bounded by the number of eligible owner polls before the absolute
-deadline, not by the 8-callback success figure. Every owner job requires a
-finite absolute deadline; a poll deadline may only shorten it. Poll cadence and
-the deadline are application policy and make the retry ceiling calculable for
-that owner.
+observed alert bits, waits for a strictly later caller timestamp, and then arms
+an additional 1 ms wait before reading Mask/Enable again. The fault-path read
+count is therefore bounded by the absolute deadline and owner poll cadence, not
+by the eight-callback success figure.
 
-At `maxTransfers = 1`, one `pollJob()` call performs at most one synchronous
-callback, so its transport blocking contribution is at most the smaller of the
-poll timeout, configured default timeout, and remaining effective deadline,
-plus bounded local CPU work. For a larger budget, the driver divides the
-remaining effective deadline by `maxTransfers` and caps every admitted callback
-to that per-transfer share. The sum of callback timeout bounds in one poll
-therefore cannot exceed the remaining deadline. If the share rounds to zero,
-the poll performs no I2C and terminalizes as expired. Deadline expiration is
-observable and produces a take-once terminal result.
+With `maxTransfers = 1`, one `pollJob()` call performs at most one synchronous
+callback. For a larger budget, the driver divides the remaining effective
+deadline across the requested transfers and caps each callback timeout. If the
+share rounds to zero, the job terminalizes with `DEADLINE_EXPIRED` without
+starting another transfer.
 
 ### Conversion timing
 
-`conversionTiming()` exposes datasheet typical and library scheduling maximum
-values per conversion:
+`conversionTiming()` exposes datasheet-typical and driver scheduling-maximum
+values for one conversion:
 
-| Setting | Typical (us) | Maximum (us) |
+| Setting | Typical (µs) | Maximum (µs) |
 |---|---:|---:|
 | `CT_140US` | 140 | 154 |
 | `CT_204US` | 204 | 224 |
@@ -189,95 +294,122 @@ values per conversion:
 | `CT_4156US` | 4,156 | 4,572 |
 | `CT_8244US` | 8,244 | 9,068 |
 
-`maximumCycleTimeUs()` multiplies the relevant maximum shunt/bus times by the
-enabled-channel count and averaging sample count. After the trigger callback
-returns, a triggered job requires a subsequent poll with a strictly later
-timestamp; that timestamp becomes the conversion-wait origin. The job then
-waits the maximum cycle plus a fixed 100 us wake margin, rounded up to
-milliseconds, before the first CVRF/alert read. This avoids treating the time
-captured before a synchronous callback as the conversion start. Before writing
-the trigger, the driver bus-silently rejects a deadline that cannot contain the
-one-tick origin advance, maximum conversion wait, and successful-path callback
-bounds. For the largest three-channel, shunt+bus, 1024-sample profile, the
-typical cycle is 50,651,136 us and the scheduling maximum is 55,713,792 us
-before the 100 us margin; a 1000 ms owner deadline is therefore rejected before
-I2C.
+`maximumCycleTimeUs()` multiplies the applicable shunt/bus maximum by enabled
+channel count and averaging sample count. After the trigger callback returns, a
+strictly later poll timestamp becomes the conversion-wait origin. The job waits
+the maximum cycle plus a fixed 100 µs wake margin, rounded up to milliseconds,
+before its first CVRF/alert read.
 
-Rare-operation latency is not applicable: INA3221 has no EEPROM/NVM and all
-registers are volatile. There are no hidden erase, program, or persistence
-waits.
+Before writing the trigger, the driver rejects a deadline that cannot contain
+the one-tick origin advance, maximum conversion wait, and successful-path
+callback bounds. For the largest three-channel shunt+bus, 1024-sample profile,
+the typical cycle is 50,651,136 µs and the scheduling maximum is 55,713,792 µs
+before the wake margin. A 1,000 ms deadline is rejected before I2C.
+
+INA3221 registers are volatile and the device has no EEPROM/NVM. There are no
+hidden erase, program, or persistence waits.
+
+## Error and health model
+
+All fallible APIs return `Status` with a stable `Err`, an optional numeric
+detail, and a static-lifetime message. Transport adapters should preserve a
+useful backend code in `detail`. Validation and precondition failures do not
+count as transport-health failures.
+
+`READY`, `DEGRADED`, and `OFFLINE` are passive diagnostics only. `OFFLINE` never
+suppresses an admitted transfer; the application owns admission, backoff,
+retry, and recovery policy. A tracked success returns health to `READY` and
+clears consecutive failures. Totals saturate and remain object-lifetime
+diagnostics across bind/unbind cycles.
+
+Do not automatically retry `PARTIAL` or `INDETERMINATE` writes as though no
+hardware change occurred. Take the result, inspect certainty/effect, and run
+`startReconcile()` or `startInitialize()` under application policy.
 
 ## Ownership and concurrency
 
-- One application context owns the object and its bus admission. Serialize all
-  methods and all callbacks in that same context.
-- The class is non-copyable and non-movable, non-reentrant, and not ISR-safe.
+- One application context owns each object and its bus admission.
+- Serialize every method, cache access, and transport callback in that context.
+- The class is non-copyable, non-movable, non-reentrant, and not ISR-safe.
 - Do not call any driver method from a transport callback.
 - The driver owns no I2C instance, task, mutex, queue, retry/recovery policy,
   scheduling policy, or deadline renewal.
 - No public method is safe to race with `pollJob()`, `cancelJob()`, `unbind()`,
-  or result/cache access. External serialization is mandatory.
-- Health counters and `READY`/`DEGRADED`/`OFFLINE` are passive diagnostics.
-  `OFFLINE` never gates or silently suppresses an admitted transfer. The bus
-  owner decides admission, backoff, retry, and recovery.
-- Failure/success totals are object-lifetime diagnostics and intentionally
-  survive `bind()`/`unbind()`. A successful initialization always restores the
-  `READY`/zero-consecutive-failure invariant; initialization transfers are not
-  counted as initialized steady-state successes.
-- Core library paths do not log, call Arduino/ESP-IDF APIs, or allocate heap in
-  steady operation.
+  or result/cache access.
 
 ## Legacy synchronous compatibility
 
 `Config`, `begin()`, direct getters/setters, raw register access,
 `readBlocking()`, `probe()`, and `recover()` remain bounded compatibility tools
-for standalone bring-up and diagnostics. They are not the recommended shared
-I2C-owner steady path.
+for standalone bring-up and diagnostics. They are not the recommended
+shared-I2C-owner steady path.
 
 | Compatibility operation | Worst-case transfer behavior |
 |---|---|
 | `begin()` / `recover()` | Up to 35 synchronous callbacks in one call |
-| `probe()` | Two synchronous identity reads; intentionally does not update health |
-| Direct raw/scaled read or direct setter | Normally one synchronous callback; `readChannel()` and `readPower()` use two |
-| `powerDown()` | Up to three synchronous callbacks (read/write/verify) |
-| `readBlocking()` | Internally polls with budget one; up to 8 callbacks for three-channel triggered sampling or 7 for continuous sampling, plus bounded cooperative polls until its timeout |
-| Legacy staged APIs | Caller-supplied instruction budget; wrappers share the single owner engine and arm a derived finite deadline on first poll |
+| `probe()` | Two synchronous raw identity reads; no health update |
+| Direct raw/scaled read or setter | Normally one callback; `readChannel()` and `readPower()` use two |
+| `powerDown()` | Up to three callbacks for read/write/verify |
+| `readBlocking()` | Budget-one internal polling plus bounded cooperative polls until timeout |
+| Legacy staged APIs | Caller-supplied instruction budget and a derived finite deadline |
 
-Each callback still has the configured transfer timeout. A multi-transfer
-synchronous call can therefore block for the sum of its callback bounds plus
-local work. Compatibility calls reject an active owner job; new jobs reject a
-legacy conversion in progress. Direct diagnostic writes can make profile
-certainty `DIRTY` or `UNKNOWN`. Do not mix compatibility mutation with the
-owner-safe engine without explicit serialization and reconciliation.
-The staged compatibility poll methods extend their monotonic 32-bit time input
-through wrap for the active job; callers must poll at least once per 32-bit
-clock period. `readBlocking()` uses wrap-safe unsigned elapsed time. Production
-code should still use the 64-bit `PollContext` owner API and its explicit
-deadline.
+Each callback still has its configured timeout, so a multi-transfer synchronous
+call can block for the sum of callback bounds plus local work. Compatibility
+calls reject an active production job, and production jobs reject a legacy
+conversion in progress. Diagnostic writes can make profile certainty `DIRTY`
+or `UNKNOWN`; reconcile before returning to the production engine.
 
-## Installation and examples
+The staged compatibility methods extend their 32-bit monotonic time input
+through one wrap for the active job; callers must poll at least once per 32-bit
+clock period. `readBlocking()` uses wrap-safe elapsed time. Prefer the explicit
+64-bit production API for new code.
 
-PlatformIO:
+## Installation and integration
+
+### PlatformIO / Arduino
+
+Pin a release tag:
 
 ```ini
 lib_deps =
   https://github.com/janhavelka/INA3221.git#v3.0.0
 ```
 
-For ESP-IDF, add this repository as a component through
-`EXTRA_COMPONENT_DIRS` or component-manager metadata. The core has no framework
-headers. See:
+Then include the public umbrella header:
 
-- `examples/01_basic_bringup_cli/` for Arduino/PlatformIO. Startup uses
-  zero-I2C bind, budget-one initialization, a triggered sample, progress, and
-  take-once result handling. `job sample`, `job cancel`, and `job` expose the
-  cooperative flow while the existing diagnostic CLI remains available.
-- `examples/esp_idf/basic/` for native `app_main`,
-  `driver/i2c_master.h`, `esp_timer`, FreeRTOS waits, and fixed C buffers. It
-  uses the same owner-safe flow without Arduino facades.
-- `examples/common/` is Arduino example glue, not library code.
+```cpp
+#include "INA3221/INA3221.h"
+```
+
+The repository's Arduino example uses project-local glue under
+`examples/common/`; that directory is not part of the library API. Adjust
+`BoardConfig.h` for the actual board instead of copying its reference pins into
+library code.
+
+### Native ESP-IDF
+
+Add this repository as a component through `EXTRA_COMPONENT_DIRS`, a project
+component checkout, or equivalent component-manager integration. The root
+`CMakeLists.txt` exports `include/`, compiles `src/INA3221.cpp`, and requests
+C++17. The native example uses ESP-IDF 6.x's `driver/i2c_master.h` API.
+
+See the [native ESP-IDF integration guide](docs/IDF_PORT.md) and
+[implementation status](docs/IDF_PORT_IMPLEMENTATION.md).
+
+## Examples
+
+- <a href="examples/01_basic_bringup_cli/README.md">Arduino/PlatformIO bring-up CLI</a>:
+  budget-one initialization, triggered samples, progress/cancel/result flow,
+  scanning, settings, alerts, raw diagnostics, stress, and self-test commands.
+- <a href="examples/esp_idf/basic/README.md">Native ESP-IDF application</a>: native
+  `app_main`, `driver/i2c_master.h`, `esp_timer`, FreeRTOS waits, fixed C
+  buffers, and the same owner-safe workflow without Arduino facades.
+- [`examples/common/`](examples/common/): Arduino-example glue only, not
+  installed library code.
 
 ## Validation
+
+Run repository checks from the root:
 
 ```bash
 python tools/check_cli_contract.py
@@ -286,6 +418,7 @@ python tools/check_core_timing_guard.py
 python tools/check_metadata_consistency.py
 python scripts/generate_version.py check
 python tools/check_strict_compile.py
+doxygen Doxyfile
 python -m platformio test -e native
 python -m platformio run -e esp32s3dev
 python -m platformio run -e esp32s2dev
@@ -293,17 +426,30 @@ idf.py -C examples/esp_idf/basic set-target esp32s3 build
 idf.py -C examples/esp_idf/basic set-target esp32s2 build
 ```
 
-CI compiles the native tests, both Arduino targets, and both native ESP-IDF
-targets. A local static contract pass is not an ESP-IDF compile; when `idf.py`
-is unavailable, report that build as not run rather than inferring success.
+CI compiles native tests, both Arduino targets, and both native ESP-IDF targets.
+A static source-contract check is not an ESP-IDF compile. When `idf.py` is not
+available, report the corresponding local build as not run.
 
-## Documentation
+Doxygen HTML is generated at `docs/doxygen/html/index.html` and is intentionally
+ignored by Git. Public headers are checked for undocumented symbols and missing
+parameter documentation with warnings treated as errors.
 
-- `CHANGELOG.md` - release history
-- `docs/IDF_PORT.md` - native ESP-IDF integration and ownership contract
-- `docs/IDF_PORT_IMPLEMENTATION.md` - implemented files and validation scope
-- `docs/TUNNELMONITOR_NODE_SUITABILITY_AUDIT.md` - host integration audit
+## Documentation map
+
+- [Changelog](CHANGELOG.md) — release history and unreleased changes.
+- [Public API header](include/INA3221/INA3221.h) — authoritative Doxygen contract.
+- [Native ESP-IDF integration](docs/IDF_PORT.md) — bus ownership and adapter rules.
+- [Native ESP-IDF implementation status](docs/IDF_PORT_IMPLEMENTATION.md) —
+  implemented boundary and evidence levels.
+- `INA3221_triple_power_monitor_implementation_manual.md` — chip/datasheet
+  reference, not the library API contract.
+- `docs/extracted-md/00_document_inventory.md` — source and extraction index for
+  bundled reference material.
+- `docs/TUNNELMONITOR_NODE_SUITABILITY_AUDIT.md` — historical v2 findings
+  followed by the v3 superseding disposition.
+- `docs/reports/hil-validation-summary-20260701.md` — retained v2 hardware
+  evidence and its explicit limitations.
 
 ## License
 
-MIT License. See `LICENSE`.
+MIT License. See [LICENSE](LICENSE).

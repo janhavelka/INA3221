@@ -1,6 +1,8 @@
 # Native ESP-IDF implementation status
 
-Last updated: 2026-07-19
+Last updated: 2026-07-22
+
+[Back to README](../README.md) · [Integration guide](IDF_PORT.md)
 
 ## Implemented boundary
 
@@ -46,9 +48,22 @@ python tools/check_core_timing_guard.py
 python tools/check_metadata_consistency.py
 ```
 
+Local validation for the 2026-07-22 documentation pass:
+
+| Check | Result |
+|---|---|
+| CLI, IDF-source, timing, metadata, and generated-version contracts | PASS |
+| Strict host compile | PASS |
+| Doxygen with warnings as errors and complete public-symbol/parameter checks | PASS |
+| Native PlatformIO tests | PASS — 115/115 |
+| Arduino PlatformIO ESP32-S3 build | PASS |
+| Arduino PlatformIO ESP32-S2 build | PASS |
+| Native ESP-IDF ESP32-S3 build | NOT RUN — `idf.py` unavailable |
+| Native ESP-IDF ESP32-S2 build | NOT RUN — `idf.py` unavailable |
+| Hardware-in-the-loop validation | NOT RUN |
+
 This development environment did not provide local `idf.py`; local ESP32-S3
-and ESP32-S2 IDF builds must therefore be reported as `NOT RUN` unless a later
-real transcript is attached.
+and ESP32-S2 IDF builds are therefore not claimed by this validation record.
 
 CI is configured to run the actual compiler and linker in the official
 `espressif/idf:v6.0.1` container, first for ESP32-S3 and then ESP32-S2. A green

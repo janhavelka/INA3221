@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Reorganized and expanded the README with hardware/address guidance, profile
+  validation/defaults, the complete cooperative job lifecycle, fixed-unit
+  sample semantics, alert/configuration certainty, error recovery, installation,
+  examples, generated-documentation instructions, and a documentation map.
+- Added focused Arduino/PlatformIO and native ESP-IDF example runbooks covering
+  board configuration, build/flash commands, demonstrated ownership flow, CLI
+  entry points, and the boundary between build and HIL evidence.
+- Completed public-header Doxygen coverage for production and compatibility
+  APIs, data/result types, utility conversions, transport/profile fields,
+  register constants, and generated version macros.
+- Made Doxygen omit internal engineering/example implementation surfaces and
+  fail on undocumented public symbols or missing parameter documentation.
+- Updated the native ESP-IDF guide to describe v3 as the current production API.
+- Replaced stale contribution and security guidance with current validation,
+  release, disclosure, and supported-version policies.
+
+### Fixed
+
+- Removed stale documentation that referred to the released v3 API as a future
+  major version, claimed `0.1.x` was the supported release, and referenced a
+  nonexistent formatter configuration.
+
 ## [3.0.0] - 2026-07-19
 
 ### Added

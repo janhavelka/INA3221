@@ -1,4 +1,14 @@
-# INA3221 — Triple-Channel, High-Side Current and Power Monitor — Extraction
+# INA3221 Chip Implementation Manual
+
+This is a chip-level reference distilled from the bundled Texas Instruments
+datasheet and application notes. It documents INA3221 electrical behavior,
+registers, transactions, and source ambiguities; it is not the library API
+contract. For integration code, lifecycle rules, and error semantics, start
+with the [README](README.md) and the Doxygen comments in
+[`include/INA3221/`](include/INA3221/INA3221.h).
+
+Source page citations refer to the document revisions listed below. Statements
+explicitly labeled as inference or recommendation are not datasheet guarantees.
 
 ---
 

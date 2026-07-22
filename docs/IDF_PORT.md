@@ -1,6 +1,9 @@
 # Native ESP-IDF integration
 
-Last updated: 2026-07-19
+Last updated: 2026-07-22
+
+[Back to README](../README.md) ·
+[Implementation status](IDF_PORT_IMPLEMENTATION.md)
 
 The repository is an ESP-IDF component and its core remains framework-neutral.
 The production API is the same under Arduino and ESP-IDF: an application-owned
@@ -8,7 +11,7 @@ transport, a complete `DeviceProfile`, and a cooperative job engine. The native
 example targets ESP-IDF 6.0.1 and uses the new I2C master driver.
 
 Current release metadata is `3.0.0`; the owner-safe contracts documented here
-are the next major API. Release metadata is updated atomically by the release
+are the production API. Release metadata is updated atomically by the release
 owner, with `library.json` as the source of truth.
 
 ## Component boundary
