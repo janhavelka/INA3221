@@ -396,8 +396,7 @@ component checkout, or equivalent component-manager integration. The root
 `CMakeLists.txt` exports `include/`, compiles `src/INA3221.cpp`, and requests
 C++17. The native example uses ESP-IDF 6.x's `driver/i2c_master.h` API.
 
-See the [native ESP-IDF integration guide](docs/IDF_PORT.md) and
-[implementation status](docs/IDF_PORT_IMPLEMENTATION.md).
+See the [native ESP-IDF integration guide](docs/IDF_PORT.md).
 
 ## Examples
 
@@ -439,19 +438,15 @@ parameter documentation with warnings treated as errors.
 
 ## Documentation map
 
+- <a href="docs/README.md">Documentation index</a> — maintained guides and
+  bundled source material.
 - [Changelog](CHANGELOG.md) — release history and unreleased changes.
 - [Public API header](include/INA3221/INA3221.h) — authoritative Doxygen contract.
 - [Native ESP-IDF integration](docs/IDF_PORT.md) — bus ownership and adapter rules.
-- [Native ESP-IDF implementation status](docs/IDF_PORT_IMPLEMENTATION.md) —
-  implemented boundary and evidence levels.
-- `INA3221_triple_power_monitor_implementation_manual.md` — chip/datasheet
-  reference, not the library API contract.
+- <a href="docs/INA3221_IMPLEMENTATION_MANUAL.md">INA3221 chip implementation
+  manual</a> — chip/datasheet reference, not the library API contract.
 - `docs/extracted-md/00_document_inventory.md` — source and extraction index for
   bundled reference material.
-- `docs/TUNNELMONITOR_NODE_SUITABILITY_AUDIT.md` — historical v2 findings
-  followed by the v3 superseding disposition.
-- `docs/reports/hil-validation-summary-20260701.md` — retained v2 hardware
-  evidence and its explicit limitations.
 
 ## License
 

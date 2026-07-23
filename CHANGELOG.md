@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Consolidated maintained documentation under `docs/`, removed completed
+  audits, dated validation reports, and task prompts, and retained both raw and
+  Markdown datasheet extraction archives for future implementation work.
 - Expanded the hardware-validation runner across every operating mode,
   averaging and conversion-time value, all three channel configuration paths,
   alert-register write/readback/restore paths, and a readable identity register.

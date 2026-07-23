@@ -1,6 +1,6 @@
 # INA3221 compact documentation inventory
 
-This directory summarizes INA3221 Rev. C datasheet facts needed by the driver: three-channel measurement behavior, I2C address straps, SMBus transactions, 16-bit registers, reset values, alert flags, and shunt/bus scaling. The raw extraction archive remains in `docs/pdf-extracted-md/`.
+This directory summarizes INA3221 Rev. C datasheet facts needed by the driver: three-channel measurement behavior, I2C address straps, SMBus transactions, 16-bit registers, reset values, alert flags, and shunt/bus scaling. The full Markdown and plain-text extraction archives remain in `docs/pdf-extracted-md/` and `docs/pdf-extracted-txt/`.
 
 | File | Purpose |
 | --- | --- |
@@ -16,7 +16,7 @@ This directory summarizes INA3221 Rev. C datasheet facts needed by the driver: t
 
 ## Source documents
 
-| Source PDF | Raw extract | Pages used | Notes |
+| Source PDF | Full extracts | Pages used | Notes |
 | --- | --- | --- | --- |
-| `docs/INA3221_datasheet.pdf` | `docs/pdf-extracted-md/INA3221_datasheet.md` | 1, 3-7, 10-24, 26-36 | Primary source for compact driver notes. |
-| Supplemental current-sensing notes | `docs/pdf-extracted-md/*.md` except the datasheet | Not used for register facts | Background current-sensing material only; no INA3221 register defaults or I2C command facts were taken from these notes. |
+| `docs/INA3221_datasheet.pdf` | `docs/pdf-extracted-md/INA3221_datasheet.md` and `docs/pdf-extracted-txt/datasheet_INA3221.txt` | 1, 3-7, 10-24, 26-36 | Primary source for compact driver notes. |
+| Supplemental current-sensing notes | `docs/pdf-extracted-md/*` and `docs/pdf-extracted-txt/*` except the datasheet | Not used for register facts | Background current-sensing material only; no INA3221 register defaults or I2C command facts were taken from these notes. |
