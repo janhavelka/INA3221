@@ -2,8 +2,8 @@
 # Generated and maintained for unified API documentation.
 
 PROJECT_NAME           = "INA3221"
-PROJECT_NUMBER         = "2.0.0"
-PROJECT_BRIEF          = "INA3221 triple-channel power monitor library API documentation for release 2.0.0"
+PROJECT_NUMBER         = "3.0.0"
+PROJECT_BRIEF          = "INA3221 triple-channel power monitor library API documentation for release 3.0.0"
 OUTPUT_DIRECTORY       = docs/doxygen
 CREATE_SUBDIRS         = NO
 ALLOW_UNICODE_NAMES    = NO
@@ -16,7 +16,7 @@ BUILTIN_STL_SUPPORT    = YES
 JAVADOC_AUTOBRIEF      = YES
 MULTILINE_CPP_IS_BRIEF = YES
 
-EXTRACT_ALL            = YES
+EXTRACT_ALL            = NO
 EXTRACT_PRIVATE        = NO
 EXTRACT_STATIC         = YES
 EXTRACT_LOCAL_CLASSES  = YES
@@ -31,10 +31,10 @@ REFERENCED_BY_RELATION = YES
 REFERENCES_RELATION    = YES
 STRIP_CODE_COMMENTS    = NO
 
-INPUT                  = README.md CHANGELOG.md AGENTS.md CONTRIBUTING.md include docs/IDF_PORT.md docs/IDF_PORT_IMPLEMENTATION.md examples/01_basic_bringup_cli examples/esp_idf/basic/main
+INPUT                  = README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md include docs/README.md docs/IDF_PORT.md docs/HIL.md examples/01_basic_bringup_cli/README.md examples/esp_idf/basic/README.md
 FILE_PATTERNS          = *.h *.md
 RECURSIVE              = YES
-EXCLUDE_PATTERNS       = */.pio/* */.git/* */test/* */docs/doxygen/* */docs/extracted-md/* */docs/pdf-extracted-md/* */docs/_pdf_extracts/*
+EXCLUDE_PATTERNS       = */.pio/* */.git/* */test/* */docs/doxygen/*
 EXAMPLE_PATH           = examples/01_basic_bringup_cli examples/esp_idf/basic/main
 
 USE_MDFILE_AS_MAINPAGE = README.md
@@ -51,8 +51,8 @@ GENERATE_XML           = NO
 GENERATE_RTF           = NO
 GENERATE_MAN           = NO
 
-WARN_IF_UNDOCUMENTED   = NO
-WARN_NO_PARAMDOC       = NO
+WARN_IF_UNDOCUMENTED   = YES
+WARN_NO_PARAMDOC       = YES
 WARN_IF_DOC_ERROR      = YES
-WARN_AS_ERROR          = NO
+WARN_AS_ERROR          = YES
 QUIET                  = YES

@@ -38,3 +38,4 @@ wifi_credentials.h
 *.tmp
 *.bak
 *.log
+*.transcript.txt

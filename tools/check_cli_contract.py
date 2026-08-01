@@ -13,11 +13,7 @@ REQUIRED_COMMON = [
     "Log.h",
     "I2cTransport.h",
     "I2cScanner.h",
-    "TransportAdapter.h",
-    "BusDiag.h",
-    "CliShell.h",
     "CliStyle.h",
-    "HealthView.h",
 ]
 
 MANDATORY_COMMANDS = ["help", "scan", "probe", "recover", "drv", "read", "verbose", "stress"]
@@ -56,6 +52,12 @@ def main() -> int:
         ensure_exists(common_dir / name, f"common helper {name}")
 
     text = bringup_main.read_text(encoding="utf-8", errors="replace")
+    for token in (
+        "profile.mode = INA3221::Mode::SHUNT_BUS_TRIG;",
+        "startTriggeredSample(",
+    ):
+        if token not in text:
+            fail(f"owner-safe triggered example token '{token}' missing")
 
     for cmd in MANDATORY_COMMANDS:
         if re.search(rf"\b{re.escape(cmd)}\b", text) is None:

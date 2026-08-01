@@ -18,17 +18,50 @@
 
 namespace transport {
 
+struct WireContext {
+  TwoWire* wire = nullptr;
+  uint32_t configuredTimeoutMs = 0;
+};
+
+inline WireContext& wireContext() {
+  static WireContext context{&Wire, 0};
+  return context;
+}
+
+inline INA3221::Status validateTransferContext(uint32_t timeoutMs, void* user,
+                                                TwoWire*& wire) {
+  WireContext* context = static_cast<WireContext*>(user);
+  if (context == nullptr || context->wire == nullptr) {
+    return INA3221::Status::Error(INA3221::Err::INVALID_CONFIG,
+                                  "Wire context is null");
+  }
+  if (timeoutMs == 0 || context->configuredTimeoutMs == 0) {
+    return INA3221::Status::Error(INA3221::Err::INVALID_PARAM,
+                                  "I2C timeout must be finite");
+  }
+  // TwoWire exposes a bus-level timeout, not a per-call timeout. The example
+  // configures it once in initWire(). Refuse a tighter callback deadline rather
+  // than silently exceeding it or reconfiguring the shared bus in a callback.
+  if (timeoutMs < context->configuredTimeoutMs) {
+    return INA3221::Status::Error(INA3221::Err::I2C_TIMEOUT,
+                                  "Requested timeout is below Wire timeout");
+  }
+  wire = context->wire;
+  return INA3221::Status::Ok();
+}
+
 /**
  * @brief Wire-based I2C write implementation.
  *
- * Pass to Config::i2cWrite, and pass &Wire (or custom TwoWire*) to i2cUser.
+ * Pass to Config::i2cWrite and use transport::configUser() as i2cUser.
+ * The callback context is a WireContext, not a bare TwoWire pointer.
  */
 inline INA3221::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
                                  uint32_t timeoutMs, void* user) {
-  TwoWire* wire = static_cast<TwoWire*>(user);
-  if (wire == nullptr) {
-    return INA3221::Status::Error(INA3221::Err::INVALID_CONFIG, "Wire instance is null");
-  }
+  TwoWire* wire = nullptr;
+  INA3221::Status contextStatus =
+      validateTransferContext(timeoutMs, user, wire);
+  if (!contextStatus.ok()) return contextStatus;
   if (!data || len == 0) {
     return INA3221::Status::Error(INA3221::Err::INVALID_PARAM, "Invalid I2C write params");
   }
@@ -36,9 +69,6 @@ inline INA3221::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
     return INA3221::Status::Error(INA3221::Err::INVALID_PARAM, "Write exceeds I2C buffer",
                                   static_cast<int32_t>(len));
   }
-
-  (void)timeoutMs;
-
   wire->beginTransmission(addr);
   size_t written = wire->write(data, len);
   if (written != len) {
@@ -68,15 +98,16 @@ inline INA3221::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
 /**
  * @brief Wire-based I2C write-read implementation.
  *
- * Pass to Config::i2cWriteRead, and pass &Wire (or custom TwoWire*) to i2cUser.
+ * Pass to Config::i2cWriteRead and use transport::configUser() as i2cUser.
+ * The callback context is a WireContext, not a bare TwoWire pointer.
  */
 inline INA3221::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txLen,
                                      uint8_t* rx, size_t rxLen, uint32_t timeoutMs,
                                      void* user) {
-  TwoWire* wire = static_cast<TwoWire*>(user);
-  if (wire == nullptr) {
-    return INA3221::Status::Error(INA3221::Err::INVALID_CONFIG, "Wire instance is null");
-  }
+  TwoWire* wire = nullptr;
+  INA3221::Status contextStatus =
+      validateTransferContext(timeoutMs, user, wire);
+  if (!contextStatus.ok()) return contextStatus;
   if ((txLen > 0 && tx == nullptr) || (rxLen > 0 && rx == nullptr)) {
     return INA3221::Status::Error(INA3221::Err::INVALID_PARAM, "Invalid I2C read params");
   }
@@ -86,9 +117,6 @@ inline INA3221::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txL
   if (txLen > 128 || rxLen > 128) {
     return INA3221::Status::Error(INA3221::Err::INVALID_PARAM, "I2C read exceeds buffer");
   }
-
-  (void)timeoutMs;
-
   wire->beginTransmission(addr);
   size_t written = wire->write(tx, txLen);
   if (written != txLen) {
@@ -134,9 +162,7 @@ inline INA3221::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txL
 /**
  * @brief Initialize Wire with default pins and frequency.
  */
-inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50,
-                     uint8_t address = 0x40) {
-  (void)address;
+inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50) {
 #if defined(ARDUINO_ARCH_ESP32)
   // Toggle SCL to release any stuck slave
   pinMode(scl, OUTPUT);
@@ -164,37 +190,9 @@ inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutM
 #else
   (void)timeoutMs;
 #endif
+  wireContext().wire = &Wire;
+  wireContext().configuredTimeoutMs = timeoutMs;
   return true;
-}
-
-inline INA3221::Status wireWriteReadAt(uint8_t addr, const uint8_t* tx, size_t txLen,
-                                       uint8_t* rx, size_t rxLen, uint32_t timeoutMs) {
-  return wireWriteRead(addr, tx, txLen, rx, rxLen, timeoutMs, &Wire);
-}
-
-inline INA3221::Status probeAddress(uint8_t addr, uint16_t timeoutMs) {
-#if defined(ARDUINO_ARCH_ESP32)
-  Wire.setTimeOut(timeoutMs);
-#else
-  (void)timeoutMs;
-#endif
-  Wire.beginTransmission(addr);
-  switch (Wire.endTransmission(true)) {
-    case 0:
-      return INA3221::Status::Ok();
-    case 1:
-      return INA3221::Status::Error(INA3221::Err::INVALID_PARAM, "I2C data too long", 1);
-    case 2:
-      return INA3221::Status::Error(INA3221::Err::I2C_NACK_ADDR, "I2C address NACK", 2);
-    case 3:
-      return INA3221::Status::Error(INA3221::Err::I2C_NACK_DATA, "I2C data NACK", 3);
-    case 4:
-      return INA3221::Status::Error(INA3221::Err::I2C_BUS, "I2C bus error", 4);
-    case 5:
-      return INA3221::Status::Error(INA3221::Err::I2C_TIMEOUT, "I2C timeout", 5);
-    default:
-      return INA3221::Status::Error(INA3221::Err::I2C_ERROR, "I2C unknown error");
-  }
 }
 
 inline uint32_t arduinoNowMs(void*) {
@@ -206,7 +204,7 @@ inline void arduinoYield(void*) {
 }
 
 inline void* configUser() {
-  return &Wire;
+  return &wireContext();
 }
 
 }  // namespace transport

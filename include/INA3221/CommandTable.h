@@ -1,5 +1,5 @@
 /// @file CommandTable.h
-/// @brief Register addresses, bit definitions, and constants for INA3221
+/// @brief Datasheet register addresses, bit definitions, and encoded field values.
 #pragma once
 
 #include <cstdint>
@@ -36,14 +36,14 @@ static constexpr uint8_t REG_DIE_ID          = 0xFF;  ///< Die ID (R)
 // Default Register Values (Power-On Reset)
 // ============================================================================
 
-static constexpr uint16_t CONFIG_DEFAULT          = 0x7127;
-static constexpr uint16_t SHUNT_VOLTAGE_DEFAULT   = 0x0000;
-static constexpr uint16_t BUS_VOLTAGE_DEFAULT     = 0x0000;
-static constexpr uint16_t CRIT_LIMIT_DEFAULT      = 0x7FF8;
-static constexpr uint16_t WARN_LIMIT_DEFAULT      = 0x7FF8;
-static constexpr uint16_t SHUNT_SUM_DEFAULT       = 0x0000;
-static constexpr uint16_t SHUNT_SUM_LIMIT_DEFAULT = 0x7FFE;
-static constexpr uint16_t MASK_ENABLE_DEFAULT     = 0x0002;
+static constexpr uint16_t CONFIG_DEFAULT          = 0x7127; ///< Configuration reset value
+static constexpr uint16_t SHUNT_VOLTAGE_DEFAULT   = 0x0000; ///< Shunt-voltage reset value
+static constexpr uint16_t BUS_VOLTAGE_DEFAULT     = 0x0000; ///< Bus-voltage reset value
+static constexpr uint16_t CRIT_LIMIT_DEFAULT      = 0x7FF8; ///< Critical-limit reset value
+static constexpr uint16_t WARN_LIMIT_DEFAULT      = 0x7FF8; ///< Warning-limit reset value
+static constexpr uint16_t SHUNT_SUM_DEFAULT       = 0x0000; ///< Shunt-sum reset value
+static constexpr uint16_t SHUNT_SUM_LIMIT_DEFAULT = 0x7FFE; ///< Shunt-sum-limit reset value
+static constexpr uint16_t MASK_ENABLE_DEFAULT     = 0x0002; ///< Mask/Enable reset value
 static constexpr uint16_t PV_UPPER_LIMIT_DEFAULT  = 0x2710;  ///< 10.000 V
 static constexpr uint16_t PV_LOWER_LIMIT_DEFAULT  = 0x2328;  ///< 9.000 V
 static constexpr uint16_t MANUFACTURER_ID_VALUE   = 0x5449;  ///< "TI" in ASCII
@@ -66,10 +66,10 @@ static constexpr uint16_t MASK_MODE   = 0x0007;  ///< Operating mode (bits 2:0)
 // Configuration Register Bit Positions
 // ============================================================================
 
-static constexpr uint8_t BIT_RST    = 15;
-static constexpr uint8_t BIT_CH1EN  = 14;
-static constexpr uint8_t BIT_CH2EN  = 13;
-static constexpr uint8_t BIT_CH3EN  = 12;
+static constexpr uint8_t BIT_RST    = 15;  ///< RST field least-significant bit
+static constexpr uint8_t BIT_CH1EN  = 14;  ///< CH1EN field least-significant bit
+static constexpr uint8_t BIT_CH2EN  = 13;  ///< CH2EN field least-significant bit
+static constexpr uint8_t BIT_CH3EN  = 12;  ///< CH3EN field least-significant bit
 static constexpr uint8_t BIT_AVG    = 9;   ///< AVG[2:0] bits 11:9
 static constexpr uint8_t BIT_VBUSCT = 6;   ///< VBUSCT[2:0] bits 8:6
 static constexpr uint8_t BIT_VSHCT  = 3;   ///< VSHCT[2:0] bits 5:3
@@ -99,21 +99,21 @@ static constexpr uint16_t MASK_CVRF = 0x0001;  ///< Conversion ready flag (bit 0
 // Mask/Enable Register Bit Positions
 // ============================================================================
 
-static constexpr uint8_t BIT_SCC1 = 14;
-static constexpr uint8_t BIT_SCC2 = 13;
-static constexpr uint8_t BIT_SCC3 = 12;
-static constexpr uint8_t BIT_WEN  = 11;
-static constexpr uint8_t BIT_CEN  = 10;
-static constexpr uint8_t BIT_CF1  = 9;
-static constexpr uint8_t BIT_CF2  = 8;
-static constexpr uint8_t BIT_CF3  = 7;
-static constexpr uint8_t BIT_SF   = 6;
-static constexpr uint8_t BIT_WF1  = 5;
-static constexpr uint8_t BIT_WF2  = 4;
-static constexpr uint8_t BIT_WF3  = 3;
-static constexpr uint8_t BIT_PVF  = 2;
-static constexpr uint8_t BIT_TCF  = 1;
-static constexpr uint8_t BIT_CVRF = 0;
+static constexpr uint8_t BIT_SCC1 = 14; ///< SCC1 field least-significant bit
+static constexpr uint8_t BIT_SCC2 = 13; ///< SCC2 field least-significant bit
+static constexpr uint8_t BIT_SCC3 = 12; ///< SCC3 field least-significant bit
+static constexpr uint8_t BIT_WEN  = 11; ///< WEN field least-significant bit
+static constexpr uint8_t BIT_CEN  = 10; ///< CEN field least-significant bit
+static constexpr uint8_t BIT_CF1  = 9;  ///< CF1 field least-significant bit
+static constexpr uint8_t BIT_CF2  = 8;  ///< CF2 field least-significant bit
+static constexpr uint8_t BIT_CF3  = 7;  ///< CF3 field least-significant bit
+static constexpr uint8_t BIT_SF   = 6;  ///< SF field least-significant bit
+static constexpr uint8_t BIT_WF1  = 5;  ///< WF1 field least-significant bit
+static constexpr uint8_t BIT_WF2  = 4;  ///< WF2 field least-significant bit
+static constexpr uint8_t BIT_WF3  = 3;  ///< WF3 field least-significant bit
+static constexpr uint8_t BIT_PVF  = 2;  ///< PVF field least-significant bit
+static constexpr uint8_t BIT_TCF  = 1;  ///< TCF field least-significant bit
+static constexpr uint8_t BIT_CVRF = 0;  ///< CVRF field least-significant bit
 
 // ============================================================================
 // Data Register Format
@@ -124,11 +124,11 @@ static constexpr uint8_t DATA_SHIFT = 3;
 
 /// Shunt-voltage LSB = 40 µV
 static constexpr float SHUNT_LSB_UV = 40.0f;
-static constexpr float SHUNT_LSB_MV = 0.04f;
+static constexpr float SHUNT_LSB_MV = 0.04f; ///< Shunt-voltage LSB in millivolts
 
 /// Bus-voltage LSB = 8 mV
 static constexpr float BUS_LSB_MV = 8.0f;
-static constexpr float BUS_LSB_V  = 0.008f;
+static constexpr float BUS_LSB_V  = 0.008f; ///< Bus-voltage LSB in volts
 
 /// Shunt-voltage sum LSB = 40 µV (bit 0 reserved, data in bits [15:1])
 static constexpr uint8_t SUM_DATA_SHIFT = 1;

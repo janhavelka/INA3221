@@ -136,6 +136,11 @@ def main() -> int:
             fail(f"ESP-IDF main uses forbidden token '{token}'")
     for token in NATIVE_IDF_TOKENS:
         require_token(idf_main, token, "ESP-IDF main")
+    for token in (
+        "profile.mode = INA3221::Mode::SHUNT_BUS_TRIG;",
+        "startTriggeredSample(",
+    ):
+        require_token(idf_main, token, "ESP-IDF owner-safe triggered example")
     if "setup();" in idf_main or "loop();" in idf_main:
         fail("ESP-IDF main must not call setup()/loop()")
 
@@ -172,6 +177,11 @@ def main() -> int:
     )
     if f"defined({IDF_EXAMPLE_MACRO})" in cli:
         fail("Arduino CLI source must not have an IDF compatibility branch")
+    for token in (
+        "profile.mode = INA3221::Mode::SHUNT_BUS_TRIG;",
+        "startTriggeredSample(",
+    ):
+        require_token(cli, token, "Arduino owner-safe triggered example")
     if CLI_SOURCE_INCLUDE in idf_main:
         fail("ESP-IDF main must not include Arduino CLI source")
     for command in MANDATORY_COMMANDS:

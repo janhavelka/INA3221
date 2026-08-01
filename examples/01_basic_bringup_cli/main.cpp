@@ -8,7 +8,6 @@
 #include <Arduino.h>
 
 #include "examples/common/BoardConfig.h"
-#include "examples/common/BusDiag.h"
 #include "examples/common/I2cScanner.h"
 #include "examples/common/I2cTransport.h"
 #include "examples/common/CliStyle.h"
@@ -22,6 +21,16 @@
 
 INA3221::INA3221 device;
 bool verboseMode = false;
+
+enum class OwnerDemoPhase : uint8_t {
+  IDLE,
+  INITIALIZING,
+  SAMPLING
+};
+
+OwnerDemoPhase ownerDemoPhase = OwnerDemoPhase::IDLE;
+uint32_t ownerRequestId = 1000U;
+static constexpr uint64_t OWNER_JOB_TIMEOUT_MS = 1000U;
 
 struct ChannelStressStats {
   bool enabled = false;
@@ -77,16 +86,32 @@ const char* errToStr(INA3221::Err err) {
     case Err::I2C_NACK_DATA:            return "I2C_NACK_DATA";
     case Err::I2C_TIMEOUT:              return "I2C_TIMEOUT";
     case Err::I2C_BUS:                  return "I2C_BUS";
+    case Err::JOB_BUSY:                 return "JOB_BUSY";
+    case Err::RESULT_PENDING:           return "RESULT_PENDING";
+    case Err::NO_RESULT:                return "NO_RESULT";
+    case Err::CANCELLED:                return "CANCELLED";
+    case Err::DEADLINE_EXPIRED:         return "DEADLINE_EXPIRED";
+    case Err::CONFIG_UNKNOWN:           return "CONFIG_UNKNOWN";
+    case Err::PROFILE_MISMATCH:         return "PROFILE_MISMATCH";
+    case Err::READ_ONLY_REGISTER:       return "READ_ONLY_REGISTER";
+    case Err::ARITHMETIC_OVERFLOW:      return "ARITHMETIC_OVERFLOW";
+    case Err::OUT_OF_RANGE:             return "OUT_OF_RANGE";
+    case Err::NO_ACTIVE_JOB:            return "NO_ACTIVE_JOB";
+    case Err::JOB_KIND_MISMATCH:        return "JOB_KIND_MISMATCH";
+    case Err::CONVERSION_BUSY:          return "CONVERSION_BUSY";
+    case Err::DEVICE_OFFLINE:           return "DEVICE_OFFLINE";
     default:                            return "UNKNOWN";
   }
 }
 
-uint32_t exampleNowMs(void*) {
-  return millis();
-}
-
-void exampleYield(void*) {
-  yield();
+uint64_t ownerNowMs() {
+  // Extend Arduino's wrapping 32-bit millis() in this single owner context.
+  static uint32_t previous = 0;
+  static uint64_t epoch = 0;
+  const uint32_t current = millis();
+  if (current < previous) epoch += (static_cast<uint64_t>(1U) << 32U);
+  previous = current;
+  return epoch | current;
 }
 
 const char* stateToStr(INA3221::DriverState st) {
@@ -107,35 +132,20 @@ const char* stateColor(INA3221::DriverState st, bool online, uint8_t consecutive
   return LOG_COLOR_STATE(online, consecutiveFailures);
 }
 
-const char* goodIfZeroColor(uint32_t value) {
-  return (value == 0U) ? LOG_COLOR_GREEN : LOG_COLOR_RED;
-}
-
-const char* goodIfNonZeroColor(uint32_t value) {
-  return (value > 0U) ? LOG_COLOR_GREEN : LOG_COLOR_YELLOW;
-}
-
-const char* onOffColor(bool enabled) {
-  return enabled ? LOG_COLOR_GREEN : LOG_COLOR_RESET;
-}
-
-const char* yesNoColor(bool value) {
-  return value ? LOG_COLOR_GREEN : LOG_COLOR_YELLOW;
-}
-
-const char* successRateColor(float pct) {
-  if (pct >= 99.9f) return LOG_COLOR_GREEN;
-  if (pct >= 80.0f) return LOG_COLOR_YELLOW;
-  return LOG_COLOR_RED;
-}
-
 const char* staleTimeColor(bool isErrorTimestamp) {
   return isErrorTimestamp ? LOG_COLOR_GREEN : LOG_COLOR_YELLOW;
 }
 
 void printPrompt() {
   cli::printPrompt();
+#if !defined(ARDUINO_USB_MODE) || ARDUINO_USB_MODE == 0
   Serial.flush();
+#else
+  // HWCDC::flush() drops its queued TX ring when its SOF-based connection
+  // check transiently reports disconnected. Let the USB Serial/JTAG TX ISR
+  // drain this small prompt instead of risking a rare missing prompt packet.
+  yield();
+#endif
 }
 
 void serviceCliOutput() {
@@ -255,11 +265,11 @@ void finishStressStats() {
   Serial.printf("  Target: %d\n", stressStats.target);
   Serial.printf("  Attempts: %d\n", stressStats.attempts);
   Serial.printf("  Success: %s%d%s\n",
-                goodIfNonZeroColor(static_cast<uint32_t>(stressStats.success)),
+                cli::nonZeroGoodColor(static_cast<uint32_t>(stressStats.success)),
                 stressStats.success,
                 LOG_COLOR_RESET);
   Serial.printf("  Errors: %s%lu%s\n",
-                goodIfZeroColor(stressStats.errors),
+                cli::zeroGoodColor(stressStats.errors),
                 static_cast<unsigned long>(stressStats.errors),
                 LOG_COLOR_RESET);
   Serial.printf("  Duration: %lu ms\n", static_cast<unsigned long>(durationMs));
@@ -315,19 +325,19 @@ void printDriverHealth() {
                 log_bool_str(online),
                 LOG_COLOR_RESET);
   Serial.printf("  Consecutive failures: %s%u%s\n",
-                goodIfZeroColor(device.consecutiveFailures()),
+                cli::zeroGoodColor(device.consecutiveFailures()),
                 device.consecutiveFailures(),
                 LOG_COLOR_RESET);
   Serial.printf("  Total success: %s%lu%s\n",
-                goodIfNonZeroColor(totalOk),
+                cli::nonZeroGoodColor(totalOk),
                 static_cast<unsigned long>(totalOk),
                 LOG_COLOR_RESET);
   Serial.printf("  Total failures: %s%lu%s\n",
-                goodIfZeroColor(totalFail),
+                cli::zeroGoodColor(totalFail),
                 static_cast<unsigned long>(totalFail),
                 LOG_COLOR_RESET);
   Serial.printf("  Success rate: %s%.1f%%%s\n",
-                successRateColor(successRate),
+                cli::successRateColor(successRate),
                 successRate,
                 LOG_COLOR_RESET);
   serviceCliOutput();
@@ -390,9 +400,13 @@ void printHelp() {
   cli::printHelpItem("start", "Start single-shot conversion");
   cli::printHelpItem("start <mode>", "Start with triggered mode (strig/btrig/sbtrig)");
   cli::printHelpItem("poll", "Check if conversion is ready");
+  cli::printHelpItem("job", "Show cooperative owner-job progress");
+  cli::printHelpItem("job sample", "Start a budget-one triggered sample");
+  cli::printHelpItem("job cancel", "Cancel active job without I2C");
 
   cli::printHelpSection("Configuration");
-  cli::printHelpItem("mode [pd|strig|btrig|sbtrig|sc|bc|sbc]", "Set/show operating mode");
+  cli::printHelpItem("mode [pd|pda|strig|btrig|sbtrig|sc|bc|sbc]",
+                     "Set/show operating mode");
   cli::printHelpItem("avg [0..7]", "Set/show averaging (0=1,...,7=1024)");
   cli::printHelpItem("vbusct [0..7]", "Set/show bus voltage conv time");
   cli::printHelpItem("vshct [0..7]", "Set/show shunt voltage conv time");
@@ -440,6 +454,132 @@ void printVersionInfo() {
                 INA3221::VERSION_MAJOR,
                 INA3221::VERSION_MINOR,
                 INA3221::VERSION_PATCH);
+  Serial.printf("  Arduino-ESP32 version: %s\n", ESP.getCoreVersion());
+  Serial.printf("  ESP-IDF version: %s\n", ESP.getSdkVersion());
+  Serial.printf("  Flash size: %lu bytes\n",
+                static_cast<unsigned long>(ESP.getFlashChipSize()));
+  Serial.printf("  PSRAM size: %lu bytes\n",
+                static_cast<unsigned long>(ESP.getPsramSize()));
+}
+
+INA3221::TransportConfig makeOwnerTransport() {
+  INA3221::TransportConfig transportConfig{};
+  transportConfig.i2cWrite = transport::wireWrite;
+  transportConfig.i2cWriteRead = transport::wireWriteRead;
+  transportConfig.i2cUser = transport::configUser();
+  transportConfig.nowMs = transport::arduinoNowMs;
+  transportConfig.cooperativeYield = transport::arduinoYield;
+  transportConfig.defaultTransferTimeoutMs = board::I2C_TIMEOUT_MS;
+  transportConfig.offlineThreshold = 5U;
+  return transportConfig;
+}
+
+INA3221::DeviceProfile makeOwnerProfile() {
+  INA3221::DeviceProfile profile{};
+  profile.i2cAddress = board::INA3221_I2C_ADDR;
+  profile.enabledChannels = INA3221::ALL_CHANNELS;
+  profile.averaging = INA3221::Averaging::AVG_1;
+  profile.vBusCt = INA3221::ConvTime::CT_1100US;
+  profile.vShCt = INA3221::ConvTime::CT_1100US;
+  profile.mode = INA3221::Mode::SHUNT_BUS_TRIG;
+  for (INA3221::ShuntCalibration& shunt : profile.shunts) {
+    shunt.resistanceMicroOhms = 100000U;
+  }
+  return profile;
+}
+
+void printOwnerSample(const INA3221::SampleBatch& sample) {
+  Serial.printf("Owner sample request=%lu profile=%lu valid=0x%02X\n",
+                static_cast<unsigned long>(sample.requestId),
+                static_cast<unsigned long>(sample.profileGeneration),
+                static_cast<unsigned>(sample.validChannels));
+  for (uint8_t i = 0; i < 3U; ++i) {
+    const INA3221::ChannelMask bit = static_cast<INA3221::ChannelMask>(1U << i);
+    if ((sample.validChannels & bit) == 0U) continue;
+    const INA3221::FixedChannelReading& reading = sample.channels[i];
+    Serial.printf("  CH%u: shunt=%lduV bus=%ldmV current=%ldmA power=%ldmW\n",
+                  static_cast<unsigned>(i + 1U),
+                  static_cast<long>(reading.shuntMicroVolts),
+                  static_cast<long>(reading.busMilliVolts),
+                  static_cast<long>(reading.currentMilliAmps),
+                  static_cast<long>(reading.powerMilliWatts));
+  }
+}
+
+INA3221::Status startOwnerSample() {
+  ++ownerRequestId;
+  if (ownerRequestId == 0U) ++ownerRequestId;
+  const uint64_t now = ownerNowMs();
+  INA3221::Status st = device.startTriggeredSample(
+      INA3221::Mode::SHUNT_BUS_TRIG, ownerRequestId,
+      now + OWNER_JOB_TIMEOUT_MS);
+  if (st.inProgress()) ownerDemoPhase = OwnerDemoPhase::SAMPLING;
+  return st;
+}
+
+void serviceOwnerJob() {
+  if (ownerDemoPhase == OwnerDemoPhase::IDLE) return;
+
+  INA3221::JobProgress progress{};
+  (void)device.getJobProgress(progress);
+  if (progress.state == INA3221::JobTerminalState::ACTIVE) {
+    const uint64_t now = ownerNowMs();
+    INA3221::PollContext context{};
+    context.nowMs = now;
+    context.deadlineMs = progress.deadlineMs;
+    context.transferTimeoutMs = board::I2C_TIMEOUT_MS;
+    context.maxTransfers = 1U;  // Normal owner-loop budget: at most one callback.
+    (void)device.pollJob(context);
+    (void)device.getJobProgress(progress);
+  }
+
+  if (!progress.resultPending) return;
+
+  INA3221::JobResult result{};
+  const INA3221::Status takeStatus = device.takeJobResult(result);
+  if (!takeStatus.ok()) {
+    printStatus(takeStatus);
+    ownerDemoPhase = OwnerDemoPhase::IDLE;
+    return;
+  }
+
+  Serial.printf("Owner job kind=%u request=%lu transfers=%u terminal=%u\n",
+                static_cast<unsigned>(result.kind),
+                static_cast<unsigned long>(result.requestId),
+                static_cast<unsigned>(result.transfers),
+                static_cast<unsigned>(result.state));
+  printStatus(result.status);
+
+  if (result.kind == INA3221::JobKind::INITIALIZE && result.status.ok()) {
+    const INA3221::Status sampleStatus = startOwnerSample();
+    if (!sampleStatus.inProgress()) {
+      printStatus(sampleStatus);
+      ownerDemoPhase = OwnerDemoPhase::IDLE;
+    }
+    return;
+  }
+  if (result.kind == INA3221::JobKind::TRIGGERED_SAMPLE && result.sampleValid) {
+    printOwnerSample(result.sample);
+  }
+  ownerDemoPhase = OwnerDemoPhase::IDLE;
+}
+
+void printOwnerJobProgress() {
+  INA3221::JobProgress progress{};
+  const INA3221::Status st = device.getJobProgress(progress);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+  Serial.printf("Owner job kind=%u stage=%u state=%u request=%lu transfers=%u "
+                "lastPoll=%u pending=%u\n",
+                static_cast<unsigned>(progress.kind),
+                static_cast<unsigned>(progress.stage),
+                static_cast<unsigned>(progress.state),
+                static_cast<unsigned long>(progress.requestId),
+                static_cast<unsigned>(progress.totalTransfers),
+                static_cast<unsigned>(progress.lastPollTransfers),
+                progress.resultPending ? 1U : 0U);
 }
 
 const char* modeToStr(INA3221::Mode mode) {
@@ -779,8 +919,8 @@ void runSelfTest() {
     reportSkip("probe responds", "driver not initialized");
     reportSkip("remaining checks", "selftest aborted");
     Serial.printf("Selftest result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
-                  goodIfNonZeroColor(stats.pass), static_cast<unsigned long>(stats.pass), LOG_COLOR_RESET,
-                  goodIfZeroColor(stats.fail), static_cast<unsigned long>(stats.fail), LOG_COLOR_RESET,
+                  cli::nonZeroGoodColor(stats.pass), static_cast<unsigned long>(stats.pass), LOG_COLOR_RESET,
+                  cli::zeroGoodColor(stats.fail), static_cast<unsigned long>(stats.fail), LOG_COLOR_RESET,
                   LOG_COLOR_YELLOW, static_cast<unsigned long>(stats.skip), LOG_COLOR_RESET);
     return;
   }
@@ -825,8 +965,8 @@ void runSelfTest() {
   reportCheck("isOnline", device.isOnline(), "");
 
   Serial.printf("Selftest result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
-                goodIfNonZeroColor(stats.pass), static_cast<unsigned long>(stats.pass), LOG_COLOR_RESET,
-                goodIfZeroColor(stats.fail), static_cast<unsigned long>(stats.fail), LOG_COLOR_RESET,
+                cli::nonZeroGoodColor(stats.pass), static_cast<unsigned long>(stats.pass), LOG_COLOR_RESET,
+                cli::zeroGoodColor(stats.fail), static_cast<unsigned long>(stats.fail), LOG_COLOR_RESET,
                 LOG_COLOR_YELLOW, static_cast<unsigned long>(stats.skip), LOG_COLOR_RESET);
 }
 
@@ -942,13 +1082,13 @@ void runStressMix(int count) {
              static_cast<float>(okTotal + failTotal))
           : 0.0f;
   Serial.printf("  Total: %sok=%lu%s %sfail=%lu%s (%s%.2f%%%s)\n",
-                goodIfNonZeroColor(okTotal),
+                cli::nonZeroGoodColor(okTotal),
                 static_cast<unsigned long>(okTotal),
                 LOG_COLOR_RESET,
-                goodIfZeroColor(failTotal),
+                cli::zeroGoodColor(failTotal),
                 static_cast<unsigned long>(failTotal),
                 LOG_COLOR_RESET,
-                successRateColor(pct),
+                cli::successRateColor(pct),
                 pct,
                 LOG_COLOR_RESET);
   Serial.printf("  Duration: %lu ms\n", static_cast<unsigned long>(elapsed));
@@ -961,20 +1101,20 @@ void runStressMix(int count) {
   for (int i = 0; i < opCount; ++i) {
     Serial.printf("  %-12s %sok=%lu%s %sfail=%lu%s\n",
                   stats[i].name,
-                  goodIfNonZeroColor(stats[i].ok),
+                  cli::nonZeroGoodColor(stats[i].ok),
                   static_cast<unsigned long>(stats[i].ok),
                   LOG_COLOR_RESET,
-                  goodIfZeroColor(stats[i].fail),
+                  cli::zeroGoodColor(stats[i].fail),
                   static_cast<unsigned long>(stats[i].fail),
                   LOG_COLOR_RESET);
   }
   const uint32_t successDelta = device.totalSuccess() - successBefore;
   const uint32_t failDelta = device.totalFailures() - failBefore;
   Serial.printf("  Health delta (tracked I2C): %ssuccess +%lu%s, %sfailures +%lu%s\n",
-                goodIfNonZeroColor(successDelta),
+                cli::nonZeroGoodColor(successDelta),
                 static_cast<unsigned long>(successDelta),
                 LOG_COLOR_RESET,
-                goodIfZeroColor(failDelta),
+                cli::zeroGoodColor(failDelta),
                 static_cast<unsigned long>(failDelta),
                 LOG_COLOR_RESET);
 }
@@ -996,7 +1136,16 @@ void processCommand(const String& cmdLine) {
   } else if (cmd == "version" || cmd == "ver") {
     printVersionInfo();
   } else if (cmd == "scan") {
-    bus_diag::scan();
+    i2c_scanner::scanDefault();
+  } else if (cmd == "job") {
+    printOwnerJobProgress();
+  } else if (cmd == "job sample") {
+    const INA3221::Status st = startOwnerSample();
+    printStatus(st);
+  } else if (cmd == "job cancel") {
+    // cancelJob() is cache-only and bus-silent; serviceOwnerJob() takes the
+    // resulting terminal record exactly once on the next loop iteration.
+    printStatus(device.cancelJob());
   } else if (cmd == "probe") {
     LOGI("Probing device (no health tracking)...");
     auto st = device.probe();
@@ -1009,7 +1158,7 @@ void processCommand(const String& cmdLine) {
     printStatus(st);
     printDriverHealth();
   } else if (cmd == "verbose") {
-    LOGI("Verbose mode: %s%s%s", onOffColor(verboseMode), verboseMode ? "ON" : "OFF", LOG_COLOR_RESET);
+    LOGI("Verbose mode: %s%s%s", cli::enabledColor(verboseMode), verboseMode ? "ON" : "OFF", LOG_COLOR_RESET);
   } else if (cmd.startsWith("verbose ")) {
     bool val = false;
     if (!parseBool01(cmd.substring(8), val)) {
@@ -1017,7 +1166,7 @@ void processCommand(const String& cmdLine) {
       return;
     }
     verboseMode = val;
-    LOGI("Verbose mode: %s%s%s", onOffColor(verboseMode), verboseMode ? "ON" : "OFF", LOG_COLOR_RESET);
+    LOGI("Verbose mode: %s%s%s", cli::enabledColor(verboseMode), verboseMode ? "ON" : "OFF", LOG_COLOR_RESET);
   } else if (cmd == "read") {
     readAllChannels();
   } else if (cmd.startsWith("read ")) {
@@ -1169,7 +1318,7 @@ void processCommand(const String& cmdLine) {
     bool ready = false;
     auto st = device.readConversionReady(ready);
     if (st.ok()) {
-      LOGI("Conversion ready: %s%s%s", yesNoColor(ready), ready ? "YES" : "NO", LOG_COLOR_RESET);
+      LOGI("Conversion ready: %s%s%s", cli::yesNoColor(ready), ready ? "YES" : "NO", LOG_COLOR_RESET);
     } else {
       printStatus(st);
     }
@@ -1195,6 +1344,8 @@ void processCommand(const String& cmdLine) {
     INA3221::Mode mode = INA3221::Mode::SHUNT_BUS_CONT;
     if (token == "pd") {
       mode = INA3221::Mode::POWER_DOWN;
+    } else if (token == "pda") {
+      mode = INA3221::Mode::POWER_DOWN_ALT;
     } else if (token == "strig") {
       mode = INA3221::Mode::SHUNT_TRIG;
     } else if (token == "btrig") {
@@ -1208,7 +1359,7 @@ void processCommand(const String& cmdLine) {
     } else if (token == "sbc") {
       mode = INA3221::Mode::SHUNT_BUS_CONT;
     } else {
-      LOGW("Invalid mode (pd/strig/btrig/sbtrig/sc/bc/sbc)");
+      LOGW("Invalid mode (pd/pda/strig/btrig/sbtrig/sc/bc/sbc)");
       return;
     }
     printStatus(device.setMode(mode));
@@ -1519,7 +1670,7 @@ void processCommand(const String& cmdLine) {
     printStatus(device.setAlertLatchEnable(warn, crit));
   } else if (cmd == "online") {
     bool online = device.isOnline();
-    LOGI("Online: %s%s%s", yesNoColor(online), online ? "YES" : "NO", LOG_COLOR_RESET);
+    LOGI("Online: %s%s%s", cli::yesNoColor(online), online ? "YES" : "NO", LOG_COLOR_RESET);
   } else if (cmd == "selftest") {
     runSelfTest();
   } else if (cmd == "stress_mix") {
@@ -1617,37 +1768,40 @@ void setup() {
   }
   LOGI("I2C initialized (SDA=%d, SCL=%d)", board::I2C_SDA, board::I2C_SCL);
 
-  bus_diag::scan();
+  i2c_scanner::scanDefault();
 
-  INA3221::Config cfg;
-  cfg.i2cWrite = transport::wireWrite;
-  cfg.i2cWriteRead = transport::wireWriteRead;
-  cfg.i2cUser = transport::configUser();
-  cfg.nowMs = transport::arduinoNowMs;
-  cfg.cooperativeYield = transport::arduinoYield;
-  cfg.i2cAddress = board::INA3221_I2C_ADDR;
-  cfg.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
-  cfg.offlineThreshold = 5;
-  cfg.shuntResistance[0] = 0.1f;
-  cfg.shuntResistance[1] = 0.1f;
-  cfg.shuntResistance[2] = 0.1f;
+  const INA3221::TransportConfig transportConfig = makeOwnerTransport();
+  const INA3221::DeviceProfile profile = makeOwnerProfile();
 
-  auto st = device.begin(cfg);
+  // bind() validates and stores contracts without touching I2C. Initialization
+  // is then advanced by serviceOwnerJob(), one transport callback per loop.
+  auto st = device.bind(transportConfig, profile);
   if (!st.ok()) {
-    LOGE("Failed to initialize device");
+    LOGE("Failed to bind device contracts");
     printStatus(st);
     return;
   }
-
-  LOGI("Device initialized successfully");
-  printDriverHealth();
+  ++ownerRequestId;
+  const uint64_t now = ownerNowMs();
+  st = device.startInitialize(ownerRequestId, now + OWNER_JOB_TIMEOUT_MS);
+  if (!st.inProgress()) {
+    LOGE("Failed to start staged initialization");
+    printStatus(st);
+    device.unbind();
+    return;
+  }
+  ownerDemoPhase = OwnerDemoPhase::INITIALIZING;
+  LOGI("Staged initialization started (budget=1 transfer/loop)");
 
   Serial.println("\nType 'help' for commands");
   printPrompt();
 }
 
 void loop() {
-  device.tick(millis());
+  serviceOwnerJob();
+  if (ownerDemoPhase == OwnerDemoPhase::IDLE && device.isInitialized()) {
+    (void)device.tickStatus(millis());
+  }
 
   static String inputBuffer;
   static constexpr size_t kMaxInputLen = 128;

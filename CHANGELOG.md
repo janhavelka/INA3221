@@ -7,6 +7,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added a maintained HIL guide and reviewed evidence ledger with bounded
+  commands, explicit coverage, fixture assumptions, and non-claims.
+- Added a PlatformIO post-builder upload-configuration hook that disables
+  esptool `5.3.0`'s Unicode progress bar on legacy Windows code pages.
+
+### Changed
+
+- Updated Arduino example and HIL builds from exact pioarduino `54.03.20`
+  (Arduino-ESP32 `3.2.0`, ESP-IDF `5.4.1`) to `55.03.311`
+  (Arduino-ESP32 `3.3.11`, ESP-IDF `5.5.5`), made the ESP32-S3 4 MB QIO
+  flash/2 MB QSPI PSRAM layout explicit, and removed the legacy ESP32
+  ECO1-only PSRAM cache workaround flag.
+- Restored the ESP32-S3 example to USB Serial/JTAG HWCDC and qualified its
+  single-port upload/CLI path under Arduino-ESP32 `3.3.11`, preserving one
+  stable COM-port identity for long HIL sessions.
+- Consolidated maintained documentation under `docs/` and removed completed
+  audits, dated validation reports, task prompts, generated extraction archives,
+  and implementation-era research material.
+- Expanded the hardware-validation runner across every operating mode,
+  averaging and conversion-time value, all three channel configuration paths,
+  direct measurements on all channels, cooperative sample/cancel jobs,
+  alert and raw-register write/readback/restore paths, CLI aliases and invalid
+  inputs, exact configuration-register encodings, exact stress totals, and
+  strict final/soak health invariants.
+- Exposed the public alternate power-down encoding through the Arduino and
+  native ESP-IDF example CLIs as `mode pda` and added exact HIL readback.
+- Reorganized and expanded the README with hardware/address guidance, profile
+  validation/defaults, the complete cooperative job lifecycle, fixed-unit
+  sample semantics, alert/configuration certainty, error recovery, installation,
+  examples, generated-documentation instructions, and a documentation map.
+- Added focused Arduino/PlatformIO and native ESP-IDF example runbooks covering
+  board configuration, build/flash commands, demonstrated ownership flow, CLI
+  entry points, and the boundary between build and HIL evidence.
+- Completed public-header Doxygen coverage for production and compatibility
+  APIs, data/result types, utility conversions, transport/profile fields,
+  register constants, and generated version macros.
+- Made Doxygen omit internal engineering/example implementation surfaces and
+  fail on undocumented public symbols or missing parameter documentation.
+- Updated the native ESP-IDF guide to describe v3 as the current production API.
+- Replaced stale contribution and security guidance with current validation,
+  release, disclosure, and supported-version policies.
+- Removed uncalled Arduino example wrappers, duplicated CLI/log formatting,
+  obsolete native-test Arduino/Wire stubs, and TunnelMonitor-only version
+  generator logic that could never run in this repository.
+
+### Removed
+
+- Removed synthesized application-note summaries, supplemental research PDFs,
+  generated Markdown/plain-text extraction archives, compact implementation
+  notes, and the completed chip implementation manual. The authoritative
+  INA3221 datasheet and maintained library/integration documentation remain.
+
+### Fixed
+
+- Avoided flushing the two-byte CLI prompt on ESP32-S3 HWCDC, where a
+  transient SOF connection-state flap can make `HWCDC::flush()` discard the
+  queued prompt. The prompt now yields to the USB Serial/JTAG TX ISR while
+  TinyUSB retains the existing flush behavior.
+- Made the default `readBlocking()` deadline derive from the active profile and
+  transport callback bound, so the default 50 ms per-transfer ceiling cannot
+  make a healthy three-channel triggered read fail admission against the former
+  fixed 200 ms deadline.
+- Removed stale documentation that referred to the released v3 API as a future
+  major version or claimed `0.1.x` was the supported release.
+- Corrected contributor guidance to reference the tracked `.clang-format`, and
+  corrected the HIL runner's `pyserial` installation guidance and strict final
+  health classification.
+
+## [3.0.0] - 2026-07-19
+
+### Added
+- Added the production `TransportConfig` and complete fixed-size
+  `DeviceProfile`, including integer shunt calibration/direction and the full
+  managed alert profile.
+- Added zero-I2C `bind()` and bus-silent `unbind()` lifecycle operations.
+- Added one cooperative job engine for staged initialize, apply-profile,
+  reconcile, triggered/continuous sampling, and verified power-down operations.
+- Added `PollContext` with absolute monotonic deadlines, per-transfer timeouts,
+  and a strict callback budget; one poll never exceeds `maxTransfers`.
+- Added cache-only `JobProgress` and take-once `JobResult` with request identity,
+  terminal state, transfer count, profile generation, and explicit hardware
+  effect.
+- Added fixed-unit `SampleBatch` results with three fixed channel slots,
+  per-quantity/channel validity, coherence, capture uptime, profile generation,
+  request ID, and alert snapshot provenance.
+- Added retained destructive alert events with peek/take access, and separate
+  measurement/alert configuration certainty (`UNKNOWN`, `APPLIED`, `DIRTY`).
+- Added pure fixed-unit conversion, calibration, timing, register-policy, and
+  successful-path maximum-transfer helpers.
+- Added deterministic owner-engine and fault-injection coverage plus strict
+  compiler, metadata consistency, Doxygen warning, and compiled ESP-IDF CI
+  gates.
+
+### Changed
+- Made the shared-bus production path explicitly single-owner, serialized,
+  non-reentrant, non-ISR, non-copyable, and non-movable. The library owns no bus,
+  task, lock, retry/recovery policy, or deadline renewal.
+- Defined each transport callback as exactly one bounded physical attempt with
+  exact-length completion, no hidden retry/recovery/reconfiguration, and no
+  driver re-entry.
+- Made READY/DEGRADED/OFFLINE health passive telemetry; OFFLINE no longer acts
+  as an I2C admission gate.
+- Changed triggered conversion scheduling to use maximum conversion timing plus
+  a fixed 100 us wake margin from a strictly post-callback time origin before
+  the CVRF/alert read, with bus-silent deadline-fit admission.
+- Bounded the staged compatibility APIs with derived deadlines, extended their
+  32-bit poll clock across wrap, and made `readBlocking()` use wrap-safe elapsed
+  time.
+- Updated Arduino and native ESP-IDF examples to lead with budget-one staged
+  initialization, triggered fixed-unit sampling, progress, bus-silent cancel,
+  and take-once result handling while retaining the diagnostic CLI.
+- Version-pinned PlatformIO and ESP-IDF build inputs and added real
+  ESP32-S3/ESP32-S2 IDF compiler jobs in CI.
+- Reclassified `Config`, `begin()`, direct measurement/configuration calls,
+  `readBlocking()`, `probe()`, and `recover()` as bounded standalone/diagnostic
+  compatibility APIs rather than the recommended shared-owner steady path.
+
+### Fixed
+- Preserved latched alert events across destructive Mask/Enable reads until the
+  application explicitly takes them.
+- Exposed uncertainty when a failed or short Mask/Enable transfer may already
+  have destructively cleared alert evidence.
+- Prevented terminal-result overwrite and request reuse before exactly-once
+  result consumption.
+- Exposed partial and indeterminate hardware effects after confirmed or
+  ambiguous writes instead of reporting implicit rollback or fake success.
+- Removed health-state suppression of owner-admitted transport operations.
+- Rejected compatibility setter changes that would leave enabled-channel,
+  calibration, or alert-summation profile invariants invalid before any I2C.
+
 ## [2.0.0] - 2026-06-29
 
 ### Added
@@ -174,7 +306,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `end()` now best-effort powers the monitor down before clearing runtime state.
 - `recover()` now re-validates manufacturer / die IDs, clears conversion state, and reapplies cached configuration.
 
-[Unreleased]: https://github.com/janhavelka/INA3221/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/janhavelka/INA3221/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/janhavelka/INA3221/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/janhavelka/INA3221/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/janhavelka/INA3221/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/janhavelka/INA3221/compare/v1.0.0...v1.1.0

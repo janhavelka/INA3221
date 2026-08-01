@@ -12,37 +12,44 @@
 #include <stdint.h>
 
 #ifndef INA3221_VERSION_STRING
-#define INA3221_VERSION_STRING "2.0.0"
+/// @brief Semantic version string generated from library.json.
+#define INA3221_VERSION_STRING "3.0.0"
 #endif
 
 #ifndef INA3221_BUILD_DATE
+/// @brief Compiler-provided build date string; may be overridden by the build.
 #define INA3221_BUILD_DATE __DATE__
 #endif
 
 #ifndef INA3221_BUILD_TIME
+/// @brief Compiler-provided build time string; may be overridden by the build.
 #define INA3221_BUILD_TIME __TIME__
 #endif
 
 #ifndef INA3221_BUILD_TIMESTAMP
+/// @brief Combined build date and time string.
 #define INA3221_BUILD_TIMESTAMP INA3221_BUILD_DATE " " INA3221_BUILD_TIME
 #endif
 
 #ifndef INA3221_GIT_COMMIT
+/// @brief Build-supplied Git revision, or `"unknown"` when not injected.
 #define INA3221_GIT_COMMIT "unknown"
 #endif
 
 #ifndef INA3221_GIT_STATUS
+/// @brief Build-supplied working-tree state, or `"unknown"` when not injected.
 #define INA3221_GIT_STATUS "unknown"
 #endif
 
 #ifndef INA3221_VERSION_FULL
+/// @brief Semantic version plus revision, timestamp, and working-tree metadata.
 #define INA3221_VERSION_FULL INA3221_VERSION_STRING " (" INA3221_GIT_COMMIT ", " INA3221_BUILD_TIMESTAMP ", " INA3221_GIT_STATUS ")"
 #endif
 
 namespace INA3221 {
 
 /// @brief Major version (breaking changes).
-static constexpr uint16_t VERSION_MAJOR = 2;
+static constexpr uint16_t VERSION_MAJOR = 3;
 
 /// @brief Minor version (backward-compatible features).
 static constexpr uint16_t VERSION_MINOR = 0;
@@ -54,10 +61,10 @@ static constexpr uint16_t VERSION_PATCH = 0;
 static constexpr const char* VERSION = INA3221_VERSION_STRING;
 
 /// @brief Encoded version for numeric comparison: MAJOR*10000 + MINOR*100 + PATCH.
-static constexpr uint32_t VERSION_CODE = 20000;
+static constexpr uint32_t VERSION_CODE = 30000;
 
 /// @brief Backward-compatible alias used by older repositories.
-static constexpr int VERSION_INT = 20000;
+static constexpr int VERSION_INT = 30000;
 
 /// @brief Build date string.
 static constexpr const char* BUILD_DATE = INA3221_BUILD_DATE;
