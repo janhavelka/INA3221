@@ -6,6 +6,8 @@ The repository is an ESP-IDF component and its core remains framework-neutral.
 The production API is the same under Arduino and ESP-IDF: an application-owned
 transport, a complete `DeviceProfile`, and a cooperative job engine. The native
 example targets ESP-IDF 6.0.1 and uses the new I2C master driver.
+This native target is independent of ESP-IDF `5.5.5` bundled with the
+pioarduino/Arduino-ESP32 example build.
 
 Release metadata is updated atomically by the release owner, with
 `library.json` as the source of truth.
@@ -71,18 +73,10 @@ leave configuration certainty `DIRTY`/`UNKNOWN`; inspect the terminal
 `HardwareEffect` and reconcile before measurement admission. Health state is
 passive telemetry and never suppresses an owner-admitted transfer.
 
-With all channels enabled, successful-path maxima are 35 callbacks for
-initialize, 33 for apply/reconcile, 8 for a triggered sample, 7 for a continuous
-sample, and 3 for power-down. Budget one therefore limits each normal service
-call to one synchronous backend callback. The triggered figure assumes CVRF is
-high on the first eligible check. After the trigger callback, the next strictly
-later owner timestamp establishes the maximum-conversion wait origin. A low
-CVRF is retained; another strictly later timestamp arms an additional 1 ms wait
-before retry. The fault-path read count is bounded by deadline and caller
-cadence rather than the success-path figure. The trigger write is bus-silently
-rejected when the maximum conversion and successful-path callback bounds cannot
-fit the effective deadline. See the README for timing maxima and the fixed
-100 us triggered-conversion wake margin.
+The authoritative successful-path callback maxima, triggered-conversion wake
+margin, and deadline admission rules are maintained in the root README's
+[deterministic-bounds section](../README.md#deterministic-bounds). Budget one
+limits each normal service call to one synchronous backend callback.
 
 ## Native example
 
@@ -141,5 +135,5 @@ EEPROM/NVM, so rare program/erase latency is not applicable.
 
 Official references:
 
-- [ESP-IDF I2C master driver](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/i2c.html)
-- [ESP-IDF 6.0 peripheral migration guide](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c6/migration-guides/release-6.x/6.0/peripherals.html)
+- [ESP-IDF 6.0.1 I2C master driver](https://docs.espressif.com/projects/esp-idf/en/v6.0.1/esp32/api-reference/peripherals/i2c.html)
+- [ESP-IDF 6.0 peripheral migration guide](https://docs.espressif.com/projects/esp-idf/en/v6.0.1/esp32c6/migration-guides/release-6.x/6.0/peripherals.html)

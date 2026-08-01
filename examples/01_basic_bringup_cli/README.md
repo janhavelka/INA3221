@@ -24,6 +24,11 @@ reference values, not universal board assignments:
 | INA3221 address | `0x40` |
 | Optional ESP32-S3 LED | GPIO 48 |
 
+The `esp32s3dev` environment additionally assumes 4 MB QIO flash, 2 MB QSPI
+PSRAM, and USB Serial/JTAG HWCDC. Adjust or remove the flash/PSRAM settings and
+`BOARD_HAS_PSRAM` for a different module; a successful compile does not prove
+that the selected memory geometry matches the board.
+
 Confirm voltage levels, pull-ups, A0 address selection, shunt values, and load
 limits on the actual fixture before connecting it. Change only the example
 configuration for board wiring; the library must not own pins or bus setup.
@@ -40,6 +45,24 @@ python -m platformio device monitor -e esp32s3dev
 
 Use `esp32s2dev` in the same commands for the ESP32-S2 target. The monitor is
 configured for 115200 baud and LF line endings in the root `platformio.ini`.
+The S3 environment uses USB Serial/JTAG HWCDC, so upload and monitoring retain
+one COM-port identity with DTR and RTS deasserted.
+
+The repository exact-pins pioarduino `55.03.311`, Arduino-ESP32 `3.3.11`, and
+the Arduino core's ESP-IDF `5.5.5` libraries.
+
+For a strict automated qualification on an isolated fixture, follow the
+[HIL guide](../../docs/HIL.md). A typical bounded invocation is:
+
+```bash
+python tools/hil_cli_runner.py --port COM5 `
+  --stress-count 500 --stress-mix-count 500 `
+  --sample-benchmark --benchmark-count 500
+```
+
+Replace `COM5` with the fixture port. The runner leaves DTR/RTS deasserted by
+default and asserts exact stress totals and final health. When a soak is
+requested, `--soak-failure-limit 1` stops it on the first failed command.
 
 ## Startup flow
 
@@ -67,7 +90,8 @@ production-flow commands are:
 | `job` | Show current cooperative progress/result state |
 | `job sample` | Admit a budget-one triggered sample |
 | `job cancel` | Cancel the active job without I2C |
-| `settings` / `drv` | Show cached configuration and health |
+| `settings` | Show cached configuration and certainty |
+| `drv` | Show driver state and transport health |
 | `probe` | Perform raw identity diagnostics |
 | `selftest` | Run bounded safe command checks |
 | `stress [N]` | Run bounded measurement cycles |
@@ -82,4 +106,5 @@ state until it has been reconciled and verified.
 A successful build proves compilation for the selected Arduino target. It does
 not prove INA3221 identity, scaling, alert wiring, shunt safety, or recovery on
 the connected fixture. Use the CLI and a controlled load for those checks, and
-retain the exact target/configuration with any HIL evidence.
+retain the exact target/configuration with any HIL evidence. The automated
+coverage and explicit non-claims are maintained in the [HIL guide](../../docs/HIL.md).

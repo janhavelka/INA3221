@@ -8,7 +8,6 @@
 #include <Arduino.h>
 
 #include "examples/common/BoardConfig.h"
-#include "examples/common/BusDiag.h"
 #include "examples/common/I2cScanner.h"
 #include "examples/common/I2cTransport.h"
 #include "examples/common/CliStyle.h"
@@ -115,14 +114,6 @@ uint64_t ownerNowMs() {
   return epoch | current;
 }
 
-uint32_t exampleNowMs(void*) {
-  return millis();
-}
-
-void exampleYield(void*) {
-  yield();
-}
-
 const char* stateToStr(INA3221::DriverState st) {
   using INA3221::DriverState;
   switch (st) {
@@ -141,35 +132,20 @@ const char* stateColor(INA3221::DriverState st, bool online, uint8_t consecutive
   return LOG_COLOR_STATE(online, consecutiveFailures);
 }
 
-const char* goodIfZeroColor(uint32_t value) {
-  return (value == 0U) ? LOG_COLOR_GREEN : LOG_COLOR_RED;
-}
-
-const char* goodIfNonZeroColor(uint32_t value) {
-  return (value > 0U) ? LOG_COLOR_GREEN : LOG_COLOR_YELLOW;
-}
-
-const char* onOffColor(bool enabled) {
-  return enabled ? LOG_COLOR_GREEN : LOG_COLOR_RESET;
-}
-
-const char* yesNoColor(bool value) {
-  return value ? LOG_COLOR_GREEN : LOG_COLOR_YELLOW;
-}
-
-const char* successRateColor(float pct) {
-  if (pct >= 99.9f) return LOG_COLOR_GREEN;
-  if (pct >= 80.0f) return LOG_COLOR_YELLOW;
-  return LOG_COLOR_RED;
-}
-
 const char* staleTimeColor(bool isErrorTimestamp) {
   return isErrorTimestamp ? LOG_COLOR_GREEN : LOG_COLOR_YELLOW;
 }
 
 void printPrompt() {
   cli::printPrompt();
+#if !defined(ARDUINO_USB_MODE) || ARDUINO_USB_MODE == 0
   Serial.flush();
+#else
+  // HWCDC::flush() drops its queued TX ring when its SOF-based connection
+  // check transiently reports disconnected. Let the USB Serial/JTAG TX ISR
+  // drain this small prompt instead of risking a rare missing prompt packet.
+  yield();
+#endif
 }
 
 void serviceCliOutput() {
@@ -289,11 +265,11 @@ void finishStressStats() {
   Serial.printf("  Target: %d\n", stressStats.target);
   Serial.printf("  Attempts: %d\n", stressStats.attempts);
   Serial.printf("  Success: %s%d%s\n",
-                goodIfNonZeroColor(static_cast<uint32_t>(stressStats.success)),
+                cli::nonZeroGoodColor(static_cast<uint32_t>(stressStats.success)),
                 stressStats.success,
                 LOG_COLOR_RESET);
   Serial.printf("  Errors: %s%lu%s\n",
-                goodIfZeroColor(stressStats.errors),
+                cli::zeroGoodColor(stressStats.errors),
                 static_cast<unsigned long>(stressStats.errors),
                 LOG_COLOR_RESET);
   Serial.printf("  Duration: %lu ms\n", static_cast<unsigned long>(durationMs));
@@ -349,19 +325,19 @@ void printDriverHealth() {
                 log_bool_str(online),
                 LOG_COLOR_RESET);
   Serial.printf("  Consecutive failures: %s%u%s\n",
-                goodIfZeroColor(device.consecutiveFailures()),
+                cli::zeroGoodColor(device.consecutiveFailures()),
                 device.consecutiveFailures(),
                 LOG_COLOR_RESET);
   Serial.printf("  Total success: %s%lu%s\n",
-                goodIfNonZeroColor(totalOk),
+                cli::nonZeroGoodColor(totalOk),
                 static_cast<unsigned long>(totalOk),
                 LOG_COLOR_RESET);
   Serial.printf("  Total failures: %s%lu%s\n",
-                goodIfZeroColor(totalFail),
+                cli::zeroGoodColor(totalFail),
                 static_cast<unsigned long>(totalFail),
                 LOG_COLOR_RESET);
   Serial.printf("  Success rate: %s%.1f%%%s\n",
-                successRateColor(successRate),
+                cli::successRateColor(successRate),
                 successRate,
                 LOG_COLOR_RESET);
   serviceCliOutput();
@@ -429,7 +405,8 @@ void printHelp() {
   cli::printHelpItem("job cancel", "Cancel active job without I2C");
 
   cli::printHelpSection("Configuration");
-  cli::printHelpItem("mode [pd|strig|btrig|sbtrig|sc|bc|sbc]", "Set/show operating mode");
+  cli::printHelpItem("mode [pd|pda|strig|btrig|sbtrig|sc|bc|sbc]",
+                     "Set/show operating mode");
   cli::printHelpItem("avg [0..7]", "Set/show averaging (0=1,...,7=1024)");
   cli::printHelpItem("vbusct [0..7]", "Set/show bus voltage conv time");
   cli::printHelpItem("vshct [0..7]", "Set/show shunt voltage conv time");
@@ -477,6 +454,12 @@ void printVersionInfo() {
                 INA3221::VERSION_MAJOR,
                 INA3221::VERSION_MINOR,
                 INA3221::VERSION_PATCH);
+  Serial.printf("  Arduino-ESP32 version: %s\n", ESP.getCoreVersion());
+  Serial.printf("  ESP-IDF version: %s\n", ESP.getSdkVersion());
+  Serial.printf("  Flash size: %lu bytes\n",
+                static_cast<unsigned long>(ESP.getFlashChipSize()));
+  Serial.printf("  PSRAM size: %lu bytes\n",
+                static_cast<unsigned long>(ESP.getPsramSize()));
 }
 
 INA3221::TransportConfig makeOwnerTransport() {
@@ -936,8 +919,8 @@ void runSelfTest() {
     reportSkip("probe responds", "driver not initialized");
     reportSkip("remaining checks", "selftest aborted");
     Serial.printf("Selftest result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
-                  goodIfNonZeroColor(stats.pass), static_cast<unsigned long>(stats.pass), LOG_COLOR_RESET,
-                  goodIfZeroColor(stats.fail), static_cast<unsigned long>(stats.fail), LOG_COLOR_RESET,
+                  cli::nonZeroGoodColor(stats.pass), static_cast<unsigned long>(stats.pass), LOG_COLOR_RESET,
+                  cli::zeroGoodColor(stats.fail), static_cast<unsigned long>(stats.fail), LOG_COLOR_RESET,
                   LOG_COLOR_YELLOW, static_cast<unsigned long>(stats.skip), LOG_COLOR_RESET);
     return;
   }
@@ -982,8 +965,8 @@ void runSelfTest() {
   reportCheck("isOnline", device.isOnline(), "");
 
   Serial.printf("Selftest result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
-                goodIfNonZeroColor(stats.pass), static_cast<unsigned long>(stats.pass), LOG_COLOR_RESET,
-                goodIfZeroColor(stats.fail), static_cast<unsigned long>(stats.fail), LOG_COLOR_RESET,
+                cli::nonZeroGoodColor(stats.pass), static_cast<unsigned long>(stats.pass), LOG_COLOR_RESET,
+                cli::zeroGoodColor(stats.fail), static_cast<unsigned long>(stats.fail), LOG_COLOR_RESET,
                 LOG_COLOR_YELLOW, static_cast<unsigned long>(stats.skip), LOG_COLOR_RESET);
 }
 
@@ -1099,13 +1082,13 @@ void runStressMix(int count) {
              static_cast<float>(okTotal + failTotal))
           : 0.0f;
   Serial.printf("  Total: %sok=%lu%s %sfail=%lu%s (%s%.2f%%%s)\n",
-                goodIfNonZeroColor(okTotal),
+                cli::nonZeroGoodColor(okTotal),
                 static_cast<unsigned long>(okTotal),
                 LOG_COLOR_RESET,
-                goodIfZeroColor(failTotal),
+                cli::zeroGoodColor(failTotal),
                 static_cast<unsigned long>(failTotal),
                 LOG_COLOR_RESET,
-                successRateColor(pct),
+                cli::successRateColor(pct),
                 pct,
                 LOG_COLOR_RESET);
   Serial.printf("  Duration: %lu ms\n", static_cast<unsigned long>(elapsed));
@@ -1118,20 +1101,20 @@ void runStressMix(int count) {
   for (int i = 0; i < opCount; ++i) {
     Serial.printf("  %-12s %sok=%lu%s %sfail=%lu%s\n",
                   stats[i].name,
-                  goodIfNonZeroColor(stats[i].ok),
+                  cli::nonZeroGoodColor(stats[i].ok),
                   static_cast<unsigned long>(stats[i].ok),
                   LOG_COLOR_RESET,
-                  goodIfZeroColor(stats[i].fail),
+                  cli::zeroGoodColor(stats[i].fail),
                   static_cast<unsigned long>(stats[i].fail),
                   LOG_COLOR_RESET);
   }
   const uint32_t successDelta = device.totalSuccess() - successBefore;
   const uint32_t failDelta = device.totalFailures() - failBefore;
   Serial.printf("  Health delta (tracked I2C): %ssuccess +%lu%s, %sfailures +%lu%s\n",
-                goodIfNonZeroColor(successDelta),
+                cli::nonZeroGoodColor(successDelta),
                 static_cast<unsigned long>(successDelta),
                 LOG_COLOR_RESET,
-                goodIfZeroColor(failDelta),
+                cli::zeroGoodColor(failDelta),
                 static_cast<unsigned long>(failDelta),
                 LOG_COLOR_RESET);
 }
@@ -1153,7 +1136,7 @@ void processCommand(const String& cmdLine) {
   } else if (cmd == "version" || cmd == "ver") {
     printVersionInfo();
   } else if (cmd == "scan") {
-    bus_diag::scan();
+    i2c_scanner::scanDefault();
   } else if (cmd == "job") {
     printOwnerJobProgress();
   } else if (cmd == "job sample") {
@@ -1175,7 +1158,7 @@ void processCommand(const String& cmdLine) {
     printStatus(st);
     printDriverHealth();
   } else if (cmd == "verbose") {
-    LOGI("Verbose mode: %s%s%s", onOffColor(verboseMode), verboseMode ? "ON" : "OFF", LOG_COLOR_RESET);
+    LOGI("Verbose mode: %s%s%s", cli::enabledColor(verboseMode), verboseMode ? "ON" : "OFF", LOG_COLOR_RESET);
   } else if (cmd.startsWith("verbose ")) {
     bool val = false;
     if (!parseBool01(cmd.substring(8), val)) {
@@ -1183,7 +1166,7 @@ void processCommand(const String& cmdLine) {
       return;
     }
     verboseMode = val;
-    LOGI("Verbose mode: %s%s%s", onOffColor(verboseMode), verboseMode ? "ON" : "OFF", LOG_COLOR_RESET);
+    LOGI("Verbose mode: %s%s%s", cli::enabledColor(verboseMode), verboseMode ? "ON" : "OFF", LOG_COLOR_RESET);
   } else if (cmd == "read") {
     readAllChannels();
   } else if (cmd.startsWith("read ")) {
@@ -1335,7 +1318,7 @@ void processCommand(const String& cmdLine) {
     bool ready = false;
     auto st = device.readConversionReady(ready);
     if (st.ok()) {
-      LOGI("Conversion ready: %s%s%s", yesNoColor(ready), ready ? "YES" : "NO", LOG_COLOR_RESET);
+      LOGI("Conversion ready: %s%s%s", cli::yesNoColor(ready), ready ? "YES" : "NO", LOG_COLOR_RESET);
     } else {
       printStatus(st);
     }
@@ -1361,6 +1344,8 @@ void processCommand(const String& cmdLine) {
     INA3221::Mode mode = INA3221::Mode::SHUNT_BUS_CONT;
     if (token == "pd") {
       mode = INA3221::Mode::POWER_DOWN;
+    } else if (token == "pda") {
+      mode = INA3221::Mode::POWER_DOWN_ALT;
     } else if (token == "strig") {
       mode = INA3221::Mode::SHUNT_TRIG;
     } else if (token == "btrig") {
@@ -1374,7 +1359,7 @@ void processCommand(const String& cmdLine) {
     } else if (token == "sbc") {
       mode = INA3221::Mode::SHUNT_BUS_CONT;
     } else {
-      LOGW("Invalid mode (pd/strig/btrig/sbtrig/sc/bc/sbc)");
+      LOGW("Invalid mode (pd/pda/strig/btrig/sbtrig/sc/bc/sbc)");
       return;
     }
     printStatus(device.setMode(mode));
@@ -1685,7 +1670,7 @@ void processCommand(const String& cmdLine) {
     printStatus(device.setAlertLatchEnable(warn, crit));
   } else if (cmd == "online") {
     bool online = device.isOnline();
-    LOGI("Online: %s%s%s", yesNoColor(online), online ? "YES" : "NO", LOG_COLOR_RESET);
+    LOGI("Online: %s%s%s", cli::yesNoColor(online), online ? "YES" : "NO", LOG_COLOR_RESET);
   } else if (cmd == "selftest") {
     runSelfTest();
   } else if (cmd == "stress_mix") {
@@ -1783,7 +1768,7 @@ void setup() {
   }
   LOGI("I2C initialized (SDA=%d, SCL=%d)", board::I2C_SDA, board::I2C_SCL);
 
-  bus_diag::scan();
+  i2c_scanner::scanDefault();
 
   const INA3221::TransportConfig transportConfig = makeOwnerTransport();
   const INA3221::DeviceProfile profile = makeOwnerProfile();

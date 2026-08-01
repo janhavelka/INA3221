@@ -96,6 +96,9 @@ jobs:
       - name: Check release metadata parity
         run: python tools/check_metadata_consistency.py
 
+      - name: Test HIL transcript classifier
+        run: python tools/hil_cli_runner.py --parser-self-test
+
       - name: Install Doxygen
         run: |
           sudo apt-get update

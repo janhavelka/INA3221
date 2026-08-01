@@ -95,8 +95,6 @@ public:
     clearScript();
     clearCalls();
     _violation = Violation::NONE;
-    _nowMs = 0;
-    _yieldCalls = 0;
   }
 
   /// Restore the modeled device registers to documented power-on defaults.
@@ -128,9 +126,6 @@ public:
     _expectedAddress = address;
     _expectedTimeoutMs = timeoutMs;
   }
-
-  uint8_t expectedAddress() const { return _expectedAddress; }
-  uint32_t expectedTimeoutMs() const { return _expectedTimeoutMs; }
 
   void setRegister(uint8_t reg, uint16_t value) { _registers[reg] = value; }
   uint16_t registerValue(uint8_t reg) const { return _registers[reg]; }
@@ -197,9 +192,6 @@ public:
     _writeReadCalls = 0;
   }
 
-  size_t stepCount() const { return _stepCount; }
-  size_t consumedStepCount() const { return _nextStep; }
-  size_t remainingStepCount() const { return _stepCount - _nextStep; }
   bool scriptConsumed() const {
     return _violation == Violation::NONE && _nextStep == _stepCount;
   }
@@ -214,11 +206,6 @@ public:
     return index < _callCount ? &_calls[index] : nullptr;
   }
 
-  uint32_t nowMs() const { return _nowMs; }
-  void setNowMs(uint32_t nowMs) { _nowMs = nowMs; }
-  void advanceMs(uint32_t elapsedMs) { _nowMs += elapsedMs; }
-  uint32_t yieldCalls() const { return _yieldCalls; }
-
   INA3221::TransportConfig makeTransportConfig() {
     INA3221::TransportConfig config;
     config.i2cWrite = &ScriptedTransport::writeCallback;
@@ -228,20 +215,6 @@ public:
     config.cooperativeYield = &ScriptedTransport::yieldCallback;
     config.timeUser = this;
     config.defaultTransferTimeoutMs = _expectedTimeoutMs;
-    return config;
-  }
-
-  /// Legacy Config adapter retained for compatibility-API tests.
-  INA3221::Config makeConfig() {
-    INA3221::Config config;
-    config.i2cWrite = &ScriptedTransport::writeCallback;
-    config.i2cWriteRead = &ScriptedTransport::writeReadCallback;
-    config.i2cUser = this;
-    config.nowMs = &ScriptedTransport::nowMsCallback;
-    config.cooperativeYield = &ScriptedTransport::yieldCallback;
-    config.timeUser = this;
-    config.i2cAddress = _expectedAddress;
-    config.i2cTimeoutMs = _expectedTimeoutMs;
     return config;
   }
 
@@ -267,16 +240,12 @@ public:
   }
 
   static uint32_t nowMsCallback(void* user) {
-    return user == nullptr ? 0 : static_cast<ScriptedTransport*>(user)->_nowMs;
+    (void)user;
+    return 0;
   }
 
   static void yieldCallback(void* user) {
-    if (user != nullptr) {
-      ScriptedTransport* transport = static_cast<ScriptedTransport*>(user);
-      if (transport->_yieldCalls != UINT32_MAX) {
-        ++transport->_yieldCalls;
-      }
-    }
+    (void)user;
   }
 
 private:
@@ -506,8 +475,6 @@ private:
   uint32_t _writeReadCalls = 0;
   Violation _violation = Violation::NONE;
 
-  uint32_t _nowMs = 0;
-  uint32_t _yieldCalls = 0;
 };
 
 }  // namespace INA3221Test

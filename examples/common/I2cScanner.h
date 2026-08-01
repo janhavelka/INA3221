@@ -83,36 +83,6 @@ inline bool isRecognizedIna3221(const Ina3221Identity& identity) {
 }
 
 /**
- * @brief Attempt to recover a stuck I2C bus by toggling SCL.
- */
-inline void recoverBus(int sda, int scl) {
-  Wire.end();
-
-  pinMode(scl, OUTPUT);
-  pinMode(sda, INPUT_PULLUP);
-
-  for (int i = 0; i < 9; i++) {
-    digitalWrite(scl, LOW);
-    delayMicroseconds(5);
-    digitalWrite(scl, HIGH);
-    delayMicroseconds(5);
-    if (digitalRead(sda)) {
-      break;
-    }
-  }
-
-  pinMode(sda, OUTPUT);
-  digitalWrite(sda, LOW);
-  delayMicroseconds(5);
-  digitalWrite(scl, HIGH);
-  delayMicroseconds(5);
-  digitalWrite(sda, HIGH);
-  delayMicroseconds(5);
-
-  Wire.begin(sda, scl);
-}
-
-/**
  * @brief Scan I2C bus and print found devices.
  */
 inline void scan(TwoWire& wire, uint16_t timeoutMs = 50) {

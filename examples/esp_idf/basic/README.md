@@ -3,9 +3,11 @@
 [Back to project README](../../../README.md) ·
 [Native integration guide](../../../docs/IDF_PORT.md)
 
-This is a native ESP-IDF application. It uses `app_main`, the ESP-IDF 6.x
+This is a native ESP-IDF application. It uses `app_main`, the ESP-IDF `6.0.1`
 `driver/i2c_master.h` API, `esp_timer`, FreeRTOS waits, and fixed C buffers. It
 does not include Arduino, Wire, `String`, `Serial`, or a compatibility facade.
+This native stack is separate from ESP-IDF `5.5.5` bundled with the repository's
+Arduino-ESP32 `3.3.11` build.
 
 ## Configure hardware
 
@@ -71,3 +73,5 @@ Only a successful `idf.py build` transcript proves compiler/linker success for
 the selected target and exact revision. Hardware behavior is a separate HIL
 claim. See the [integration guide](../../../docs/IDF_PORT.md) for detailed
 ownership, timeout mapping, and evidence rules.
+The [HIL guide](../../../docs/HIL.md) documents the Arduino fixture workflow;
+its COM-port result must not be presented as native-IDF hardware evidence.

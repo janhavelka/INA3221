@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "INA3221/INA3221.h"
+#include "INA3221/Status.h"
 #include "driver/i2c_master.h"
 #include "esp_err.h"
 

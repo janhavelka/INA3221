@@ -457,7 +457,7 @@ void printHelp() {
   printHelpItem("job", "Show cooperative owner-job progress");
   printHelpItem("job sample", "Start a budget-one triggered sample");
   printHelpItem("job cancel", "Cancel active job without I2C");
-  printHelpItem("mode [pd|strig|btrig|sbtrig|sc|bc|sbc]", "Set/show mode");
+  printHelpItem("mode [pd|pda|strig|btrig|sbtrig|sc|bc|sbc]", "Set/show mode");
   printHelpItem("avg [0..7]", "Set/show averaging");
   printHelpItem("vbusct [0..7]", "Set/show bus conversion time");
   printHelpItem("vshct [0..7]", "Set/show shunt conversion time");
@@ -1042,6 +1042,10 @@ bool parseModeToken(const char* token, INA3221::Mode& mode, bool triggeredOnly) 
     mode = INA3221::Mode::POWER_DOWN;
     return true;
   }
+  if (std::strcmp(token, "pda") == 0) {
+    mode = INA3221::Mode::POWER_DOWN_ALT;
+    return true;
+  }
   if (std::strcmp(token, "sc") == 0) {
     mode = INA3221::Mode::SHUNT_CONT;
     return true;
@@ -1240,7 +1244,7 @@ void processCommand(char* line) {
   } else if ((arg = argAfter(cmd, "mode ")) != nullptr) {
     INA3221::Mode mode = INA3221::Mode::SHUNT_BUS_CONT;
     if (!parseModeToken(arg, mode, false)) {
-      warn("Invalid mode (pd/strig/btrig/sbtrig/sc/bc/sbc)");
+      warn("Invalid mode (pd/pda/strig/btrig/sbtrig/sc/bc/sbc)");
       return;
     }
     printStatus(device.setMode(mode));

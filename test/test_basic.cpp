@@ -3,13 +3,8 @@
 
 #include <unity.h>
 
-#include "Arduino.h"
-#include "Wire.h"
-
+#include <initializer_list>
 #include <limits>
-
-SerialClass Serial;
-TwoWire Wire;
 
 #define private public
 #include "INA3221/INA3221.h"
@@ -1073,6 +1068,21 @@ void test_set_mode() {
   TEST_ASSERT_FALSE(dev._conversionReady);
 }
 
+void test_set_alternate_power_down_mode() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  Status st = dev.setMode(Mode::POWER_DOWN_ALT);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::POWER_DOWN_ALT),
+                          static_cast<uint8_t>(dev.getMode()));
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG, bus.lastWriteReg);
+  TEST_ASSERT_EQUAL_HEX16(0x7124, bus.lastWriteValue);
+  TEST_ASSERT_FALSE(dev._conversionStarted);
+  TEST_ASSERT_FALSE(dev._conversionReady);
+}
+
 void test_set_mode_rolls_back_cached_config_on_write_failure() {
   FakeBus bus;
   INA3221::INA3221 dev;
@@ -1863,6 +1873,7 @@ int main() {
 
   // Configuration
   RUN_TEST(test_set_mode);
+  RUN_TEST(test_set_alternate_power_down_mode);
   RUN_TEST(test_set_mode_rolls_back_cached_config_on_write_failure);
   RUN_TEST(test_set_averaging);
   RUN_TEST(test_set_averaging_rolls_back_cached_config_on_write_failure);

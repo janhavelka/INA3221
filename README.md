@@ -389,12 +389,22 @@ The repository's Arduino example uses project-local glue under
 `BoardConfig.h` for the actual board instead of copying its reference pins into
 library code.
 
+Repository example and HIL builds exact-pin pioarduino
+[`platform-espressif32` `55.03.311`](https://github.com/pioarduino/platform-espressif32/releases/tag/55.03.311),
+which supplies Arduino-ESP32 `3.3.11` and ESP-IDF `5.5.5` and requires
+PlatformIO Core `6.1.19` or newer. This replaces the previous `54.03.20` /
+Arduino `3.2.0` / ESP-IDF `5.4.1` build baseline. Consuming applications own
+their platform selection; the repository pin qualifies the examples, not an
+application's separate toolchain.
+
 ### Native ESP-IDF
 
 Add this repository as a component through `EXTRA_COMPONENT_DIRS`, a project
 component checkout, or equivalent component-manager integration. The root
 `CMakeLists.txt` exports `include/`, compiles `src/INA3221.cpp`, and requests
-C++17. The native example uses ESP-IDF 6.x's `driver/i2c_master.h` API.
+C++17. The native example is independently compiled with ESP-IDF `6.0.1` and
+its `driver/i2c_master.h` API; that is separate from the IDF `5.5.5` bundled
+inside the Arduino build above.
 
 See the [native ESP-IDF integration guide](docs/IDF_PORT.md).
 
@@ -411,21 +421,14 @@ See the [native ESP-IDF integration guide](docs/IDF_PORT.md).
 
 ## Validation
 
-Run repository checks from the root:
+The authoritative local validation matrix is in [CONTRIBUTING.md](CONTRIBUTING.md).
+For a quick build smoke check, run the native tests and both Arduino target
+builds from the root:
 
 ```bash
-python tools/check_cli_contract.py
-python tools/check_idf_example_contract.py
-python tools/check_core_timing_guard.py
-python tools/check_metadata_consistency.py
-python scripts/generate_version.py check
-python tools/check_strict_compile.py
-doxygen Doxyfile
 python -m platformio test -e native
 python -m platformio run -e esp32s3dev
 python -m platformio run -e esp32s2dev
-idf.py -C examples/esp_idf/basic set-target esp32s3 build
-idf.py -C examples/esp_idf/basic set-target esp32s2 build
 ```
 
 CI compiles native tests, both Arduino targets, and both native ESP-IDF targets.
@@ -438,15 +441,15 @@ parameter documentation with warnings treated as errors.
 
 ## Documentation map
 
-- <a href="docs/README.md">Documentation index</a> — maintained guides and
-  bundled source material.
+- <a href="docs/README.md">Documentation index</a> — maintained guides and the
+  bundled device datasheet.
 - [Changelog](CHANGELOG.md) — release history and unreleased changes.
 - [Public API header](include/INA3221/INA3221.h) — authoritative Doxygen contract.
 - [Native ESP-IDF integration](docs/IDF_PORT.md) — bus ownership and adapter rules.
-- <a href="docs/INA3221_IMPLEMENTATION_MANUAL.md">INA3221 chip implementation
-  manual</a> — chip/datasheet reference, not the library API contract.
-- `docs/extracted-md/00_document_inventory.md` — source and extraction index for
-  bundled reference material.
+- [Hardware-in-the-loop validation](docs/HIL.md) — reproducible fixture run and
+  reviewed evidence ledger.
+- <a href="docs/INA3221_datasheet.pdf">INA3221 datasheet</a> — authoritative
+  bundled device reference.
 
 ## License
 

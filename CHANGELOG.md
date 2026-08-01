@@ -7,14 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added a maintained HIL guide and reviewed evidence ledger with bounded
+  commands, explicit coverage, fixture assumptions, and non-claims.
+- Added a PlatformIO post-builder upload-configuration hook that disables
+  esptool `5.3.0`'s Unicode progress bar on legacy Windows code pages.
+
 ### Changed
 
-- Consolidated maintained documentation under `docs/`, removed completed
-  audits, dated validation reports, and task prompts, and retained both raw and
-  Markdown datasheet extraction archives for future implementation work.
+- Updated Arduino example and HIL builds from exact pioarduino `54.03.20`
+  (Arduino-ESP32 `3.2.0`, ESP-IDF `5.4.1`) to `55.03.311`
+  (Arduino-ESP32 `3.3.11`, ESP-IDF `5.5.5`), made the ESP32-S3 4 MB QIO
+  flash/2 MB QSPI PSRAM layout explicit, and removed the legacy ESP32
+  ECO1-only PSRAM cache workaround flag.
+- Restored the ESP32-S3 example to USB Serial/JTAG HWCDC and qualified its
+  single-port upload/CLI path under Arduino-ESP32 `3.3.11`, preserving one
+  stable COM-port identity for long HIL sessions.
+- Consolidated maintained documentation under `docs/` and removed completed
+  audits, dated validation reports, task prompts, generated extraction archives,
+  and implementation-era research material.
 - Expanded the hardware-validation runner across every operating mode,
   averaging and conversion-time value, all three channel configuration paths,
-  alert-register write/readback/restore paths, and a readable identity register.
+  direct measurements on all channels, cooperative sample/cancel jobs,
+  alert and raw-register write/readback/restore paths, CLI aliases and invalid
+  inputs, exact configuration-register encodings, exact stress totals, and
+  strict final/soak health invariants.
+- Exposed the public alternate power-down encoding through the Arduino and
+  native ESP-IDF example CLIs as `mode pda` and added exact HIL readback.
 - Reorganized and expanded the README with hardware/address guidance, profile
   validation/defaults, the complete cooperative job lifecycle, fixed-unit
   sample semantics, alert/configuration certainty, error recovery, installation,
@@ -30,16 +50,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated the native ESP-IDF guide to describe v3 as the current production API.
 - Replaced stale contribution and security guidance with current validation,
   release, disclosure, and supported-version policies.
+- Removed uncalled Arduino example wrappers, duplicated CLI/log formatting,
+  obsolete native-test Arduino/Wire stubs, and TunnelMonitor-only version
+  generator logic that could never run in this repository.
+
+### Removed
+
+- Removed synthesized application-note summaries, supplemental research PDFs,
+  generated Markdown/plain-text extraction archives, compact implementation
+  notes, and the completed chip implementation manual. The authoritative
+  INA3221 datasheet and maintained library/integration documentation remain.
 
 ### Fixed
 
+- Avoided flushing the two-byte CLI prompt on ESP32-S3 HWCDC, where a
+  transient SOF connection-state flap can make `HWCDC::flush()` discard the
+  queued prompt. The prompt now yields to the USB Serial/JTAG TX ISR while
+  TinyUSB retains the existing flush behavior.
 - Made the default `readBlocking()` deadline derive from the active profile and
   transport callback bound, so the default 50 ms per-transfer ceiling cannot
   make a healthy three-channel triggered read fail admission against the former
   fixed 200 ms deadline.
 - Removed stale documentation that referred to the released v3 API as a future
-  major version, claimed `0.1.x` was the supported release, and referenced a
-  nonexistent formatter configuration.
+  major version or claimed `0.1.x` was the supported release.
+- Corrected contributor guidance to reference the tracked `.clang-format`, and
+  corrected the HIL runner's `pyserial` installation guidance and strict final
+  health classification.
 
 ## [3.0.0] - 2026-07-19
 

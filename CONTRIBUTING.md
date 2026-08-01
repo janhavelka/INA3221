@@ -14,7 +14,7 @@ Required for the full host/documentation pass:
 - a C++17 host compiler
 - Doxygen
 
-ESP-IDF 6.x is additionally required to compile the native example locally.
+ESP-IDF `6.0.1` is additionally required to reproduce the native example builds.
 Hardware-in-the-loop checks require a supported ESP32-S2/S3 fixture and are not
 implied by a successful host build.
 
@@ -32,8 +32,7 @@ unrelated worktree changes. `library.json` is the version source of truth;
   library logging.
 - Return `Status` for fallible operations; do not add exceptions or silent
   fallback behavior.
-- Follow the existing C++ layout and naming conventions. The repository does
-  not currently publish an automated formatter configuration.
+- Follow the tracked `.clang-format` and the existing naming conventions.
 - Add or update tests for behavior changes, including failure and boundary
   cases where relevant.
 - Document every public symbol and parameter in Doxygen.
@@ -53,6 +52,7 @@ python tools/check_core_timing_guard.py
 python tools/check_metadata_consistency.py
 python scripts/generate_version.py check
 python tools/check_strict_compile.py
+python tools/hil_cli_runner.py --parser-self-test
 doxygen Doxyfile
 python -m platformio test -e native
 python -m platformio run -e esp32s3dev
@@ -67,7 +67,8 @@ idf.py -C examples/esp_idf/basic set-target esp32s2 build
 ```
 
 Report unavailable toolchains as `NOT RUN`; do not treat a static contract check
-as compiler, linker, or hardware evidence.
+as compiler, linker, or hardware evidence. Hardware contributors must also
+follow the bounded procedure and evidence rules in [docs/HIL.md](docs/HIL.md).
 
 ## Commits and pull requests
 
