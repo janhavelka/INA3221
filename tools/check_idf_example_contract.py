@@ -30,6 +30,7 @@ MANDATORY_COMMANDS = [
     "help",
     "version",
     "scan",
+    "scanina",
     "read",
     "ch",
     "shunt",
@@ -44,17 +45,25 @@ MANDATORY_COMMANDS = [
     "timing",
     "start",
     "poll",
+    "job",
     "mode",
     "avg",
     "vbusct",
     "vshct",
     "chen",
     "rshunt",
+    "direction",
+    "profile",
+    "addr",
+    "init",
+    "end",
+    "freq",
     "config",
     "reset",
     "reg",
     "wreg",
     "alerts",
+    "alertsnap",
     "mask",
     "crit",
     "warn",
@@ -64,6 +73,9 @@ MANDATORY_COMMANDS = [
     "sumch",
     "latch",
     "drv",
+    "diag",
+    "verify",
+    "mismatch",
     "probe",
     "recover",
     "online",
@@ -71,6 +83,13 @@ MANDATORY_COMMANDS = [
     "verbose",
     "stress",
     "stress_mix",
+    "stress_owner",
+    "stress_freq",
+    "hilrun",
+    "hilmark",
+    "xfer_reset",
+    "xfer_stats",
+    "xfer_assert",
     "selftest",
     "convert",
 ]
@@ -89,8 +108,9 @@ NATIVE_IDF_TOKENS = [
     '#include "driver/i2c_master.h"',
     "esp_timer_get_time",
     "vTaskDelay",
-    "std::fgets",
+    "read(STDIN_FILENO",
     "char line[MAX_LINE_LEN]",
+    "lineOverflow",
     "ina3221IdfProbeAddress",
     "ina3221IdfI2cWriteReadAt",
 ]
@@ -193,6 +213,36 @@ def main() -> int:
             fail(f"native IDF CLI missing help item '{command}'")
         if not command_has_dispatch(idf_main, command):
             fail(f"native IDF CLI missing dispatch '{command}'")
+
+    help_pattern = re.compile(r'(?:cli::)?printHelpItem\("([^" ]+)')
+    arduino_help = set(help_pattern.findall(cli))
+    idf_help = set(help_pattern.findall(idf_main))
+    if arduino_help != idf_help:
+        fail(
+            "Arduino/IDF normalized help command mismatch: "
+            f"Arduino-only={sorted(arduino_help - idf_help)}, "
+            f"IDF-only={sorted(idf_help - arduino_help)}"
+        )
+
+    for variant in (
+        "job init", "job apply", "job reconcile", "job sample", "job continuous",
+        "job powerdown", "job cancel", "job auto", "job step", "job result",
+        "job lastsample", "job alerts",
+    ):
+        if variant not in cli or variant not in idf_main:
+            fail(f"owner command variant '{variant}' missing from one CLI")
+
+    for token in (
+        "Last error detail:",
+        "Last error msg:",
+        "Managed Register Verification Evidence",
+        "HIL_BEGIN token=",
+        "XFER_ASSERT PASS",
+        "ina3221IdfSetFrequency",
+        "ina3221IdfSetAddress",
+    ):
+        if token not in idf_main and token not in transport:
+            fail(f"native IDF expanded diagnostic/automation token '{token}' missing")
 
     manifest = (ROOT / "idf_component.yml").read_text(encoding="utf-8", errors="replace")
     for token in ("esp32s2", "esp32s3", "idf:"):

@@ -21,11 +21,42 @@ namespace transport {
 struct WireContext {
   TwoWire* wire = nullptr;
   uint32_t configuredTimeoutMs = 0;
+  uint32_t frequencyHz = 0;
+};
+
+struct TransferStats {
+  uint32_t read = 0;
+  uint32_t write = 0;
 };
 
 inline WireContext& wireContext() {
-  static WireContext context{&Wire, 0};
+  static WireContext context{&Wire, 0, 0};
   return context;
+}
+
+inline TransferStats& transferStatsStorage() {
+  static TransferStats stats{};
+  return stats;
+}
+
+inline void resetTransferStats() {
+  transferStatsStorage() = {};
+}
+
+inline TransferStats transferStats() {
+  return transferStatsStorage();
+}
+
+inline void noteReadTransfer() {
+  if (transferStatsStorage().read != UINT32_MAX) {
+    ++transferStatsStorage().read;
+  }
+}
+
+inline void noteWriteTransfer() {
+  if (transferStatsStorage().write != UINT32_MAX) {
+    ++transferStatsStorage().write;
+  }
 }
 
 inline INA3221::Status validateTransferContext(uint32_t timeoutMs, void* user,
@@ -69,6 +100,7 @@ inline INA3221::Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
     return INA3221::Status::Error(INA3221::Err::INVALID_PARAM, "Write exceeds I2C buffer",
                                   static_cast<int32_t>(len));
   }
+  noteWriteTransfer();
   wire->beginTransmission(addr);
   size_t written = wire->write(data, len);
   if (written != len) {
@@ -117,6 +149,7 @@ inline INA3221::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txL
   if (txLen > 128 || rxLen > 128) {
     return INA3221::Status::Error(INA3221::Err::INVALID_PARAM, "I2C read exceeds buffer");
   }
+  noteReadTransfer();
   wire->beginTransmission(addr);
   size_t written = wire->write(tx, txLen);
   if (written != txLen) {
@@ -163,6 +196,10 @@ inline INA3221::Status wireWriteRead(uint8_t addr, const uint8_t* tx, size_t txL
  * @brief Initialize Wire with default pins and frequency.
  */
 inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutMs = 50) {
+  WireContext& context = wireContext();
+  context.wire = nullptr;
+  context.configuredTimeoutMs = 0;
+  context.frequencyHz = 0;
 #if defined(ARDUINO_ARCH_ESP32)
   // Toggle SCL to release any stuck slave
   pinMode(scl, OUTPUT);
@@ -183,16 +220,75 @@ inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutM
   delayMicroseconds(5);
 #endif
 
-  Wire.begin(sda, scl);
-  Wire.setClock(freq);
+  if (!Wire.begin(sda, scl)) {
+    return false;
+  }
+  if (!Wire.setClock(freq)) {
+    Wire.end();
+    return false;
+  }
 #if defined(ARDUINO_ARCH_ESP32)
   Wire.setTimeOut(timeoutMs);
 #else
   (void)timeoutMs;
 #endif
-  wireContext().wire = &Wire;
-  wireContext().configuredTimeoutMs = timeoutMs;
+  context.wire = &Wire;
+  context.configuredTimeoutMs = timeoutMs;
+  context.frequencyHz = freq;
   return true;
+}
+
+inline INA3221::Status setFrequency(uint32_t frequencyHz) {
+  WireContext& context = wireContext();
+  if (context.wire == nullptr || context.configuredTimeoutMs == 0U) {
+    return INA3221::Status::Error(INA3221::Err::I2C_BUS,
+                                  "Wire bus is not initialized");
+  }
+  if (frequencyHz < 10000U || frequencyHz > 400000U) {
+    return INA3221::Status::Error(INA3221::Err::OUT_OF_RANGE,
+                                  "I2C frequency must be 10000-400000 Hz",
+                                  static_cast<int32_t>(frequencyHz));
+  }
+  if (!context.wire->setClock(frequencyHz)) {
+    return INA3221::Status::Error(INA3221::Err::I2C_BUS,
+                                  "Wire rejected I2C frequency",
+                                  static_cast<int32_t>(frequencyHz));
+  }
+  context.frequencyHz = frequencyHz;
+  return INA3221::Status::Ok();
+}
+
+inline uint32_t frequencyHz() {
+  return wireContext().frequencyHz;
+}
+
+inline INA3221::Status probeAddress(uint8_t addr, uint16_t timeoutMs) {
+  WireContext& context = wireContext();
+  TwoWire* wire = nullptr;
+  INA3221::Status contextStatus =
+      validateTransferContext(timeoutMs, &context, wire);
+  if (!contextStatus.ok()) return contextStatus;
+  wire->beginTransmission(addr);
+  const uint8_t result = wire->endTransmission(true);
+  switch (result) {
+    case 0: return INA3221::Status::Ok();
+    case 2: return INA3221::Status::Error(INA3221::Err::I2C_NACK_ADDR,
+                                          "I2C address NACK", result);
+    case 3: return INA3221::Status::Error(INA3221::Err::I2C_NACK_DATA,
+                                          "I2C data NACK", result);
+    case 4: return INA3221::Status::Error(INA3221::Err::I2C_BUS,
+                                          "I2C bus error", result);
+    case 5: return INA3221::Status::Error(INA3221::Err::I2C_TIMEOUT,
+                                          "I2C timeout", result);
+    default: return INA3221::Status::Error(INA3221::Err::I2C_ERROR,
+                                           "I2C address probe failed", result);
+  }
+}
+
+inline INA3221::Status wireWriteReadAt(uint8_t addr, const uint8_t* tx,
+                                        size_t txLen, uint8_t* rx, size_t rxLen,
+                                        uint32_t timeoutMs) {
+  return wireWriteRead(addr, tx, txLen, rx, rxLen, timeoutMs, &wireContext());
 }
 
 inline uint32_t arduinoNowMs(void*) {

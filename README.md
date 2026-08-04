@@ -246,6 +246,11 @@ with `measurementConfigState()` and `alertConfigState()`:
 `HardwareEffect::PARTIAL` and `INDETERMINATE` deliberately avoid claiming
 rollback after confirmed or ambiguous writes.
 
+When profile or power-down readback fails, `JobResult::mismatchValid` is true
+and `mismatchRegister`, `mismatchExpected`, `mismatchActual`, and
+`mismatchMask` retain the first exact comparison failure. These fields are
+zero/false for results that did not fail register verification.
+
 ## Deterministic bounds
 
 `maximumJobTransfers()` returns the successful-path ceiling for a valid profile
@@ -411,8 +416,9 @@ See the [native ESP-IDF integration guide](docs/IDF_PORT.md).
 ## Examples
 
 - <a href="examples/01_basic_bringup_cli/README.md">Arduino/PlatformIO bring-up CLI</a>:
-  budget-one initialization, triggered samples, progress/cancel/result flow,
-  scanning, settings, alerts, raw diagnostics, stress, and self-test commands.
+  complete cooperative job control, address/frequency lifecycle, all chip
+  setters, retained sample/alert/register-mismatch evidence, exact transfer
+  counters, full diagnostics, framed HIL, stress, and self-test commands.
 - <a href="examples/esp_idf/basic/README.md">Native ESP-IDF application</a>: native
   `app_main`, `driver/i2c_master.h`, `esp_timer`, FreeRTOS waits, fixed C
   buffers, and the same owner-safe workflow without Arduino facades.
@@ -425,10 +431,10 @@ The authoritative local validation matrix is in [CONTRIBUTING.md](CONTRIBUTING.m
 For a quick build smoke check, run the native tests and both Arduino target
 builds from the root:
 
-```bash
-python -m platformio test -e native
-python -m platformio run -e esp32s3dev
-python -m platformio run -e esp32s2dev
+```powershell
+.\scripts\pio.cmd test -e native
+.\scripts\pio.cmd run -e esp32s3dev
+.\scripts\pio.cmd run -e esp32s2dev
 ```
 
 CI compiles native tests, both Arduino targets, and both native ESP-IDF targets.

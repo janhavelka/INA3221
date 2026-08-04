@@ -91,9 +91,11 @@ limits each normal service call to one synchronous backend callback.
 - the existing scan, measurement, configuration, alert, raw register, health,
   stress, and self-test diagnostics.
 
-The CLI commands `job`, `job sample`, and `job cancel` demonstrate progress,
-triggered admission, and bus-silent cancellation. The transport callback does
-not implement retry or bus recovery; those remain application policy.
+The CLI exposes every cooperative job kind, exact manual budgets and automatic
+service, retained results/samples/alerts, full diagnostics and register mismatch
+evidence, runtime valid-address selection, runtime 10-400 kHz bus configuration,
+and transfer/owner/frequency stress. The transport callback still performs one
+attempt only; retry and bus recovery remain application policy.
 
 ## ESP-IDF 6.0.1 build
 

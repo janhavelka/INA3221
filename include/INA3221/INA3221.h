@@ -241,6 +241,11 @@ struct JobResult {
   uint32_t requestId = 0; ///< Request identity supplied at admission
   uint16_t transfers = 0; ///< Physical callback attempts made by the operation
   uint32_t profileGeneration = 0; ///< Profile generation after terminalization
+  bool mismatchValid = false; ///< True when register verification captured a mismatch
+  uint8_t mismatchRegister = 0; ///< Register address whose verification failed
+  uint16_t mismatchExpected = 0; ///< Desired register value before compare masking
+  uint16_t mismatchActual = 0; ///< Read-back register value before compare masking
+  uint16_t mismatchMask = 0; ///< Bits used when comparing expected and actual values
   bool sampleValid = false; ///< True only when sample contains a committed batch
   SampleBatch sample{}; ///< Committed batch for successful sample jobs
 };

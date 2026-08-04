@@ -45,7 +45,7 @@ devices, or dependencies without a concrete current caller and a clear reason.
 
 Run the checks relevant to the change. A full local pass is:
 
-```bash
+```powershell
 python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
 python tools/check_core_timing_guard.py
@@ -54,9 +54,9 @@ python scripts/generate_version.py check
 python tools/check_strict_compile.py
 python tools/hil_cli_runner.py --parser-self-test
 doxygen Doxyfile
-python -m platformio test -e native
-python -m platformio run -e esp32s3dev
-python -m platformio run -e esp32s2dev
+.\scripts\pio.cmd test -e native
+.\scripts\pio.cmd run -e esp32s3dev
+.\scripts\pio.cmd run -e esp32s2dev
 ```
 
 When ESP-IDF is installed, also run both native targets:

@@ -27,20 +27,55 @@ static constexpr uint32_t I2C_FREQ_HZ = 400000;
 static constexpr uint16_t I2C_TIMEOUT_MS = 50;
 static constexpr uint8_t DEFAULT_ADDR = 0x40;
 static constexpr size_t MAX_LINE_LEN = 128;
+static constexpr uint8_t INA3221_ADDR_MIN = 0x40;
+static constexpr uint8_t INA3221_ADDR_MAX = 0x43;
+static constexpr uint32_t I2C_FREQ_MIN_HZ = 10000;
+static constexpr uint32_t I2C_FREQ_MAX_HZ = 400000;
 
 INA3221::INA3221 device;
 bool verboseMode = false;
 uint8_t activeAddress = DEFAULT_ADDR;
+uint8_t selectedAddress = DEFAULT_ADDR;
+INA3221::Err hilCommandStatus = INA3221::Err::OK;
+INA3221::DeviceProfile retainedProfile{};
+bool retainedProfileValid = false;
+INA3221::JobResult lastOwnerResult{};
+bool lastOwnerResultValid = false;
 
 enum class OwnerDemoPhase : uint8_t {
   IDLE,
-  INITIALIZING,
-  SAMPLING
+  ACTIVE
 };
 
 OwnerDemoPhase ownerDemoPhase = OwnerDemoPhase::IDLE;
+bool startupSamplePending = false;
+bool ownerAutoService = true;
 uint32_t ownerRequestId = 1000U;
 static constexpr uint64_t OWNER_JOB_TIMEOUT_MS = 1000U;
+
+struct RegisterEvidence {
+  uint8_t reg = 0;
+  uint16_t expected = 0;
+  uint16_t actual = 0;
+  uint16_t compareMask = 0xFFFFU;
+  bool readOk = false;
+  INA3221::Status status = INA3221::Status::Ok();
+};
+
+struct VerificationEvidence {
+  bool valid = false;
+  uint32_t capturedAtMs = 0;
+  uint8_t i2cAddress = 0;
+  uint32_t profileGeneration = 0;
+  uint8_t count = 0;
+  uint8_t mismatches = 0;
+  uint8_t readFailures = 0;
+  RegisterEvidence registers[11]{};
+};
+
+VerificationEvidence lastVerification;
+
+void printAlertSnapshot(const INA3221::AlertSnapshot& alerts, const char* title);
 
 struct ChannelStressStats {
   bool enabled = false;
@@ -97,6 +132,9 @@ void info(const char* fmt, ...) {
 }
 
 void warn(const char* fmt, ...) {
+  if (hilCommandStatus == INA3221::Err::OK) {
+    hilCommandStatus = INA3221::Err::INVALID_PARAM;
+  }
   std::printf("[W] ");
   va_list args;
   va_start(args, fmt);
@@ -239,6 +277,47 @@ bool splitTwoArgs(const char* args, char* first, size_t firstLen, char* second, 
   return true;
 }
 
+bool splitThreeArgs(const char* args, uint32_t& first, uint32_t& second,
+                    uint32_t& third) {
+  if (args == nullptr) return false;
+  char copy[MAX_LINE_LEN];
+  std::snprintf(copy, sizeof(copy), "%s", args);
+  char* one = trim(copy);
+  char* split1 = std::strchr(one, ' ');
+  if (split1 == nullptr) return false;
+  *split1 = '\0';
+  char* two = trim(split1 + 1);
+  char* split2 = std::strchr(two, ' ');
+  if (split2 == nullptr) return false;
+  *split2 = '\0';
+  char* three = trim(split2 + 1);
+  return parseU32(one, first) && parseU32(two, second) && parseU32(three, third);
+}
+
+bool isValidIna3221Address(uint8_t address) {
+  return address >= INA3221_ADDR_MIN && address <= INA3221_ADDR_MAX;
+}
+
+bool parseAddress(const char* token, uint8_t& address) {
+  uint32_t value = 0;
+  if (!parseU32(token, value) || value > 0xFFU ||
+      !isValidIna3221Address(static_cast<uint8_t>(value))) {
+    return false;
+  }
+  address = static_cast<uint8_t>(value);
+  return true;
+}
+
+const char* addressStrap(uint8_t address) {
+  switch (address) {
+    case 0x40: return "A0=GND";
+    case 0x41: return "A0=VS";
+    case 0x42: return "A0=SDA";
+    case 0x43: return "A0=SCL";
+    default: return "invalid";
+  }
+}
+
 const char* errToStr(INA3221::Err err) {
   using INA3221::Err;
   switch (err) {
@@ -287,6 +366,66 @@ const char* stateToStr(INA3221::DriverState st) {
   }
 }
 
+const char* appliedStateToStr(INA3221::AppliedConfigState state) {
+  switch (state) {
+    case INA3221::AppliedConfigState::UNKNOWN: return "UNKNOWN";
+    case INA3221::AppliedConfigState::APPLIED: return "APPLIED";
+    case INA3221::AppliedConfigState::DIRTY: return "DIRTY";
+    default: return "INVALID";
+  }
+}
+
+const char* jobKindToStr(INA3221::JobKind kind) {
+  switch (kind) {
+    case INA3221::JobKind::NONE: return "NONE";
+    case INA3221::JobKind::INITIALIZE: return "INITIALIZE";
+    case INA3221::JobKind::APPLY_PROFILE: return "APPLY_PROFILE";
+    case INA3221::JobKind::RECONCILE: return "RECONCILE";
+    case INA3221::JobKind::TRIGGERED_SAMPLE: return "TRIGGERED_SAMPLE";
+    case INA3221::JobKind::CONTINUOUS_SAMPLE: return "CONTINUOUS_SAMPLE";
+    case INA3221::JobKind::POWER_DOWN: return "POWER_DOWN";
+    default: return "INVALID";
+  }
+}
+
+const char* jobStageToStr(INA3221::JobStage stage) {
+  switch (stage) {
+    case INA3221::JobStage::IDLE: return "IDLE";
+    case INA3221::JobStage::READ_IDENTITY: return "READ_IDENTITY";
+    case INA3221::JobStage::READ_PROFILE: return "READ_PROFILE";
+    case INA3221::JobStage::WRITE_PROFILE: return "WRITE_PROFILE";
+    case INA3221::JobStage::VERIFY_PROFILE: return "VERIFY_PROFILE";
+    case INA3221::JobStage::TRIGGER_SAMPLE: return "TRIGGER_SAMPLE";
+    case INA3221::JobStage::WAIT_CONVERSION: return "WAIT_CONVERSION";
+    case INA3221::JobStage::READ_ALERTS: return "READ_ALERTS";
+    case INA3221::JobStage::READ_CHANNELS: return "READ_CHANNELS";
+    case INA3221::JobStage::READ_POWER_STATE: return "READ_POWER_STATE";
+    case INA3221::JobStage::WRITE_POWER_STATE: return "WRITE_POWER_STATE";
+    case INA3221::JobStage::VERIFY_POWER_STATE: return "VERIFY_POWER_STATE";
+    case INA3221::JobStage::TERMINAL: return "TERMINAL";
+    default: return "INVALID";
+  }
+}
+
+const char* jobStateToStr(INA3221::JobTerminalState state) {
+  switch (state) {
+    case INA3221::JobTerminalState::IDLE: return "IDLE";
+    case INA3221::JobTerminalState::ACTIVE: return "ACTIVE";
+    case INA3221::JobTerminalState::SUCCEEDED: return "SUCCEEDED";
+    case INA3221::JobTerminalState::FAILED: return "FAILED";
+    case INA3221::JobTerminalState::CANCELLED: return "CANCELLED";
+    case INA3221::JobTerminalState::TIMED_OUT: return "TIMED_OUT";
+    case INA3221::JobTerminalState::PARTIAL: return "PARTIAL";
+    case INA3221::JobTerminalState::INDETERMINATE: return "INDETERMINATE";
+    default: return "INVALID";
+  }
+}
+
+const char* directionToStr(INA3221::CurrentDirection direction) {
+  return direction == INA3221::CurrentDirection::POSITIVE_SHUNT_IS_NEGATIVE_CURRENT
+             ? "INVERTED" : "NORMAL";
+}
+
 const char* modeToStr(INA3221::Mode mode) {
   using INA3221::Mode;
   switch (mode) {
@@ -333,6 +472,9 @@ const char* ctToStr(INA3221::ConvTime ct) {
 }
 
 void printStatus(const INA3221::Status& st) {
+  if (!st.ok() && hilCommandStatus == INA3221::Err::OK) {
+    hilCommandStatus = st.code;
+  }
   out("  Status: %s (code=%u, detail=%ld)\n",
       errToStr(st.code),
       static_cast<unsigned>(st.code),
@@ -407,6 +549,7 @@ void readAllChannels() {
 }
 
 void printDriverHealth() {
+  const uint32_t currentMs = nowMs();
   const uint32_t totalOk = device.totalSuccess();
   const uint32_t totalFail = device.totalFailures();
   const uint32_t total = totalOk + totalFail;
@@ -418,14 +561,27 @@ void printDriverHealth() {
   out("  Total success: %lu\n", static_cast<unsigned long>(totalOk));
   out("  Total failures: %lu\n", static_cast<unsigned long>(totalFail));
   out("  Success rate: %.1f%%\n", static_cast<double>(rate));
-  out("  Last OK: %lu\n", static_cast<unsigned long>(device.lastOkMs()));
-  out("  Last error: %lu\n", static_cast<unsigned long>(device.lastErrorMs()));
+  const uint32_t lastOk = device.lastOkMs();
+  if (device.totalSuccess() != 0U) {
+    out("  Last OK: %lu ms ago (at %lu ms)\n",
+        static_cast<unsigned long>(currentMs - lastOk),
+        static_cast<unsigned long>(lastOk));
+  } else {
+    out("  Last OK: never\n");
+  }
+  const uint32_t lastErrorMs = device.lastErrorMs();
   const INA3221::Status last = device.lastError();
   if (!last.ok()) {
+    out("  Last error: %lu ms ago (at %lu ms)\n",
+        static_cast<unsigned long>(currentMs - lastErrorMs),
+        static_cast<unsigned long>(lastErrorMs));
     out("  Last error code: %s\n", errToStr(last.code));
+    out("  Last error detail: %ld\n", static_cast<long>(last.detail));
     if (last.msg != nullptr && last.msg[0] != '\0') {
       out("  Last error msg: %s\n", last.msg);
     }
+  } else {
+    out("  Last error: never\n");
   }
 }
 
@@ -437,7 +593,8 @@ void printHelp() {
   out("\n=== INA3221 CLI Help ===\n");
   printHelpItem("help / ?", "Show this help");
   printHelpItem("version / ver", "Print firmware and library version info");
-  printHelpItem("scan", "Scan I2C bus");
+  printHelpItem("scan", "Scan bus and probe 0x40-0x43 for INA3221 IDs");
+  printHelpItem("scanina", "Probe only valid INA3221 addresses and IDs");
   printHelpItem("read", "Read all enabled channels");
   printHelpItem("read N", "Read N measurements");
   printHelpItem("ch <1|2|3>", "Read single channel");
@@ -454,21 +611,38 @@ void printHelp() {
   printHelpItem("start", "Start single-shot conversion");
   printHelpItem("start <strig|btrig|sbtrig>", "Start selected triggered conversion");
   printHelpItem("poll", "Read conversion-ready flag");
-  printHelpItem("job", "Show cooperative owner-job progress");
-  printHelpItem("job sample", "Start a budget-one triggered sample");
+  printHelpItem("job / job progress", "Show cooperative owner-job progress");
+  printHelpItem("job init", "Start identity/profile initialization");
+  printHelpItem("job apply", "Apply and verify the active desired profile");
+  printHelpItem("job reconcile", "Reapply and verify the active profile");
+  printHelpItem("job sample", "Start sample using the active profile mode");
+  printHelpItem("job continuous [0|1]", "Start continuous sample; optionally consume alerts");
+  printHelpItem("job powerdown", "Start verified power-down operation");
   printHelpItem("job cancel", "Cancel active job without I2C");
+  printHelpItem("job auto [0|1]", "Show/set automatic one-transfer polling");
+  printHelpItem("job step <0..255>", "Poll once with an explicit transfer budget");
+  printHelpItem("job result", "Show the last consumed terminal result");
+  printHelpItem("job lastsample", "Show the last committed fixed-unit sample");
+  printHelpItem("job alerts [take]", "Peek or consume retained alert evidence");
   printHelpItem("mode [pd|pda|strig|btrig|sbtrig|sc|bc|sbc]", "Set/show mode");
   printHelpItem("avg [0..7]", "Set/show averaging");
   printHelpItem("vbusct [0..7]", "Set/show bus conversion time");
   printHelpItem("vshct [0..7]", "Set/show shunt conversion time");
   printHelpItem("chen [<1|2|3> <0|1>]", "Show/set channel enable");
   printHelpItem("rshunt [<1|2|3> <ohms>]", "Show/set shunt resistance");
+  printHelpItem("direction [<1|2|3> <0|1>]", "Show/set current sign");
+  printHelpItem("profile", "Show complete desired profile and certainty");
+  printHelpItem("addr [0x40..0x43]", "Show/select target INA3221 address");
+  printHelpItem("init [0x40..0x43]", "Bind and initialize at selected/given address");
+  printHelpItem("end", "Unbind driver without touching the bus");
+  printHelpItem("freq [10000..400000]", "Show/set I2C frequency in Hz");
   printHelpItem("config", "Dump config register");
   printHelpItem("config write <hex>", "Write full config register");
   printHelpItem("reset", "Software reset");
   printHelpItem("reg <addr>", "Read 16-bit register");
   printHelpItem("wreg <addr> <val>", "Write 16-bit register");
   printHelpItem("alerts", "Read alert flags");
+  printHelpItem("alertsnap [take]", "Peek/consume retained alert evidence");
   printHelpItem("mask", "Read/decode Mask/Enable register");
   printHelpItem("crit [<1|2|3> [raw]]", "Show/set critical alert limit");
   printHelpItem("warn [<1|2|3> [raw]]", "Show/set warning alert limit");
@@ -478,6 +652,9 @@ void printHelp() {
   printHelpItem("sumch [<1|2|3> <0|1>]", "Show/set summation channels");
   printHelpItem("latch [<warn> <crit>]", "Show/set alert latches");
   printHelpItem("drv", "Show driver state and health");
+  printHelpItem("diag", "Show cache-only diagnostics and mismatch evidence");
+  printHelpItem("verify", "Read/compare all managed registers; consumes Mask flags");
+  printHelpItem("mismatch", "Show cached register verification evidence");
   printHelpItem("probe", "Probe device without health tracking");
   printHelpItem("recover", "Manual recovery attempt");
   printHelpItem("online", "Show online state");
@@ -485,6 +662,13 @@ void printHelp() {
   printHelpItem("verbose [0|1]", "Enable/disable verbose output");
   printHelpItem("stress [N]", "Run N measurement cycles");
   printHelpItem("stress_mix [N]", "Run N mixed-operation cycles");
+  printHelpItem("stress_owner [N]", "Run N cooperative sample jobs");
+  printHelpItem("stress_freq [N]", "Alternate 100/400 kHz with identity reads");
+  printHelpItem("hilrun <token> <seq> <cmd>", "Run one framed HIL command");
+  printHelpItem("hilmark <token>", "Print an automation marker");
+  printHelpItem("xfer_reset", "Reset example transport counters");
+  printHelpItem("xfer_stats", "Show example transport counters");
+  printHelpItem("xfer_assert <r> <w> <t>", "Assert transfer counts");
   printHelpItem("selftest", "Run safe command self-test report");
   printHelpItem("convert shunt <raw>", "Convert shunt raw to mV");
   printHelpItem("convert bus <raw>", "Convert bus raw to V");
@@ -502,31 +686,115 @@ void printVersionInfo() {
 }
 
 void printOwnerSample(const INA3221::SampleBatch& sample) {
-  out("Owner sample request=%lu profile=%lu valid=0x%02X\n",
+  out("Owner sample request=%lu profile=%lu enabled=0x%02X valid=0x%02X "
+      "coherence=%u capture=%llu ms alerts_valid=%u\n",
       static_cast<unsigned long>(sample.requestId),
       static_cast<unsigned long>(sample.profileGeneration),
-      static_cast<unsigned>(sample.validChannels));
+      static_cast<unsigned>(sample.enabledChannels),
+      static_cast<unsigned>(sample.validChannels),
+      static_cast<unsigned>(sample.coherence),
+      static_cast<unsigned long long>(sample.captureUptimeMs),
+      sample.alertSnapshotValid ? 1U : 0U);
   for (uint8_t i = 0; i < 3U; ++i) {
     const INA3221::ChannelMask bit = static_cast<INA3221::ChannelMask>(1U << i);
     if ((sample.validChannels & bit) == 0U) continue;
     const INA3221::FixedChannelReading& reading = sample.channels[i];
-    out("  CH%u: shunt=%lduV bus=%ldmV current=%ldmA power=%ldmW\n",
+    out("  CH%u: shunt=%lduV bus=%ldmV current=%ldmA power=%ldmW quantities=0x%02X\n",
         static_cast<unsigned>(i + 1U),
         static_cast<long>(reading.shuntMicroVolts),
         static_cast<long>(reading.busMilliVolts),
         static_cast<long>(reading.currentMilliAmps),
-        static_cast<long>(reading.powerMilliWatts));
+        static_cast<long>(reading.powerMilliWatts),
+        static_cast<unsigned>(reading.validQuantities));
   }
+  if (sample.alertSnapshotValid) printAlertSnapshot(sample.alerts, "Sample Alert Evidence");
+}
+
+uint64_t ownerDeadlineFor(INA3221::JobKind kind,
+                          const INA3221::DeviceProfile& profile,
+                          INA3221::Mode sampleMode = INA3221::Mode::SHUNT_BUS_TRIG) {
+  const uint64_t current = ownerNowMs();
+  uint16_t transfers = 0;
+  uint64_t durationMs = OWNER_JOB_TIMEOUT_MS;
+  INA3221::Status st = INA3221::INA3221::maximumJobTransfers(kind, profile, transfers);
+  if (st.ok()) durationMs = static_cast<uint64_t>(transfers) * I2C_TIMEOUT_MS + 250U;
+  if (kind == INA3221::JobKind::TRIGGERED_SAMPLE) {
+    uint64_t cycleUs = 0;
+    st = INA3221::INA3221::maximumCycleTimeUs(profile, sampleMode, cycleUs);
+    if (st.ok()) durationMs += (cycleUs + 999U) / 1000U + 100U;
+  }
+  if (durationMs < OWNER_JOB_TIMEOUT_MS) durationMs = OWNER_JOB_TIMEOUT_MS;
+  return current + durationMs;
+}
+
+uint32_t nextOwnerRequestId() {
+  ++ownerRequestId;
+  if (ownerRequestId == 0U) ++ownerRequestId;
+  return ownerRequestId;
+}
+
+INA3221::Status trackOwnerStart(const INA3221::Status& st) {
+  if (st.inProgress()) {
+    ownerDemoPhase = OwnerDemoPhase::ACTIVE;
+    ownerAutoService = false;
+    startupSamplePending = false;
+  }
+  return st;
+}
+
+void printAlertSnapshot(const INA3221::AlertSnapshot& alerts, const char* title) {
+  out("=== %s ===\n", title);
+  out("  Raw: 0x%04X events=0x%04X writable=0x%04X\n",
+      alerts.raw, alerts.events, alerts.writableBits);
+  out("  PowerValid=%u TimingControl=%u ConversionReady=%u EvidenceUncertain=%u\n",
+      alerts.powerValid ? 1U : 0U, alerts.timingControl ? 1U : 0U,
+      alerts.conversionReady ? 1U : 0U, alerts.evidenceUncertain ? 1U : 0U);
+}
+
+void printOwnerResult(const INA3221::JobResult& result) {
+  out("=== Owner Job Result ===\n");
+  out("  Kind: %s (%u) State: %s (%u)\n",
+      jobKindToStr(result.kind), static_cast<unsigned>(result.kind),
+      jobStateToStr(result.state), static_cast<unsigned>(result.state));
+  out("  Request: %lu Transfers: %u Profile generation: %lu\n",
+      static_cast<unsigned long>(result.requestId),
+      static_cast<unsigned>(result.transfers),
+      static_cast<unsigned long>(result.profileGeneration));
+  out("  Hardware effect: %u Sample valid: %u\n",
+      static_cast<unsigned>(result.hardwareEffect), result.sampleValid ? 1U : 0U);
+  printStatus(result.status);
+  if (result.mismatchValid) {
+    const uint16_t delta = static_cast<uint16_t>(
+        (result.mismatchActual ^ result.mismatchExpected) & result.mismatchMask);
+    out("  Register mismatch: reg=0x%02X actual=0x%04X expected=0x%04X "
+        "mask=0x%04X delta=0x%04X\n",
+        result.mismatchRegister, result.mismatchActual, result.mismatchExpected,
+        result.mismatchMask, delta);
+  }
+  if (result.sampleValid) printOwnerSample(result.sample);
 }
 
 INA3221::Status startOwnerSample() {
-  ++ownerRequestId;
-  if (ownerRequestId == 0U) ++ownerRequestId;
-  const uint64_t now = ownerNowMs();
-  INA3221::Status st = device.startTriggeredSample(
-      INA3221::Mode::SHUNT_BUS_TRIG, ownerRequestId,
-      now + OWNER_JOB_TIMEOUT_MS);
-  if (st.inProgress()) ownerDemoPhase = OwnerDemoPhase::SAMPLING;
+  const uint32_t requestId = nextOwnerRequestId();
+  const INA3221::Mode mode = device.deviceProfile().mode;
+  INA3221::Status st;
+  if (mode == INA3221::Mode::SHUNT_TRIG || mode == INA3221::Mode::BUS_TRIG ||
+      mode == INA3221::Mode::SHUNT_BUS_TRIG) {
+    st = device.startTriggeredSample(
+        mode, requestId,
+        ownerDeadlineFor(INA3221::JobKind::TRIGGERED_SAMPLE,
+                         device.deviceProfile(), mode));
+  } else if (mode == INA3221::Mode::SHUNT_CONT || mode == INA3221::Mode::BUS_CONT ||
+             mode == INA3221::Mode::SHUNT_BUS_CONT) {
+    st = device.startContinuousSample(
+        requestId,
+        ownerDeadlineFor(INA3221::JobKind::CONTINUOUS_SAMPLE,
+                         device.deviceProfile()), false);
+  } else {
+    return INA3221::Status::Error(INA3221::Err::INVALID_PARAM,
+                                  "Active profile is powered down");
+  }
+  if (st.inProgress()) ownerDemoPhase = OwnerDemoPhase::ACTIVE;
   return st;
 }
 
@@ -535,7 +803,7 @@ void serviceOwnerJob() {
 
   INA3221::JobProgress progress{};
   (void)device.getJobProgress(progress);
-  if (progress.state == INA3221::JobTerminalState::ACTIVE) {
+  if (progress.state == INA3221::JobTerminalState::ACTIVE && ownerAutoService) {
     INA3221::PollContext context{};
     context.nowMs = ownerNowMs();
     context.deadlineMs = progress.deadlineMs;
@@ -553,14 +821,18 @@ void serviceOwnerJob() {
     ownerDemoPhase = OwnerDemoPhase::IDLE;
     return;
   }
-  out("Owner job kind=%u request=%lu transfers=%u terminal=%u\n",
-      static_cast<unsigned>(result.kind),
-      static_cast<unsigned long>(result.requestId),
-      static_cast<unsigned>(result.transfers),
-      static_cast<unsigned>(result.state));
-  printStatus(result.status);
+  lastOwnerResult = result;
+  lastOwnerResultValid = true;
+  printOwnerResult(result);
+  if (result.status.ok() && device.isBound()) {
+    retainedProfile = device.deviceProfile();
+    retainedProfileValid = true;
+    selectedAddress = retainedProfile.i2cAddress;
+  }
 
-  if (result.kind == INA3221::JobKind::INITIALIZE && result.status.ok()) {
+  if (startupSamplePending && result.kind == INA3221::JobKind::INITIALIZE &&
+      result.status.ok()) {
+    startupSamplePending = false;
     const INA3221::Status sampleStatus = startOwnerSample();
     if (!sampleStatus.inProgress()) {
       printStatus(sampleStatus);
@@ -568,9 +840,7 @@ void serviceOwnerJob() {
     }
     return;
   }
-  if (result.kind == INA3221::JobKind::TRIGGERED_SAMPLE && result.sampleValid) {
-    printOwnerSample(result.sample);
-  }
+  startupSamplePending = false;
   ownerDemoPhase = OwnerDemoPhase::IDLE;
 }
 
@@ -581,15 +851,43 @@ void printOwnerJobProgress() {
     printStatus(st);
     return;
   }
-  out("Owner job kind=%u stage=%u state=%u request=%lu transfers=%u "
-      "lastPoll=%u pending=%u\n",
-      static_cast<unsigned>(progress.kind),
-      static_cast<unsigned>(progress.stage),
-      static_cast<unsigned>(progress.state),
+  const uint64_t current = ownerNowMs();
+  const uint64_t remaining = progress.deadlineMs > current
+                                 ? progress.deadlineMs - current : 0U;
+  out("=== Owner Job Progress ===\n");
+  out("  Kind: %s (%u) Stage: %s (%u) State: %s (%u)\n",
+      jobKindToStr(progress.kind), static_cast<unsigned>(progress.kind),
+      jobStageToStr(progress.stage), static_cast<unsigned>(progress.stage),
+      jobStateToStr(progress.state), static_cast<unsigned>(progress.state));
+  out("  Request: %lu Transfers: %u Last poll: %u Result pending: %u\n",
       static_cast<unsigned long>(progress.requestId),
       static_cast<unsigned>(progress.totalTransfers),
       static_cast<unsigned>(progress.lastPollTransfers),
       progress.resultPending ? 1U : 0U);
+  out("  Now: %llu Deadline: %llu Remaining: %llu ms Ready at: %llu\n",
+      static_cast<unsigned long long>(current),
+      static_cast<unsigned long long>(progress.deadlineMs),
+      static_cast<unsigned long long>(remaining),
+      static_cast<unsigned long long>(progress.readyAtMs));
+}
+
+INA3221::Status stepOwnerJob(uint8_t maxTransfers) {
+  INA3221::JobProgress progress{};
+  INA3221::Status st = device.getJobProgress(progress);
+  if (!st.ok()) return st;
+  if (progress.state != INA3221::JobTerminalState::ACTIVE) {
+    return INA3221::Status::Error(INA3221::Err::NO_ACTIVE_JOB,
+                                  "No active owner job");
+  }
+  INA3221::PollContext context{};
+  context.nowMs = ownerNowMs();
+  context.deadlineMs = progress.deadlineMs;
+  context.transferTimeoutMs = I2C_TIMEOUT_MS;
+  context.maxTransfers = maxTransfers;
+  st = device.pollJob(context);
+  ownerAutoService = false;
+  serviceOwnerJob();
+  return st;
 }
 
 void printConfig() {
@@ -654,7 +952,229 @@ void printSettingsSnapshot() {
         errToStr(snap.hardwareConfigDirtyStatus.code),
         static_cast<unsigned>(snap.hardwareConfigDirtyStatus.code),
         static_cast<long>(snap.hardwareConfigDirtyStatus.detail));
+    if (snap.hardwareConfigDirtyStatus.msg != nullptr &&
+        snap.hardwareConfigDirtyStatus.msg[0] != '\0') {
+      out("  Dirty message: %s\n", snap.hardwareConfigDirtyStatus.msg);
+    }
   }
+}
+
+void printDesiredProfile() {
+  if (!device.isBound() && !retainedProfileValid) {
+    out("  No retained profile\n");
+    return;
+  }
+  const INA3221::DeviceProfile& profile =
+      device.isBound() ? device.deviceProfile() : retainedProfile;
+  out("=== Desired Device Profile ===\n");
+  out("  Bound: %s Initialized: %s Address: 0x%02X\n",
+      device.isBound() ? "YES" : "NO", device.isInitialized() ? "YES" : "NO",
+      profile.i2cAddress);
+  out("  Generation: %lu Measurement state: %s Alert state: %s\n",
+      static_cast<unsigned long>(device.profileGeneration()),
+      appliedStateToStr(device.measurementConfigState()),
+      appliedStateToStr(device.alertConfigState()));
+  out("  Mode: %s AVG: %s VBUSCT: %s VSHCT: %s Channels=0x%02X\n",
+      modeToStr(profile.mode), avgToStr(profile.averaging), ctToStr(profile.vBusCt),
+      ctToStr(profile.vShCt), static_cast<unsigned>(profile.enabledChannels));
+  for (uint8_t i = 0; i < 3U; ++i) {
+    out("  CH%u calibration: %lu uohm (%.6f ohm), direction=%s\n",
+        static_cast<unsigned>(i + 1U),
+        static_cast<unsigned long>(profile.shunts[i].resistanceMicroOhms),
+        static_cast<double>(profile.shunts[i].resistanceMicroOhms) / 1000000.0,
+        directionToStr(profile.shunts[i].direction));
+    out("  CH%u limits: critical=%ld uV warning=%ld uV\n",
+        static_cast<unsigned>(i + 1U),
+        static_cast<long>(profile.alerts.criticalLimitMicroVolts[i]),
+        static_cast<long>(profile.alerts.warningLimitMicroVolts[i]));
+  }
+  out("  Sum channels=0x%02X Sum limit=%ld uV\n",
+      static_cast<unsigned>(profile.alerts.summationChannels),
+      static_cast<long>(profile.alerts.shuntSumLimitMicroVolts));
+  out("  Power-valid window: %lu..%lu mV Latch: warning=%u critical=%u\n",
+      static_cast<unsigned long>(profile.alerts.powerValidLowerMilliVolts),
+      static_cast<unsigned long>(profile.alerts.powerValidUpperMilliVolts),
+      profile.alerts.warningLatch ? 1U : 0U,
+      profile.alerts.criticalLatch ? 1U : 0U);
+}
+
+uint16_t expectedConfigRegister(const INA3221::DeviceProfile& profile) {
+  uint16_t value = 0;
+  if ((profile.enabledChannels & INA3221::CHANNEL_1) != 0U) value |= INA3221::cmd::MASK_CH1EN;
+  if ((profile.enabledChannels & INA3221::CHANNEL_2) != 0U) value |= INA3221::cmd::MASK_CH2EN;
+  if ((profile.enabledChannels & INA3221::CHANNEL_3) != 0U) value |= INA3221::cmd::MASK_CH3EN;
+  value |= static_cast<uint16_t>(static_cast<uint8_t>(profile.averaging) << INA3221::cmd::BIT_AVG);
+  value |= static_cast<uint16_t>(static_cast<uint8_t>(profile.vBusCt) << INA3221::cmd::BIT_VBUSCT);
+  value |= static_cast<uint16_t>(static_cast<uint8_t>(profile.vShCt) << INA3221::cmd::BIT_VSHCT);
+  value |= static_cast<uint16_t>(static_cast<uint8_t>(profile.mode) << INA3221::cmd::BIT_MODE);
+  return value;
+}
+
+INA3221::Status buildRegisterExpectations(const INA3221::DeviceProfile& profile,
+                                           RegisterEvidence (&items)[11]) {
+  for (RegisterEvidence& item : items) item = RegisterEvidence{};
+  items[0].reg = INA3221::cmd::REG_CONFIG;
+  items[0].expected = expectedConfigRegister(profile);
+  items[0].compareMask = static_cast<uint16_t>(~INA3221::cmd::MASK_RST);
+  for (uint8_t i = 0; i < 3U; ++i) {
+    const uint8_t criticalIndex = static_cast<uint8_t>(1U + i * 2U);
+    const uint8_t warningIndex = static_cast<uint8_t>(criticalIndex + 1U);
+    items[criticalIndex].reg = static_cast<uint8_t>(INA3221::cmd::REG_CH1_CRIT_LIMIT + i * 2U);
+    items[warningIndex].reg = static_cast<uint8_t>(INA3221::cmd::REG_CH1_WARN_LIMIT + i * 2U);
+    items[criticalIndex].compareMask = 0xFFFFU;
+    items[warningIndex].compareMask = 0xFFFFU;
+    INA3221::Status st = INA3221::INA3221::encodeShuntMicroVolts(
+        profile.alerts.criticalLimitMicroVolts[i], items[criticalIndex].expected);
+    if (!st.ok()) return st;
+    st = INA3221::INA3221::encodeShuntMicroVolts(
+        profile.alerts.warningLimitMicroVolts[i], items[warningIndex].expected);
+    if (!st.ok()) return st;
+  }
+  items[7].reg = INA3221::cmd::REG_SHUNT_SUM_LIMIT;
+  items[7].compareMask = 0xFFFFU;
+  INA3221::Status st = INA3221::INA3221::encodeShuntSumMicroVolts(
+      profile.alerts.shuntSumLimitMicroVolts, items[7].expected);
+  if (!st.ok()) return st;
+  items[8].reg = INA3221::cmd::REG_MASK_ENABLE;
+  items[8].compareMask = static_cast<uint16_t>(INA3221::cmd::MASK_SCC1 |
+                                               INA3221::cmd::MASK_SCC2 |
+                                               INA3221::cmd::MASK_SCC3 |
+                                               INA3221::cmd::MASK_WEN |
+                                               INA3221::cmd::MASK_CEN);
+  if ((profile.alerts.summationChannels & INA3221::CHANNEL_1) != 0U) items[8].expected |= INA3221::cmd::MASK_SCC1;
+  if ((profile.alerts.summationChannels & INA3221::CHANNEL_2) != 0U) items[8].expected |= INA3221::cmd::MASK_SCC2;
+  if ((profile.alerts.summationChannels & INA3221::CHANNEL_3) != 0U) items[8].expected |= INA3221::cmd::MASK_SCC3;
+  if (profile.alerts.warningLatch) items[8].expected |= INA3221::cmd::MASK_WEN;
+  if (profile.alerts.criticalLatch) items[8].expected |= INA3221::cmd::MASK_CEN;
+  items[9].reg = INA3221::cmd::REG_PV_UPPER_LIMIT;
+  items[9].compareMask = 0xFFFFU;
+  st = INA3221::INA3221::encodeBusMilliVolts(
+      static_cast<int32_t>(profile.alerts.powerValidUpperMilliVolts), items[9].expected);
+  if (!st.ok()) return st;
+  items[10].reg = INA3221::cmd::REG_PV_LOWER_LIMIT;
+  items[10].compareMask = 0xFFFFU;
+  return INA3221::INA3221::encodeBusMilliVolts(
+      static_cast<int32_t>(profile.alerts.powerValidLowerMilliVolts), items[10].expected);
+}
+
+const char* registerName(uint8_t reg) {
+  switch (reg) {
+    case INA3221::cmd::REG_CONFIG: return "CONFIG";
+    case INA3221::cmd::REG_CH1_CRIT_LIMIT: return "CH1_CRIT";
+    case INA3221::cmd::REG_CH1_WARN_LIMIT: return "CH1_WARN";
+    case INA3221::cmd::REG_CH2_CRIT_LIMIT: return "CH2_CRIT";
+    case INA3221::cmd::REG_CH2_WARN_LIMIT: return "CH2_WARN";
+    case INA3221::cmd::REG_CH3_CRIT_LIMIT: return "CH3_CRIT";
+    case INA3221::cmd::REG_CH3_WARN_LIMIT: return "CH3_WARN";
+    case INA3221::cmd::REG_SHUNT_SUM_LIMIT: return "SUM_LIMIT";
+    case INA3221::cmd::REG_MASK_ENABLE: return "MASK_ENABLE";
+    case INA3221::cmd::REG_PV_UPPER_LIMIT: return "PV_UPPER";
+    case INA3221::cmd::REG_PV_LOWER_LIMIT: return "PV_LOWER";
+    default: return "UNKNOWN";
+  }
+}
+
+void printVerificationEvidence() {
+  out("=== Managed Register Verification Evidence ===\n");
+  if (!lastVerification.valid) {
+    out("  No verification captured; run 'verify'\n");
+    return;
+  }
+  out("  Captured at: %lu ms Address: 0x%02X Profile generation: %lu\n",
+      static_cast<unsigned long>(lastVerification.capturedAtMs),
+      lastVerification.i2cAddress,
+      static_cast<unsigned long>(lastVerification.profileGeneration));
+  out("  Registers: %u Mismatches: %u Read failures: %u\n",
+      static_cast<unsigned>(lastVerification.count),
+      static_cast<unsigned>(lastVerification.mismatches),
+      static_cast<unsigned>(lastVerification.readFailures));
+  for (uint8_t i = 0; i < lastVerification.count; ++i) {
+    const RegisterEvidence& item = lastVerification.registers[i];
+    if (!item.readOk) {
+      out("  REG 0x%02X %-11s READ_ERROR code=%s detail=%ld msg=%s\n",
+          item.reg, registerName(item.reg), errToStr(item.status.code),
+          static_cast<long>(item.status.detail), item.status.msg ? item.status.msg : "");
+      continue;
+    }
+    const uint16_t delta = static_cast<uint16_t>((item.actual ^ item.expected) & item.compareMask);
+    out("  REG 0x%02X %-11s actual=0x%04X expected=0x%04X mask=0x%04X delta=0x%04X %s\n",
+        item.reg, registerName(item.reg), item.actual, item.expected,
+        item.compareMask, delta, delta == 0U ? "MATCH" : "MISMATCH");
+  }
+  out("  VERIFY_RESULT: %s\n",
+      lastVerification.mismatches == 0U && lastVerification.readFailures == 0U
+          ? "PASS" : "FAIL");
+}
+
+INA3221::Status verifyManagedRegisters() {
+  lastVerification = VerificationEvidence{};
+  lastVerification.valid = true;
+  lastVerification.capturedAtMs = nowMs();
+  lastVerification.i2cAddress = device.isBound()
+                                    ? device.deviceProfile().i2cAddress
+                                    : selectedAddress;
+  lastVerification.profileGeneration = device.profileGeneration();
+  lastVerification.count = 11U;
+  const INA3221::DeviceProfile verificationProfile =
+      device.isBound() ? device.deviceProfile()
+                       : (retainedProfileValid ? retainedProfile
+                                               : makeOwnerProfile(selectedAddress));
+  INA3221::Status st = buildRegisterExpectations(
+      verificationProfile, lastVerification.registers);
+  if (!st.ok()) {
+    lastVerification.readFailures = lastVerification.count;
+    for (RegisterEvidence& item : lastVerification.registers) item.status = st;
+    return st;
+  }
+  if (!device.isInitialized()) {
+    const INA3221::Status uninitialized = INA3221::Status::Error(
+        INA3221::Err::NOT_INITIALIZED, "Driver not initialized");
+    lastVerification.readFailures = lastVerification.count;
+    for (RegisterEvidence& item : lastVerification.registers) {
+      item.status = uninitialized;
+    }
+    return uninitialized;
+  }
+  INA3221::Status firstReadError = INA3221::Status::Ok();
+  uint8_t firstMismatch = 0xFFU;
+  for (uint8_t i = 0; i < lastVerification.count; ++i) {
+    RegisterEvidence& item = lastVerification.registers[i];
+    item.status = device.readRegister16(item.reg, item.actual);
+    item.readOk = item.status.ok();
+    if (!item.readOk) {
+      if (firstReadError.ok()) firstReadError = item.status;
+      ++lastVerification.readFailures;
+    } else if (((item.actual ^ item.expected) & item.compareMask) != 0U) {
+      if (firstMismatch == 0xFFU) firstMismatch = item.reg;
+      ++lastVerification.mismatches;
+    }
+  }
+  if (lastVerification.readFailures != 0U) {
+    return firstReadError;
+  }
+  if (lastVerification.mismatches != 0U) {
+    return INA3221::Status::Error(INA3221::Err::PROFILE_MISMATCH,
+                                  "Managed register mismatch", firstMismatch);
+  }
+  return INA3221::Status::Ok();
+}
+
+void printFullDiagnostics() {
+  out("=== Full INA3221 Diagnostics (cache-only) ===\n");
+  out("  Selected address: 0x%02X Active address: 0x%02X I2C frequency: %lu Hz\n",
+      selectedAddress, activeAddress,
+      static_cast<unsigned long>(ina3221IdfTransportContext().frequencyHz));
+  printDriverHealth();
+  printDesiredProfile();
+  printOwnerJobProgress();
+  if (lastOwnerResultValid) printOwnerResult(lastOwnerResult);
+  else out("  Last owner result: none\n");
+  printVerificationEvidence();
+  const Ina3221IdfTransferStats stats = ina3221IdfTransferStats();
+  out("  Transport transfers: read=%lu write=%lu total=%lu\n",
+      static_cast<unsigned long>(stats.read),
+      static_cast<unsigned long>(stats.write),
+      static_cast<unsigned long>(stats.read + stats.write));
 }
 
 void printMaskEnable() {
@@ -763,6 +1283,166 @@ void scanBus() {
   out("Found %u device(s)\n", static_cast<unsigned>(count));
 }
 
+INA3221::Status readRegisterAt(uint8_t address, uint8_t reg, uint16_t& value) {
+  uint8_t rx[2] = {0, 0};
+  const INA3221::Status st = ina3221IdfI2cWriteReadAt(
+      address, &reg, 1U, rx, sizeof(rx), I2C_TIMEOUT_MS,
+      &ina3221IdfTransportContext());
+  if (!st.ok()) return st;
+  value = static_cast<uint16_t>((static_cast<uint16_t>(rx[0]) << 8U) | rx[1]);
+  return INA3221::Status::Ok();
+}
+
+void scanIna3221Addresses() {
+  out("=== INA3221 Address Probe (raw, no driver-health tracking) ===\n");
+  uint8_t healthy = 0;
+  for (uint8_t address = INA3221_ADDR_MIN; address <= INA3221_ADDR_MAX; ++address) {
+    out("  0x%02X (%s): ", address, addressStrap(address));
+    INA3221::Status st = ina3221IdfProbeAddress(address, I2C_TIMEOUT_MS);
+    if (!st.ok()) {
+      out("NO_ACK code=%s detail=%ld\n", errToStr(st.code),
+          static_cast<long>(st.detail));
+      continue;
+    }
+    uint16_t manufacturer = 0;
+    uint16_t die = 0;
+    const INA3221::Status manufacturerStatus = readRegisterAt(
+        address, INA3221::cmd::REG_MANUFACTURER_ID, manufacturer);
+    const INA3221::Status dieStatus = readRegisterAt(
+        address, INA3221::cmd::REG_DIE_ID, die);
+    if (!manufacturerStatus.ok() || !dieStatus.ok()) {
+      const INA3221::Status failed = manufacturerStatus.ok() ? dieStatus : manufacturerStatus;
+      out("ACK ID_READ_ERROR code=%s detail=%ld msg=%s\n", errToStr(failed.code),
+          static_cast<long>(failed.detail), failed.msg ? failed.msg : "");
+      continue;
+    }
+    const bool match = manufacturer == INA3221::cmd::MANUFACTURER_ID_VALUE &&
+                       die == INA3221::cmd::DIE_ID_VALUE;
+    out("ACK manufacturer=0x%04X die=0x%04X %s\n",
+        manufacturer, die, match ? "HEALTHY_INA3221" : "ID_MISMATCH");
+    if (match) ++healthy;
+  }
+  out("  Healthy INA3221 devices: %u\n", static_cast<unsigned>(healthy));
+  if (healthy == 0U) {
+    printStatus(INA3221::Status::Error(
+        INA3221::Err::DEVICE_NOT_FOUND, "No healthy INA3221 found"));
+  }
+}
+
+INA3221::Status requireIdleOwnerJob() {
+  INA3221::JobProgress progress{};
+  const INA3221::Status st = device.getJobProgress(progress);
+  if (!st.ok()) return st;
+  if (progress.state == INA3221::JobTerminalState::ACTIVE || progress.resultPending) {
+    return INA3221::Status::Error(INA3221::Err::JOB_BUSY,
+                                  "Owner job must be idle");
+  }
+  return INA3221::Status::Ok();
+}
+
+void retainCurrentProfile() {
+  if (device.isBound()) {
+    retainedProfile = device.deviceProfile();
+    retainedProfileValid = true;
+  }
+}
+
+INA3221::Status initializeDeviceAt(uint8_t address, bool automaticService) {
+  if (!isValidIna3221Address(address)) {
+    return INA3221::Status::Error(INA3221::Err::INVALID_PARAM,
+                                  "Address must be 0x40-0x43", address);
+  }
+  INA3221::Status st = requireIdleOwnerJob();
+  if (!st.ok()) return st;
+  retainCurrentProfile();
+  const uint8_t previousAddress = activeAddress;
+  const INA3221::DeviceProfile previousProfile = retainedProfile;
+  INA3221::DeviceProfile profile = retainedProfileValid
+                                       ? retainedProfile
+                                       : makeOwnerProfile(address);
+  profile.i2cAddress = address;
+  st = ina3221IdfSetAddress(address);
+  if (!st.ok()) {
+    if (ina3221IdfTransportContext().dev == nullptr) {
+      device.unbind();
+      ownerDemoPhase = OwnerDemoPhase::IDLE;
+    }
+    return st;
+  }
+  device.unbind();
+  ownerDemoPhase = OwnerDemoPhase::IDLE;
+  activeAddress = address;
+  selectedAddress = address;
+  retainedProfile = profile;
+  retainedProfileValid = true;
+  st = device.bind(makeOwnerTransport(), profile);
+  if (!st.ok()) {
+    const INA3221::Status restore = ina3221IdfSetAddress(previousAddress);
+    activeAddress = previousAddress;
+    selectedAddress = previousAddress;
+    retainedProfile = previousProfile;
+    if (!restore.ok()) return restore;
+    const INA3221::Status rebind = device.bind(makeOwnerTransport(), previousProfile);
+    if (!rebind.ok()) return rebind;
+    return st;
+  }
+  st = device.startInitialize(
+      nextOwnerRequestId(),
+      ownerDeadlineFor(INA3221::JobKind::INITIALIZE, profile));
+  if (st.inProgress()) {
+    ownerDemoPhase = OwnerDemoPhase::ACTIVE;
+    ownerAutoService = automaticService;
+    startupSamplePending = false;
+  }
+  return st;
+}
+
+INA3221::Status setExampleFrequency(uint32_t frequencyHz) {
+  if (frequencyHz < I2C_FREQ_MIN_HZ || frequencyHz > I2C_FREQ_MAX_HZ) {
+    return INA3221::Status::Error(INA3221::Err::OUT_OF_RANGE,
+                                  "I2C frequency must be 10000-400000 Hz",
+                                  static_cast<int32_t>(frequencyHz));
+  }
+  INA3221::Status st = requireIdleOwnerJob();
+  if (!st.ok()) return st;
+  const uint32_t previous = ina3221IdfTransportContext().frequencyHz;
+  st = ina3221IdfSetFrequency(frequencyHz);
+  if (!st.ok()) {
+    if (ina3221IdfTransportContext().dev == nullptr) {
+      retainCurrentProfile();
+      device.unbind();
+      ownerDemoPhase = OwnerDemoPhase::IDLE;
+    }
+    return st;
+  }
+  if (!device.isInitialized()) return INA3221::Status::Ok();
+  uint16_t manufacturer = 0;
+  uint16_t die = 0;
+  st = readRegisterAt(activeAddress, INA3221::cmd::REG_MANUFACTURER_ID, manufacturer);
+  if (st.ok()) st = readRegisterAt(activeAddress, INA3221::cmd::REG_DIE_ID, die);
+  if (st.ok() && manufacturer != INA3221::cmd::MANUFACTURER_ID_VALUE) {
+    st = INA3221::Status::Error(INA3221::Err::MANUFACTURER_ID_MISMATCH,
+                                "Manufacturer ID mismatch", manufacturer);
+  }
+  if (st.ok() && die != INA3221::cmd::DIE_ID_VALUE) {
+    st = INA3221::Status::Error(INA3221::Err::DIE_ID_MISMATCH,
+                                "Die ID mismatch", die);
+  }
+  if (!st.ok()) {
+    const INA3221::Status restore = ina3221IdfSetFrequency(previous);
+    if (!restore.ok()) {
+      retainCurrentProfile();
+      device.unbind();
+      ownerDemoPhase = OwnerDemoPhase::IDLE;
+      return INA3221::Status::Error(INA3221::Err::I2C_BUS,
+                                    "Frequency verification and rollback failed",
+                                    restore.detail);
+    }
+    return st;
+  }
+  return INA3221::Status::Ok();
+}
+
 void resetStressStats(int target) {
   stressStats.startMs = nowMs();
   stressStats.endMs = 0;
@@ -858,9 +1538,26 @@ void printStressSummary() {
         static_cast<double>(s.minVbusV),
         static_cast<double>(s.sumVbusV / stressStats.success),
         static_cast<double>(s.maxVbusV));
+    out("  CH%d Current mA: min=%.3f avg=%.3f max=%.3f\n",
+        ch + 1,
+        static_cast<double>(s.minCurrentMa),
+        static_cast<double>(s.sumCurrentMa / stressStats.success),
+        static_cast<double>(s.maxCurrentMa));
+    out("  CH%d Power mW: min=%.3f avg=%.3f max=%.3f\n",
+        ch + 1,
+        static_cast<double>(s.minPowerMw),
+        static_cast<double>(s.sumPowerMw / stressStats.success),
+        static_cast<double>(s.maxPowerMw));
   }
   if (!stressStats.lastError.ok()) {
+    if (hilCommandStatus == INA3221::Err::OK) {
+      hilCommandStatus = stressStats.lastError.code;
+    }
     out("  Last error: %s\n", errToStr(stressStats.lastError.code));
+    out("  Detail: %ld\n", static_cast<long>(stressStats.lastError.detail));
+    if (stressStats.lastError.msg != nullptr && stressStats.lastError.msg[0] != '\0') {
+      out("  Message: %s\n", stressStats.lastError.msg);
+    }
   }
 }
 
@@ -958,6 +1655,130 @@ void runStressMix(int count) {
   out("  Health delta: success +%lu failures +%lu\n",
       static_cast<unsigned long>(device.totalSuccess() - successBefore),
       static_cast<unsigned long>(device.totalFailures() - failBefore));
+  if (fail != 0U && hilCommandStatus == INA3221::Err::OK) {
+    hilCommandStatus = INA3221::Err::I2C_ERROR;
+  }
+}
+
+INA3221::Status runOneOwnerSample(INA3221::JobResult& result) {
+  INA3221::Status st = startOwnerSample();
+  if (!st.inProgress()) return st;
+  const bool previousAutoService = ownerAutoService;
+  ownerAutoService = false;
+  while (true) {
+    INA3221::JobProgress progress{};
+    st = device.getJobProgress(progress);
+    if (!st.ok()) break;
+    if (progress.resultPending) {
+      st = device.takeJobResult(result);
+      break;
+    }
+    if (progress.state != INA3221::JobTerminalState::ACTIVE) {
+      st = INA3221::Status::Error(INA3221::Err::NO_RESULT,
+                                  "Owner sample ended without result");
+      break;
+    }
+    INA3221::PollContext context{};
+    context.nowMs = ownerNowMs();
+    context.deadlineMs = progress.deadlineMs;
+    context.transferTimeoutMs = I2C_TIMEOUT_MS;
+    context.maxTransfers = 1U;
+    st = device.pollJob(context);
+    if (!st.ok() && !st.inProgress()) {
+      (void)device.getJobProgress(progress);
+      if (!progress.resultPending) break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  ownerDemoPhase = OwnerDemoPhase::IDLE;
+  ownerAutoService = previousAutoService;
+  if (!st.ok()) return st;
+  lastOwnerResult = result;
+  lastOwnerResultValid = true;
+  if (!result.status.ok()) return result.status;
+  if (!result.sampleValid) {
+    return INA3221::Status::Error(INA3221::Err::NO_RESULT,
+                                  "Owner sample result has no sample");
+  }
+  return INA3221::Status::Ok();
+}
+
+void runOwnerStress(int count) {
+  uint32_t passed = 0;
+  uint32_t failed = 0;
+  uint16_t maximumTransfers = 0;
+  const INA3221::Mode mode = device.deviceProfile().mode;
+  const INA3221::JobKind kind =
+      (mode == INA3221::Mode::SHUNT_CONT || mode == INA3221::Mode::BUS_CONT ||
+       mode == INA3221::Mode::SHUNT_BUS_CONT)
+          ? INA3221::JobKind::CONTINUOUS_SAMPLE
+          : INA3221::JobKind::TRIGGERED_SAMPLE;
+  INA3221::Status st = INA3221::INA3221::maximumJobTransfers(
+      kind, device.deviceProfile(), maximumTransfers);
+  if (!st.ok()) {
+    printStatus(st);
+    return;
+  }
+  const uint32_t start = nowMs();
+  for (int i = 0; i < count; ++i) {
+    INA3221::JobResult result{};
+    const uint32_t expectedRequest = ownerRequestId == UINT32_MAX ? 1U : ownerRequestId + 1U;
+    st = runOneOwnerSample(result);
+    const bool valid = st.ok() && result.requestId == expectedRequest &&
+                       result.profileGeneration == device.profileGeneration() &&
+                       result.sample.validChannels == device.deviceProfile().enabledChannels &&
+                       result.transfers <= maximumTransfers;
+    if (valid) ++passed;
+    else {
+      ++failed;
+      break;
+    }
+  }
+  out("=== stress_owner summary ===\n");
+  out("  Target: %d pass=%lu fail=%lu max_transfers=%u duration=%lu ms\n",
+      count, static_cast<unsigned long>(passed), static_cast<unsigned long>(failed),
+      static_cast<unsigned>(maximumTransfers),
+      static_cast<unsigned long>(nowMs() - start));
+  if (failed != 0U) {
+    printStatus(st.ok() ? INA3221::Status::Error(
+                             INA3221::Err::PROFILE_MISMATCH,
+                             "Owner stress validation failed", failed)
+                        : st);
+  }
+}
+
+void runFrequencyStress(int count) {
+  const uint32_t initialFrequency = ina3221IdfTransportContext().frequencyHz;
+  uint32_t passed = 0;
+  uint32_t failed = 0;
+  INA3221::Status last = INA3221::Status::Ok();
+  for (int i = 0; i < count; ++i) {
+    last = setExampleFrequency((i & 1) == 0 ? 100000U : 400000U);
+    uint16_t manufacturer = 0;
+    uint16_t die = 0;
+    if (last.ok()) last = device.readManufacturerId(manufacturer);
+    if (last.ok()) last = device.readDieId(die);
+    if (last.ok() && (manufacturer != INA3221::cmd::MANUFACTURER_ID_VALUE ||
+                      die != INA3221::cmd::DIE_ID_VALUE)) {
+      last = INA3221::Status::Error(INA3221::Err::DIE_ID_MISMATCH,
+                                    "Frequency stress identity mismatch", die);
+    }
+    if (last.ok()) ++passed;
+    else {
+      ++failed;
+      break;
+    }
+  }
+  const INA3221::Status restore = setExampleFrequency(initialFrequency);
+  if (!restore.ok()) {
+    ++failed;
+    last = restore;
+  }
+  out("=== stress_freq summary ===\n");
+  out("  Target: %d pass=%lu fail=%lu restored_hz=%lu\n",
+      count, static_cast<unsigned long>(passed), static_cast<unsigned long>(failed),
+      static_cast<unsigned long>(ina3221IdfTransportContext().frequencyHz));
+  if (failed != 0U) printStatus(last);
 }
 
 void runSelfTest() {
@@ -977,7 +1798,18 @@ void runSelfTest() {
     ++skip;
   };
 
-  out("=== INA3221 selftest (safe commands) ===\n");
+  out("=== INA3221 selftest (configuration-preserving diagnostics) ===\n");
+  out("  Note: managed-register verification reads Mask/Enable and retains its read-clear alert evidence.\n");
+  const INA3221::Status idle = requireIdleOwnerJob();
+  if (!idle.ok()) {
+    reportSkip("all checks", "owner job active");
+    printStatus(idle);
+    out("Selftest result: pass=0 fail=0 skip=1\n");
+    return;
+  }
+  const INA3221::DeviceProfile profileBefore =
+      device.isBound() ? device.deviceProfile() : INA3221::DeviceProfile{};
+  const uint32_t generationBefore = device.profileGeneration();
   const uint32_t succBefore = device.totalSuccess();
   const uint32_t failBefore = device.totalFailures();
   const uint8_t consBefore = device.consecutiveFailures();
@@ -1006,20 +1838,51 @@ void runSelfTest() {
   uint16_t die = 0;
   st = device.readDieId(die);
   report("readDieId", st.ok() && die == 0x3220, st.ok() ? "" : errToStr(st.code));
-  INA3221::ChannelMeasurement m;
-  st = device.readChannel(INA3221::Channel::CH1, m);
-  report("readChannel(CH1)", st.ok(), st.ok() ? "" : errToStr(st.code));
-  st = device.setMode(INA3221::Mode::SHUNT_BUS_CONT);
-  report("setMode(SHUNT_BUS_CONT)", st.ok(), st.ok() ? "" : errToStr(st.code));
-  st = device.setAveraging(INA3221::Averaging::AVG_1);
-  report("setAveraging(1)", st.ok(), st.ok() ? "" : errToStr(st.code));
-  st = device.recover();
-  report("recover", st.ok(), st.ok() ? "" : errToStr(st.code));
-  report("isOnline", device.isOnline(), "");
+  const bool poweredDown = profileBefore.mode == INA3221::Mode::POWER_DOWN ||
+                           profileBefore.mode == INA3221::Mode::POWER_DOWN_ALT;
+  for (uint8_t i = 0; i < 3U; ++i) {
+    const INA3221::ChannelMask bit = static_cast<INA3221::ChannelMask>(1U << i);
+    char name[24];
+    std::snprintf(name, sizeof(name), "readChannel(CH%u)", static_cast<unsigned>(i + 1U));
+    if ((profileBefore.enabledChannels & bit) == 0U || poweredDown) {
+      reportSkip(name, poweredDown ? "profile is powered down" : "channel disabled");
+      continue;
+    }
+    INA3221::ChannelMeasurement measurement{};
+    st = device.readChannel(static_cast<INA3221::Channel>(i), measurement);
+    report(name, st.ok(), st.ok() ? "" : errToStr(st.code));
+  }
+  INA3221::AlertSnapshot alerts{};
+  st = device.peekAlertEvents(alerts);
+  report("peekAlertEvents(cache-only)", st.ok(), st.ok() ? "" : errToStr(st.code));
+  INA3221::SampleBatch sample{};
+  st = device.peekLastSample(sample);
+  if (st.ok()) report("peekLastSample(cache-only)", true, "");
+  else reportSkip("peekLastSample(cache-only)", "no completed sample retained");
+  st = verifyManagedRegisters();
+  report("verify 11 managed registers", st.ok(), st.ok() ? "" : errToStr(st.code));
+  report("register mismatch count zero", lastVerification.mismatches == 0U, "");
+  report("register read failure count zero", lastVerification.readFailures == 0U, "");
+  int32_t decoded = 0;
+  st = INA3221::INA3221::decodeShuntMicroVolts(0xFFF8U, decoded);
+  report("fixed shunt decode", st.ok() && decoded == -40, "");
+  st = INA3221::INA3221::decodeBusMilliVolts(0x0008U, decoded);
+  report("fixed bus decode", st.ok() && decoded == 8, "");
+  report("profile preserved",
+         device.isBound() &&
+             std::memcmp(&profileBefore, &device.deviceProfile(), sizeof(profileBefore)) == 0,
+         "");
+  report("profile generation preserved", generationBefore == device.profileGeneration(), "");
+  report("driver online", device.isOnline(), "");
+  report("consecutive failures zero", device.consecutiveFailures() == 0U, "");
   out("Selftest result: pass=%lu fail=%lu skip=%lu\n",
       static_cast<unsigned long>(pass),
       static_cast<unsigned long>(fail),
       static_cast<unsigned long>(skip));
+  if (fail != 0U) {
+    printStatus(INA3221::Status::Error(INA3221::Err::PROFILE_MISMATCH,
+                                      "Selftest failed", fail));
+  }
 }
 
 bool parseModeToken(const char* token, INA3221::Mode& mode, bool triggeredOnly) {
@@ -1146,28 +2009,256 @@ void processCommand(char* line) {
   }
 
   const char* arg = nullptr;
-  if (std::strcmp(cmd, "help") == 0 || std::strcmp(cmd, "?") == 0) {
+  if ((arg = argAfter(cmd, "hilrun ")) != nullptr) {
+    char frame[MAX_LINE_LEN];
+    std::snprintf(frame, sizeof(frame), "%s", arg);
+    char* token = trim(frame);
+    char* tokenEnd = std::strchr(token, ' ');
+    char* sequence = nullptr;
+    char* inner = nullptr;
+    if (tokenEnd != nullptr) {
+      *tokenEnd = '\0';
+      sequence = trim(tokenEnd + 1);
+      char* sequenceEnd = std::strchr(sequence, ' ');
+      if (sequenceEnd != nullptr) {
+        *sequenceEnd = '\0';
+        inner = trim(sequenceEnd + 1);
+      }
+    }
+    out("HIL_BEGIN token=%s seq=%s\n", token,
+        sequence != nullptr ? sequence : "");
+    const uint32_t start = nowMs();
+    if (*token == '\0' || sequence == nullptr || *sequence == '\0' ||
+        inner == nullptr || *inner == '\0' || startsWith(inner, "hilrun ")) {
+      hilCommandStatus = INA3221::Err::INVALID_PARAM;
+      out("  Status: INVALID_PARAM (malformed or nested hilrun)\n");
+    } else {
+      hilCommandStatus = INA3221::Err::OK;
+      processCommand(inner);
+    }
+    out("HIL_END token=%s seq=%s status=%s elapsed_ms=%lu\n", token,
+        sequence != nullptr ? sequence : "", errToStr(hilCommandStatus),
+        static_cast<unsigned long>(nowMs() - start));
+  } else if ((arg = argAfter(cmd, "hilmark ")) != nullptr) {
+    if (*trim(const_cast<char*>(arg)) == '\0') {
+      hilCommandStatus = INA3221::Err::INVALID_PARAM;
+      warn("Usage: hilmark <token>");
+    } else {
+      out("HILMARK %s\n", arg);
+    }
+  } else if (std::strcmp(cmd, "xfer_reset") == 0) {
+    ina3221IdfResetTransferStats();
+    out("XFER_RESET read=0 write=0 total=0\n");
+  } else if (std::strcmp(cmd, "xfer_stats") == 0) {
+    const Ina3221IdfTransferStats stats = ina3221IdfTransferStats();
+    out("XFER_STATS read=%lu write=%lu total=%lu\n",
+        static_cast<unsigned long>(stats.read),
+        static_cast<unsigned long>(stats.write),
+        static_cast<unsigned long>(stats.read + stats.write));
+  } else if ((arg = argAfter(cmd, "xfer_assert ")) != nullptr) {
+    uint32_t expectedRead = 0;
+    uint32_t expectedWrite = 0;
+    uint32_t expectedTotal = 0;
+    if (!splitThreeArgs(arg, expectedRead, expectedWrite, expectedTotal)) {
+      hilCommandStatus = INA3221::Err::INVALID_PARAM;
+      warn("Usage: xfer_assert <read> <write> <total>");
+      return;
+    }
+    const Ina3221IdfTransferStats stats = ina3221IdfTransferStats();
+    const uint32_t total = stats.read + stats.write;
+    if (stats.read == expectedRead && stats.write == expectedWrite && total == expectedTotal) {
+      out("XFER_ASSERT PASS read=%lu write=%lu total=%lu\n",
+          static_cast<unsigned long>(stats.read),
+          static_cast<unsigned long>(stats.write), static_cast<unsigned long>(total));
+    } else {
+      hilCommandStatus = INA3221::Err::PROFILE_MISMATCH;
+      out("XFER_ASSERT FAIL expected_read=%lu expected_write=%lu expected_total=%lu "
+          "read=%lu write=%lu total=%lu\n",
+          static_cast<unsigned long>(expectedRead),
+          static_cast<unsigned long>(expectedWrite),
+          static_cast<unsigned long>(expectedTotal),
+          static_cast<unsigned long>(stats.read),
+          static_cast<unsigned long>(stats.write), static_cast<unsigned long>(total));
+      printStatus(INA3221::Status::Error(
+          INA3221::Err::PROFILE_MISMATCH, "Transfer count mismatch",
+          static_cast<int32_t>(total)));
+    }
+  } else if (std::strcmp(cmd, "help") == 0 || std::strcmp(cmd, "?") == 0) {
     printHelp();
   } else if (std::strcmp(cmd, "version") == 0 || std::strcmp(cmd, "ver") == 0) {
     printVersionInfo();
   } else if (std::strcmp(cmd, "scan") == 0) {
     scanBus();
-  } else if (std::strcmp(cmd, "job") == 0) {
+    scanIna3221Addresses();
+  } else if (std::strcmp(cmd, "scanina") == 0) {
+    scanIna3221Addresses();
+  } else if (std::strcmp(cmd, "job") == 0 || std::strcmp(cmd, "job progress") == 0) {
     printOwnerJobProgress();
+  } else if (std::strcmp(cmd, "job init") == 0) {
+    if (!device.isBound()) {
+      printStatus(INA3221::Status::Error(INA3221::Err::NOT_INITIALIZED,
+                                         "Driver is not bound; use init"));
+      return;
+    }
+    const INA3221::DeviceProfile profile = device.deviceProfile();
+    printStatus(trackOwnerStart(device.startInitialize(
+        nextOwnerRequestId(), ownerDeadlineFor(INA3221::JobKind::INITIALIZE, profile))));
+  } else if (std::strcmp(cmd, "job apply") == 0) {
+    if (!device.isBound()) {
+      printStatus(INA3221::Status::Error(INA3221::Err::NOT_INITIALIZED,
+                                         "Driver is not bound"));
+      return;
+    }
+    const INA3221::DeviceProfile profile = device.deviceProfile();
+    printStatus(trackOwnerStart(device.startApplyProfile(
+        profile, nextOwnerRequestId(),
+        ownerDeadlineFor(INA3221::JobKind::APPLY_PROFILE, profile))));
+  } else if (std::strcmp(cmd, "job reconcile") == 0) {
+    if (!device.isBound()) {
+      printStatus(INA3221::Status::Error(INA3221::Err::NOT_INITIALIZED,
+                                         "Driver is not bound"));
+      return;
+    }
+    printStatus(trackOwnerStart(device.startReconcile(
+        nextOwnerRequestId(),
+        ownerDeadlineFor(INA3221::JobKind::RECONCILE, device.deviceProfile()))));
   } else if (std::strcmp(cmd, "job sample") == 0) {
-    printStatus(startOwnerSample());
+    printStatus(trackOwnerStart(startOwnerSample()));
+  } else if (std::strcmp(cmd, "job continuous") == 0 ||
+             (arg = argAfter(cmd, "job continuous ")) != nullptr) {
+    bool consumeAlerts = false;
+    if (arg != nullptr && !parseBool01(arg, consumeAlerts)) {
+      hilCommandStatus = INA3221::Err::INVALID_PARAM;
+      warn("Usage: job continuous [0|1]");
+      return;
+    }
+    if (!device.isBound()) {
+      printStatus(INA3221::Status::Error(INA3221::Err::NOT_INITIALIZED,
+                                         "Driver is not bound"));
+      return;
+    }
+    printStatus(trackOwnerStart(device.startContinuousSample(
+        nextOwnerRequestId(),
+        ownerDeadlineFor(INA3221::JobKind::CONTINUOUS_SAMPLE,
+                         device.deviceProfile()), consumeAlerts)));
+  } else if (std::strcmp(cmd, "job powerdown") == 0) {
+    if (!device.isBound()) {
+      printStatus(INA3221::Status::Error(INA3221::Err::NOT_INITIALIZED,
+                                         "Driver is not bound"));
+      return;
+    }
+    printStatus(trackOwnerStart(device.startPowerDown(
+        nextOwnerRequestId(),
+        ownerDeadlineFor(INA3221::JobKind::POWER_DOWN, device.deviceProfile()))));
   } else if (std::strcmp(cmd, "job cancel") == 0) {
-    // Bus-silent cancellation; serviceOwnerJob() takes the terminal result.
-    printStatus(device.cancelJob());
+    // Both operations are cache-only; keep the terminal result inside HIL_END.
+    const INA3221::Status st = device.cancelJob();
+    printStatus(st);
+    if (st.code == INA3221::Err::CANCELLED) serviceOwnerJob();
+  } else if (std::strcmp(cmd, "job auto") == 0) {
+    out("  Owner auto service: %s\n", ownerAutoService ? "ON" : "OFF");
+  } else if ((arg = argAfter(cmd, "job auto ")) != nullptr) {
+    bool enabled = false;
+    if (!parseBool01(arg, enabled)) {
+      hilCommandStatus = INA3221::Err::INVALID_PARAM;
+      warn("Usage: job auto <0|1>");
+      return;
+    }
+    ownerAutoService = enabled;
+    out("  Owner auto service: %s\n", ownerAutoService ? "ON" : "OFF");
+  } else if ((arg = argAfter(cmd, "job step ")) != nullptr) {
+    uint32_t budget = 0;
+    if (!parseU32(arg, budget) || budget > 255U) {
+      hilCommandStatus = INA3221::Err::INVALID_PARAM;
+      warn("Usage: job step <0..255>");
+      return;
+    }
+    printStatus(stepOwnerJob(static_cast<uint8_t>(budget)));
+    printOwnerJobProgress();
+  } else if (std::strcmp(cmd, "job result") == 0) {
+    if (lastOwnerResultValid) printOwnerResult(lastOwnerResult);
+    else printStatus(INA3221::Status::Error(INA3221::Err::NO_RESULT,
+                                            "No cached owner result"));
+  } else if (std::strcmp(cmd, "job lastsample") == 0) {
+    INA3221::SampleBatch sample{};
+    const INA3221::Status st = device.peekLastSample(sample);
+    st.ok() ? printOwnerSample(sample) : printStatus(st);
+  } else if (std::strcmp(cmd, "job alerts") == 0 ||
+             std::strcmp(cmd, "job alerts take") == 0) {
+    INA3221::AlertSnapshot alerts{};
+    const bool take = std::strcmp(cmd, "job alerts take") == 0;
+    const INA3221::Status st = take ? device.takeAlertEvents(alerts)
+                                    : device.peekAlertEvents(alerts);
+    st.ok() ? printAlertSnapshot(alerts, take ? "Taken Alert Evidence"
+                                              : "Retained Alert Evidence")
+            : printStatus(st);
   } else if (std::strcmp(cmd, "probe") == 0) {
     info("Probing device without health tracking");
     printStatus(device.probe());
   } else if (std::strcmp(cmd, "drv") == 0) {
     printDriverHealth();
+  } else if (std::strcmp(cmd, "diag") == 0) {
+    printFullDiagnostics();
+  } else if (std::strcmp(cmd, "verify") == 0) {
+    out("  Note: Mask/Enable verification consumes CVRF/latched flags; evidence is retained.\n");
+    const INA3221::Status st = verifyManagedRegisters();
+    printVerificationEvidence();
+    printStatus(st);
+  } else if (std::strcmp(cmd, "mismatch") == 0) {
+    printVerificationEvidence();
   } else if (std::strcmp(cmd, "recover") == 0) {
     info("Attempting recovery");
     printStatus(device.recover());
     printDriverHealth();
+  } else if (std::strcmp(cmd, "addr") == 0) {
+    out("  Selected INA3221 address: 0x%02X (%s)\n",
+        selectedAddress, addressStrap(selectedAddress));
+    if (device.isBound()) out("  Active driver address: 0x%02X\n", device.deviceProfile().i2cAddress);
+    else out("  Active driver address: none (unbound)\n");
+  } else if ((arg = argAfter(cmd, "addr ")) != nullptr) {
+    uint8_t address = 0;
+    if (!parseAddress(arg, address)) {
+      hilCommandStatus = INA3221::Err::INVALID_PARAM;
+      warn("Invalid address; use 0x40-0x43");
+      return;
+    }
+    selectedAddress = address;
+    out("  Selected INA3221 address: 0x%02X (%s); run init to apply\n",
+        selectedAddress, addressStrap(selectedAddress));
+  } else if (std::strcmp(cmd, "init") == 0 ||
+             (arg = argAfter(cmd, "init ")) != nullptr) {
+    uint8_t address = selectedAddress;
+    if (arg != nullptr && !parseAddress(arg, address)) {
+      hilCommandStatus = INA3221::Err::INVALID_PARAM;
+      warn("Invalid address; use init [0x40-0x43]");
+      return;
+    }
+    printStatus(initializeDeviceAt(address, true));
+  } else if (std::strcmp(cmd, "end") == 0) {
+    const INA3221::Status idle = requireIdleOwnerJob();
+    if (!idle.ok()) {
+      printStatus(idle);
+      return;
+    }
+    retainCurrentProfile();
+    device.unbind();
+    ownerDemoPhase = OwnerDemoPhase::IDLE;
+    startupSamplePending = false;
+    out("  Driver unbound; physical device state and I2C bus are unchanged\n");
+  } else if (std::strcmp(cmd, "freq") == 0) {
+    out("  I2C frequency: %lu Hz\n",
+        static_cast<unsigned long>(ina3221IdfTransportContext().frequencyHz));
+  } else if ((arg = argAfter(cmd, "freq ")) != nullptr) {
+    uint32_t frequency = 0;
+    if (!parseU32(arg, frequency)) {
+      hilCommandStatus = INA3221::Err::INVALID_PARAM;
+      warn("Usage: freq <10000..400000>");
+      return;
+    }
+    const INA3221::Status st = setExampleFrequency(frequency);
+    printStatus(st);
+    out("  I2C frequency: %lu Hz\n",
+        static_cast<unsigned long>(ina3221IdfTransportContext().frequencyHz));
   } else if (std::strcmp(cmd, "verbose") == 0) {
     info("Verbose mode: %s", verboseMode ? "ON" : "OFF");
   } else if ((arg = argAfter(cmd, "verbose ")) != nullptr) {
@@ -1299,6 +2390,49 @@ void processCommand(char* line) {
       return;
     }
     printStatus(device.setShuntResistance(static_cast<INA3221::Channel>(ch), ohms));
+  } else if (std::strcmp(cmd, "direction") == 0) {
+    if (!device.isBound()) {
+      printStatus(INA3221::Status::Error(INA3221::Err::NOT_INITIALIZED,
+                                         "Driver is not bound"));
+      return;
+    }
+    const INA3221::DeviceProfile& profile = device.deviceProfile();
+    out("  Current direction: CH1=%s CH2=%s CH3=%s\n",
+        directionToStr(profile.shunts[0].direction),
+        directionToStr(profile.shunts[1].direction),
+        directionToStr(profile.shunts[2].direction));
+  } else if ((arg = argAfter(cmd, "direction ")) != nullptr) {
+    char channelToken[24];
+    char directionToken[24];
+    bool inverted = false;
+    const int ch = splitTwoArgs(arg, channelToken, sizeof(channelToken),
+                                directionToken, sizeof(directionToken))
+                       ? parseChannel(channelToken) : -1;
+    if (ch < 0 || !parseBool01(directionToken, inverted)) {
+      hilCommandStatus = INA3221::Err::INVALID_PARAM;
+      warn("Usage: direction <1|2|3> <0|1>");
+      return;
+    }
+    if (!device.isBound()) {
+      printStatus(INA3221::Status::Error(INA3221::Err::NOT_INITIALIZED,
+                                         "Driver is not bound"));
+      return;
+    }
+    INA3221::DeviceProfile profile = device.deviceProfile();
+    profile.shunts[ch].direction = inverted
+        ? INA3221::CurrentDirection::POSITIVE_SHUNT_IS_NEGATIVE_CURRENT
+        : INA3221::CurrentDirection::POSITIVE_SHUNT_IS_POSITIVE_CURRENT;
+    const INA3221::Status st = device.startApplyProfile(
+        profile, nextOwnerRequestId(),
+        ownerDeadlineFor(INA3221::JobKind::APPLY_PROFILE, profile));
+    if (st.inProgress()) {
+      ownerDemoPhase = OwnerDemoPhase::ACTIVE;
+      ownerAutoService = true;
+      startupSamplePending = false;
+    }
+    printStatus(st);
+  } else if (std::strcmp(cmd, "profile") == 0) {
+    printDesiredProfile();
   } else if ((arg = argAfter(cmd, "config write ")) != nullptr) {
     uint32_t value = 0;
     if (!parseU32(arg, value) || value > 0xFFFFU) {
@@ -1354,6 +2488,15 @@ void processCommand(char* line) {
         flags.warningCh1, flags.warningCh2, flags.warningCh3);
     out("  Summation=%d PowerValid=%d TimingCtl=%d ConvReady=%d\n",
         flags.summation, flags.powerValid, flags.timingControl, flags.conversionReady);
+  } else if (std::strcmp(cmd, "alertsnap") == 0 ||
+             std::strcmp(cmd, "alertsnap take") == 0) {
+    INA3221::AlertSnapshot snapshot{};
+    const bool take = std::strcmp(cmd, "alertsnap take") == 0;
+    const INA3221::Status st = take ? device.takeAlertEvents(snapshot)
+                                    : device.peekAlertEvents(snapshot);
+    st.ok() ? printAlertSnapshot(snapshot, take ? "Taken Alert Evidence"
+                                                : "Retained Alert Evidence")
+            : printStatus(st);
   } else if (std::strcmp(cmd, "mask") == 0) {
     printMaskEnable();
   } else if (std::strcmp(cmd, "crit") == 0) {
@@ -1445,6 +2588,26 @@ void processCommand(char* line) {
     info("Online: %s", device.isOnline() ? "YES" : "NO");
   } else if (std::strcmp(cmd, "selftest") == 0) {
     runSelfTest();
+  } else if (std::strcmp(cmd, "stress_owner") == 0) {
+    runOwnerStress(10);
+  } else if ((arg = argAfter(cmd, "stress_owner ")) != nullptr) {
+    int32_t count = 0;
+    if (!parseI32(arg, count) || count <= 0 || count > 10000) {
+      hilCommandStatus = INA3221::Err::INVALID_PARAM;
+      warn("Invalid count (1-10000)");
+      return;
+    }
+    runOwnerStress(static_cast<int>(count));
+  } else if (std::strcmp(cmd, "stress_freq") == 0) {
+    runFrequencyStress(10);
+  } else if ((arg = argAfter(cmd, "stress_freq ")) != nullptr) {
+    int32_t count = 0;
+    if (!parseI32(arg, count) || count <= 0 || count > 10000) {
+      hilCommandStatus = INA3221::Err::INVALID_PARAM;
+      warn("Invalid count (1-10000)");
+      return;
+    }
+    runFrequencyStress(static_cast<int>(count));
   } else if (std::strcmp(cmd, "stress_mix") == 0) {
     runStressMix(50);
   } else if ((arg = argAfter(cmd, "stress_mix ")) != nullptr) {
@@ -1482,6 +2645,7 @@ void processCommand(char* line) {
         static_cast<long>(raw),
         static_cast<double>(INA3221::INA3221::busRawToVolts(static_cast<int16_t>(raw))));
   } else {
+    hilCommandStatus = INA3221::Err::INVALID_PARAM;
     warn("Unknown command: %s", cmd);
   }
 }
@@ -1494,6 +2658,9 @@ void setupExample() {
   scanBus();
   const INA3221::TransportConfig transportConfig = makeOwnerTransport();
   const INA3221::DeviceProfile profile = makeOwnerProfile(activeAddress);
+  retainedProfile = profile;
+  retainedProfileValid = true;
+  selectedAddress = activeAddress;
   INA3221::Status st = device.bind(transportConfig, profile);
   if (!st.ok()) {
     error("Failed to bind device contracts");
@@ -1502,19 +2669,28 @@ void setupExample() {
   }
   ++ownerRequestId;
   const uint64_t now = ownerNowMs();
-  st = device.startInitialize(ownerRequestId, now + OWNER_JOB_TIMEOUT_MS);
+  const uint64_t initializeDeadline =
+      ownerDeadlineFor(INA3221::JobKind::INITIALIZE, profile);
+  st = device.startInitialize(ownerRequestId, initializeDeadline);
   if (!st.inProgress()) {
     error("Failed to start staged initialization");
     printStatus(st);
     device.unbind();
     return;
   }
-  ownerDemoPhase = OwnerDemoPhase::INITIALIZING;
+  ownerDemoPhase = OwnerDemoPhase::ACTIVE;
+  ownerAutoService = true;
+  startupSamplePending = true;
   info("Staged initialization started (budget=1 transfer/poll)");
 
   // Finish the bring-up demonstration before entering the shell. The outer
   // wait is bounded; every service call still admits at most one I2C callback.
-  const uint64_t demoDeadline = now + (2U * OWNER_JOB_TIMEOUT_MS);
+  const uint64_t sampleDeadline = ownerDeadlineFor(
+      INA3221::JobKind::TRIGGERED_SAMPLE, profile, profile.mode);
+  const uint64_t sampleBudget = sampleDeadline > now
+                                    ? sampleDeadline - now
+                                    : OWNER_JOB_TIMEOUT_MS;
+  const uint64_t demoDeadline = initializeDeadline + sampleBudget + 250U;
   while (ownerDemoPhase != OwnerDemoPhase::IDLE && ownerNowMs() < demoDeadline) {
     serviceOwnerJob();
     vTaskDelay(pdMS_TO_TICKS(1));
@@ -1536,19 +2712,40 @@ extern "C" void app_main(void) {
   out("\nType 'help' for commands\n");
   prompt();
 
-  char line[MAX_LINE_LEN];
+  char line[MAX_LINE_LEN]{};
+  size_t lineLength = 0;
+  bool lineOverflow = false;
   while (true) {
     serviceOwnerJob();
     if (ownerDemoPhase == OwnerDemoPhase::IDLE && device.isInitialized()) {
       (void)device.tickStatus(nowMs());
     }
-    if (std::fgets(line, sizeof(line), stdin) == nullptr) {
-      clearerr(stdin);
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
+    bool commandHandled = false;
+    for (size_t bytes = 0; bytes < MAX_LINE_LEN + 1U; ++bytes) {
+      char c = '\0';
+      const ssize_t received = read(STDIN_FILENO, &c, 1U);
+      if (received <= 0) break;
+      if (c == '\n' || c == '\r') {
+        const bool hadLine = lineOverflow || lineLength > 0U;
+        if (lineOverflow) {
+          warn("Input line exceeds 127 bytes; command rejected");
+        } else if (lineLength > 0U) {
+          line[lineLength] = '\0';
+          processCommand(line);
+        }
+        lineLength = 0;
+        lineOverflow = false;
+        if (hadLine) prompt();
+        commandHandled = hadLine;
+        break;  // Service the owner once between queued commands.
+      }
+      if (lineOverflow) continue;
+      if (lineLength + 1U < sizeof(line)) {
+        line[lineLength++] = c;
+      } else {
+        lineOverflow = true;
+      }
     }
-    processCommand(line);
-    prompt();
-    vTaskDelay(pdMS_TO_TICKS(1));
+    vTaskDelay(pdMS_TO_TICKS(commandHandled ? 1 : 10));
   }
 }

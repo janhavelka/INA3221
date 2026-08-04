@@ -618,6 +618,7 @@ void test_owner_cancel_is_bus_silent_before_and_after_hardware_effects() {
     TEST_ASSERT_TRUE(device.takeJobResult(result).ok());
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareEffect::PARTIAL),
                             static_cast<uint8_t>(result.hardwareEffect));
+    TEST_ASSERT_FALSE(result.mismatchValid);
   }
   {
     ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
@@ -1004,6 +1005,15 @@ void test_owner_every_managed_readback_mismatch_is_partial_and_dirty() {
                             static_cast<uint8_t>(result.state));
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareEffect::PARTIAL),
                             static_cast<uint8_t>(result.hardwareEffect));
+    TEST_ASSERT_TRUE(result.mismatchValid);
+    TEST_ASSERT_EQUAL_HEX8(expected[index].reg, result.mismatchRegister);
+    TEST_ASSERT_EQUAL_HEX16(expected[index].value, result.mismatchExpected);
+    TEST_ASSERT_EQUAL_HEX16(mismatch, result.mismatchActual);
+    const uint16_t expectedMask =
+        expected[index].reg == cmd::REG_CONFIG
+            ? static_cast<uint16_t>(~cmd::MASK_RST)
+            : (expected[index].reg == cmd::REG_MASK_ENABLE ? 0x7C00U : 0xFFFFU);
+    TEST_ASSERT_EQUAL_HEX16(expectedMask, result.mismatchMask);
     const AppliedConfigState state = index == 0U
                                          ? device.measurementConfigState()
                                          : device.alertConfigState();
@@ -1074,8 +1084,60 @@ void test_owner_reconcile_reads_first_and_verification_mismatch_is_partial() {
   TEST_ASSERT_TRUE(device.takeJobResult(result).ok());
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobTerminalState::PARTIAL),
                           static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareEffect::PARTIAL),
+                          static_cast<uint8_t>(result.hardwareEffect));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::PROFILE_MISMATCH),
+                          static_cast<uint8_t>(result.status.code));
+  TEST_ASSERT_EQUAL_INT32(cmd::REG_CONFIG, result.status.detail);
+  TEST_ASSERT_EQUAL_STRING("Profile register verification mismatch", result.status.msg);
+  TEST_ASSERT_TRUE(result.mismatchValid);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG, result.mismatchRegister);
+  TEST_ASSERT_EQUAL_HEX16(expected[0].value, result.mismatchExpected);
+  TEST_ASSERT_EQUAL_HEX16(
+      static_cast<uint16_t>(expected[0].value ^ cmd::MASK_CH1EN),
+      result.mismatchActual);
+  TEST_ASSERT_EQUAL_HEX16(static_cast<uint16_t>(~cmd::MASK_RST),
+                          result.mismatchMask);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::DIRTY),
                           static_cast<uint8_t>(device.measurementConfigState()));
+}
+
+void test_owner_power_down_mismatch_retains_full_register_evidence() {
+  const DeviceProfile profile = makeProfile();
+  ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+  INA3221::INA3221 device;
+  TEST_ASSERT_TRUE(initializeApplied(device, bus, profile));
+  bus.resetHarness();
+
+  DeviceProfile poweredDown = profile;
+  poweredDown.mode = Mode::POWER_DOWN;
+  const uint16_t expected = configValue(poweredDown, Mode::POWER_DOWN);
+  const uint16_t actual = static_cast<uint16_t>(expected ^ cmd::MASK_CH1EN);
+  bus.expectRead(cmd::REG_CONFIG);
+  bus.expectWrite(cmd::REG_CONFIG, expected);
+  TEST_ASSERT_TRUE(bus.mutateAfterLastStep(cmd::REG_CONFIG, actual));
+  bus.expectRead(cmd::REG_CONFIG);
+
+  TEST_ASSERT_TRUE(device.startPowerDown(803U, 1000U).inProgress());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::PROFILE_MISMATCH),
+                          static_cast<uint8_t>(device.pollJob(pollContext(1U)).code));
+  JobResult result{};
+  TEST_ASSERT_TRUE(device.takeJobResult(result).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobTerminalState::PARTIAL),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareEffect::PARTIAL),
+                          static_cast<uint8_t>(result.hardwareEffect));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::PROFILE_MISMATCH),
+                          static_cast<uint8_t>(result.status.code));
+  TEST_ASSERT_EQUAL_INT32(cmd::REG_CONFIG, result.status.detail);
+  TEST_ASSERT_EQUAL_STRING("Power-down verification mismatch", result.status.msg);
+  TEST_ASSERT_TRUE(result.mismatchValid);
+  TEST_ASSERT_EQUAL_HEX8(cmd::REG_CONFIG, result.mismatchRegister);
+  TEST_ASSERT_EQUAL_HEX16(expected, result.mismatchExpected);
+  TEST_ASSERT_EQUAL_HEX16(actual, result.mismatchActual);
+  TEST_ASSERT_EQUAL_HEX16(static_cast<uint16_t>(~cmd::MASK_RST),
+                          result.mismatchMask);
+  TEST_ASSERT_TRUE(bus.scriptConsumed());
 }
 
 void test_owner_active_job_excludes_legacy_hardware_io_without_callbacks() {
@@ -1687,6 +1749,7 @@ void runOwnerOperationTests() {
   RUN_TEST(test_owner_every_managed_readback_mismatch_is_partial_and_dirty);
   RUN_TEST(test_failed_partial_mask_read_exposes_alert_evidence_uncertainty);
   RUN_TEST(test_owner_reconcile_reads_first_and_verification_mismatch_is_partial);
+  RUN_TEST(test_owner_power_down_mismatch_retains_full_register_evidence);
   RUN_TEST(test_owner_active_job_excludes_legacy_hardware_io_without_callbacks);
   RUN_TEST(test_legacy_facade_rejected_starts_preserve_and_cannot_cross_drive_jobs);
   RUN_TEST(test_raw_reset_updates_both_profile_certainty_families);

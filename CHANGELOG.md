@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added complete Arduino and native ESP-IDF diagnostic CLI coverage for all
+  cooperative job kinds and progress fields, runtime address selection and
+  initialization, valid-address discovery, runtime I2C frequency changes,
+  retained fixed-unit samples and alert evidence, current-direction policy,
+  managed-register verification, transfer counters/assertions, deterministic
+  HIL framing, owner-job stress, and frequency-switching stress.
+- Added cache-only full diagnostics with complete last transport error
+  code/detail/message/time, desired-profile certainty, owner result/progress,
+  retained verification evidence, and physical transfer totals.
+- Added full register mismatch evidence to `JobResult` (register, expected,
+  actual, comparison mask) for cooperative profile and power-down verification
+  failures, with native tests for both paths.
 - Added a maintained HIL guide and reviewed evidence ledger with bounded
   commands, explicit coverage, fixture assumptions, and non-claims.
 - Added a PlatformIO post-builder upload-configuration hook that disables
@@ -33,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alert and raw-register write/readback/restore paths, CLI aliases and invalid
   inputs, exact configuration-register encodings, exact stress totals, and
   strict final/soak health invariants.
+- Switched automated CLI completion detection from prompt timing to explicit
+  `HIL_BEGIN`/`HIL_END` frames and expanded the bounded suite from 286 to 379
+  steps before the optional three benchmarks.
 - Exposed the public alternate power-down encoding through the Arduino and
   native ESP-IDF example CLIs as `mode pda` and added exact HIL readback.
 - Reorganized and expanded the README with hardware/address guidance, profile

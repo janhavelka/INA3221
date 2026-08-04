@@ -16,7 +16,21 @@ REQUIRED_COMMON = [
     "CliStyle.h",
 ]
 
-MANDATORY_COMMANDS = ["help", "scan", "probe", "recover", "drv", "read", "verbose", "stress"]
+MANDATORY_COMMANDS = [
+    "help", "version", "scan", "scanina", "read", "job", "mode", "avg",
+    "vbusct", "vshct", "chen", "rshunt", "direction", "profile", "addr",
+    "init", "end", "freq", "config", "reg", "wreg", "alerts", "alertsnap",
+    "crit", "warn", "sumlim", "pvhi", "pvlo", "sumch", "latch", "drv",
+    "diag", "verify", "mismatch", "probe", "recover", "online", "verbose",
+    "stress", "stress_mix", "stress_owner", "stress_freq", "hilrun", "hilmark",
+    "xfer_reset", "xfer_stats", "xfer_assert", "selftest",
+]
+
+REQUIRED_JOB_VARIANTS = [
+    "job init", "job apply", "job reconcile", "job sample", "job continuous",
+    "job powerdown", "job cancel", "job auto", "job step", "job result",
+    "job lastsample", "job alerts",
+]
 
 
 def fail(msg: str) -> None:
@@ -62,6 +76,23 @@ def main() -> int:
     for cmd in MANDATORY_COMMANDS:
         if re.search(rf"\b{re.escape(cmd)}\b", text) is None:
             fail(f"mandatory command '{cmd}' missing in {bringup_main.as_posix()}")
+
+    for command in REQUIRED_JOB_VARIANTS:
+        if f'"{command}' not in text:
+            fail(f"owner command variant '{command}' missing")
+
+    for token in (
+        "Last error detail:",
+        "Last error msg:",
+        "Managed Register Verification Evidence",
+        "mismatchExpected",
+        "HIL_BEGIN token=",
+        "XFER_ASSERT PASS",
+        "I2C frequency must be 10000-400000 Hz",
+        "Healthy INA3221 devices",
+    ):
+        if token not in text and token not in (ROOT / "include" / "INA3221" / "INA3221.h").read_text(encoding="utf-8"):
+            fail(f"expanded diagnostic/automation token '{token}' missing")
 
     if re.search(r"\bcfg\b", text) is None and re.search(r"\bsettings\b", text) is None:
         fail("either 'cfg' or 'settings' command must be present")

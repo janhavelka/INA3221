@@ -56,10 +56,13 @@ cancellation, and take-once results from one serialized context. Reusable
 applications should own their own adapter context beside the central I2C
 manager instead of copying the example singleton.
 
-Type `help` in the monitor for the authoritative CLI command list. The `job`,
-`job sample`, and `job cancel` commands expose the cooperative flow; scan,
-measurement, alert, raw-register, health, stress, and self-test diagnostics are
-also available.
+Type `help` in the monitor for the authoritative CLI command list. It mirrors
+the Arduino example: every cooperative job kind plus manual/automatic polling,
+retained results/samples/alerts, full profile and health diagnostics, all chip
+setters, managed-register mismatch evidence, valid-address scanning and runtime
+selection, 10-400 kHz runtime clock changes with rollback, exact transfer
+counters, framed HIL commands, self-test, and bounded measurement/owner/frequency
+stress are available without Arduino compatibility code.
 
 ## Validation boundary
 

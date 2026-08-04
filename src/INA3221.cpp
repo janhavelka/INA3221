@@ -1362,6 +1362,16 @@ Status INA3221::_pollProfileJob(const PollContext& context,
                            _jobDesiredRegisterAddress);
         _markRegisterDirty(_jobDesiredRegisterAddress);
         _finishJob(JobTerminalState::PARTIAL, st, HardwareEffect::PARTIAL);
+        _pendingJobResult.mismatchValid = true;
+        _pendingJobResult.mismatchRegister = _jobDesiredRegisterAddress;
+        _pendingJobResult.mismatchExpected = _jobDesiredRegisterValue;
+        _pendingJobResult.mismatchActual = actual;
+        _pendingJobResult.mismatchMask =
+            _jobDesiredRegisterAddress == cmd::REG_CONFIG
+                ? static_cast<uint16_t>(~cmd::MASK_RST)
+                : (_jobDesiredRegisterAddress == cmd::REG_MASK_ENABLE
+                       ? kMaskEnableWritable
+                       : 0xFFFFU);
         return st;
       }
       ++_jobProfileIndex;
@@ -1648,6 +1658,11 @@ Status INA3221::_pollPowerDownOperation(const PollContext& context,
       st = Status::Error(Err::PROFILE_MISMATCH,
                          "Power-down verification mismatch", reg);
       _finishJob(JobTerminalState::PARTIAL, st, HardwareEffect::PARTIAL);
+      _pendingJobResult.mismatchValid = true;
+      _pendingJobResult.mismatchRegister = reg;
+      _pendingJobResult.mismatchExpected = desired;
+      _pendingJobResult.mismatchActual = actual;
+      _pendingJobResult.mismatchMask = static_cast<uint16_t>(~cmd::MASK_RST);
       return st;
     }
     _finishJobSuccess();

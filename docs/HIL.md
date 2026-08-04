@@ -41,9 +41,9 @@ limit registers, then verifies their restoration. The chip has no EEPROM/NVM.
 From the repository root, use a clean S3 build and the actual fixture port:
 
 ```powershell
-python -m platformio run -e esp32s3dev -t clean
-python -m platformio run -e esp32s3dev
-python -m platformio run -e esp32s3dev -t upload --upload-port COM26
+.\scripts\pio.cmd run -e esp32s3dev -t clean
+.\scripts\pio.cmd run -e esp32s3dev
+.\scripts\pio.cmd run -e esp32s3dev -t upload --upload-port COM26
 python tools/hil_cli_runner.py --parser-self-test
 python tools/hil_cli_runner.py --port COM26 `
   --stress-count 500 --stress-mix-count 500 `
@@ -57,11 +57,17 @@ Replace `COM26` and the external artifact paths as needed. Reports and raw
 transcripts are run artifacts, so keep them outside this repository. DTR and
 RTS remain deasserted unless explicitly requested.
 
-The default suite currently contains 286 bounded steps; `--sample-benchmark`
-adds three more. It covers:
+The default suite currently contains 379 bounded steps; `--sample-benchmark`
+adds three more. Every ordinary step is enclosed by a sequence-specific
+`HIL_BEGIN`/`HIL_END` frame, so an asynchronous prompt cannot be mistaken for
+command completion. It covers:
 
-- identity, discovery, aliases, lifecycle, cache certainty, and health;
-- cooperative triggered sampling, progress, cancellation, and reconciliation;
+- identity, all four valid address straps, runtime selection/init/end,
+  10/100/400 kHz switching and input-bound validation, aliases, cache certainty, and
+  health;
+- every cooperative job kind, symbolic progress/deadlines, explicit zero/one
+  transfer budgets, automatic servicing, retained results/samples/alerts, and
+  bus-silent cancellation;
 - all eight public operating modes, including the alternate power-down
   encoding, and conversion-ready polling;
 - all eight averaging, bus-conversion-time, and shunt-conversion-time values,
@@ -69,10 +75,13 @@ adds three more. It covers:
 - channel enable validation and voltage/current/power reads on all channels;
 - critical/warning limits on all channels, summation selection/limit,
   power-valid limits, latch modes, and restore paths;
-- software reset, managed/raw register guards, one bounded raw alert-limit
-  write/readback/restore sequence, conversion helpers, and invalid inputs;
-- self-test, exact-count measurement and mixed-operation stress, optional
-  benchmarks, and repeated soak health checks.
+- software reset, managed/raw register guards, an intentionally mismatched raw
+  alert limit with exact register/expected/actual/mask evidence and verified
+  restoration, conversion helpers, transport counters, HIL framing, and invalid
+  inputs;
+- cache-only aggregate diagnostics, complete desired-profile output and host
+  current direction, self-test, exact-count measurement/mixed/owner/frequency
+  stress, optional benchmarks, and repeated soak health checks.
 
 Every successful qualification must end `READY`, online, with zero consecutive
 and total transport failures and clean hardware-configuration certainty. A

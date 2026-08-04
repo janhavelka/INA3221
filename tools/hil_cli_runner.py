@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import os
 import platform
 import re
 import statistics
@@ -54,6 +55,7 @@ class Step:
     failure_tokens: tuple[str, ...] = DEFAULT_FAILURE_TOKENS
     post_prompt_capture_s: float = 0.02
     pacing_s: Optional[float] = None
+    raw: bool = False
 
 
 @dataclass
@@ -107,6 +109,54 @@ def markdown_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
 
 
+def extract_hil_frame(text: str, token: str, sequence: str) -> Optional[str]:
+    normalized = normalize(text)
+    begin = f"HIL_BEGIN token={token} seq={sequence}\n"
+    begin_at = normalized.find(begin)
+    if begin_at < 0:
+        return None
+    end_pattern = re.compile(
+        rf"^HIL_END token={re.escape(token)} seq={re.escape(sequence)} "
+        r"status=[A-Z0-9_]+(?:[ \t]+elapsed_ms=\d+)?[ \t]*$",
+        re.MULTILINE,
+    )
+    end_match = end_pattern.search(normalized, begin_at + len(begin))
+    if end_match is None:
+        return None
+    line_end = normalized.find("\n", end_match.end())
+    if line_end < 0:
+        return None
+    return normalized[begin_at:line_end + 1]
+
+
+def hil_end_line_seen(text: str, token: str, sequence: str) -> bool:
+    return extract_hil_frame(text, token, sequence) is not None
+
+
+def hil_end_status(text: str, token: str, sequence: str) -> Optional[str]:
+    frame = extract_hil_frame(text, token, sequence)
+    if frame is None:
+        return None
+    pattern = re.compile(
+        rf"^HIL_END token={re.escape(token)} seq={re.escape(sequence)} "
+        r"status=([A-Z0-9_]+)(?:\s|$)",
+        re.MULTILINE,
+    )
+    match = pattern.search(frame)
+    return match.group(1) if match is not None else None
+
+
+def expected_hil_statuses(step: Step) -> set[str]:
+    statuses: set[str] = set()
+    for expected in step.expected:
+        statuses.update(re.findall(r"Status: ([A-Z0-9_]+)", expected))
+    if statuses:
+        return statuses
+    if step.failure_tokens != DEFAULT_FAILURE_TOKENS:
+        return {"INVALID_PARAM"}
+    return {"OK"}
+
+
 def classify_output(
     output: str,
     expected: Iterable[str],
@@ -115,7 +165,7 @@ def classify_output(
 ) -> tuple[str, str]:
     text = normalize(output)
     if timed_out:
-        return "FAIL", "command timed out before CLI prompt"
+        return "FAIL", "command timed out before completion marker"
 
     missing = [token for token in expected if token not in text]
     failures = [token for token in failure_tokens if token and token in text]
@@ -192,6 +242,16 @@ def run_parser_self_test() -> int:
         ("prompt before async output", "Status: CANCELLED\n> Owner job kind=4\n", True),
         ("greater-than in ordinary output", "value > threshold\n", False),
     ]
+    frame_cases = [
+        ("complete matching frame", "stale\nHIL_BEGIN token=T seq=7\noutput\nHIL_END token=T seq=7 status=OK\n> ", "T", "7", True),
+        ("missing begin", "output\nHIL_END token=T seq=7 status=OK\n", "T", "7", False),
+        ("partial matching frame", "HIL_BEGIN token=T seq=7\nHIL_END token=T seq=7 status=OK", "T", "7", False),
+        ("wrong frame sequence", "HIL_BEGIN token=T seq=8\nHIL_END token=T seq=8 status=OK\n", "T", "7", False),
+    ]
+    frame_status_cases = [
+        ("matching frame status", "HIL_BEGIN token=T seq=7\nHIL_END token=T seq=7 status=OK elapsed_ms=1\n", "OK"),
+        ("missing frame status", "HIL_BEGIN token=T seq=7\nHIL_END token=T seq=7\n", None),
+    ]
 
     failures = 0
     for name, output, expected, failure_tokens, timed_out, want in cases:
@@ -204,6 +264,18 @@ def run_parser_self_test() -> int:
         got = PROMPT_RE.search(normalize(output)) is not None
         ok = got == want
         print(f"{name}: {'PASS' if ok else 'FAIL'} (prompt={got})")
+        if not ok:
+            failures += 1
+    for name, output, token, sequence, want in frame_cases:
+        got = hil_end_line_seen(output, token, sequence)
+        ok = got == want
+        print(f"{name}: {'PASS' if ok else 'FAIL'} (frame={got})")
+        if not ok:
+            failures += 1
+    for name, output, want in frame_status_cases:
+        got = hil_end_status(output, "T", "7")
+        ok = got == want
+        print(f"{name}: {'PASS' if ok else 'FAIL'} (status={got})")
         if not ok:
             failures += 1
     return 1 if failures else 0
@@ -295,6 +367,39 @@ class SerialSession:
 
         return buf.decode(errors="replace"), prompt_seen
 
+    def read_until_hil_end(
+        self,
+        token: str,
+        sequence: str,
+        timeout_s: float,
+        post_marker_capture_s: float = 0.02,
+    ) -> tuple[str, bool]:
+        deadline = time.monotonic() + timeout_s
+        buf = bytearray()
+        marker_seen = False
+
+        while time.monotonic() < deadline:
+            waiting = getattr(self.ser, "in_waiting", 0)
+            chunk = self.ser.read(waiting or 1)
+            if chunk:
+                buf.extend(chunk)
+                if hil_end_line_seen(buf.decode(errors="replace"), token, sequence):
+                    marker_seen = True
+                    break
+
+        if marker_seen:
+            settle_deadline = time.monotonic() + post_marker_capture_s
+            while time.monotonic() < settle_deadline:
+                waiting = getattr(self.ser, "in_waiting", 0)
+                if waiting:
+                    chunk = self.ser.read(waiting)
+                    if chunk:
+                        buf.extend(chunk)
+                        continue
+                time.sleep(0.002)
+
+        return buf.decode(errors="replace"), marker_seen
+
 
 def default_steps(stress_count: int, stress_mix_count: int) -> list[Step]:
     long_timeout = max(20.0, float(max(stress_count, stress_mix_count)) * 0.25)
@@ -305,15 +410,42 @@ def default_steps(stress_count: int, stress_mix_count: int) -> list[Step]:
               "Flash size: 4194304 bytes", "PSRAM size: 2097152 bytes")),
         Step("CONN-001A", "Serial CLI help", "help",
              ("INA3221 CLI Help", "[Common]", "[Configuration]", "[Registers]",
-              "[Alerts]", "[Diagnostics]", "job sample")),
+              "[Alerts]", "[Diagnostics]", "job sample", "scanina",
+              "stress_owner", "stress_freq", "xfer_assert")),
         Step("CONN-001B", "Serial CLI help alias", "?", ("INA3221 CLI Help",)),
         Step("CONN-001C", "Version alias", "ver",
              ("Version Info", "Arduino-ESP32 version: 3.3.11")),
         Step("CONN-002", "I2C discovery", "scan",
              ("Scan complete", "INA3221 recognized:"), timeout_s=12.0),
+        Step("CONN-002A", "INA3221 address discovery", "scanina",
+             ("INA3221 Address Probe", "0x40 (A0=GND): ACK",
+              "manufacturer=0x5449 die=0x3220 HEALTHY_INA3221",
+              "Healthy INA3221 devices: 1"), timeout_s=12.0),
+        Step("CONN-002B", "Address query", "addr",
+             ("Selected INA3221 address: 0x40", "Active driver address: 0x40")),
+        Step("CONN-002C", "Address select VS", "addr 0x41",
+             ("Selected INA3221 address: 0x41 (A0=VS); run init to apply",)),
+        Step("CONN-002D", "Address select SDA", "addr 0x42",
+             ("Selected INA3221 address: 0x42 (A0=SDA); run init to apply",)),
+        Step("CONN-002E", "Address select SCL", "addr 0x43",
+             ("Selected INA3221 address: 0x43 (A0=SCL); run init to apply",)),
+        Step("CONN-002F", "Address restore selection", "addr 0x40",
+             ("Selected INA3221 address: 0x40 (A0=GND); run init to apply",)),
         Step("CONN-003", "Identity", "probe", ("Status: OK",)),
         Step("CONN-004", "Identity", "ids",
              ("Manufacturer ID: 0x5449", "Die ID: 0x3220")),
+        Step("CONN-005", "I2C frequency query", "freq",
+             ("I2C frequency: 400000 Hz",)),
+        Step("CONN-006", "Runtime I2C frequency 100 kHz", "freq 100000",
+             ("Status: OK", "I2C frequency: 100000 Hz")),
+        Step("CONN-007", "Identity at 100 kHz", "ids",
+             ("Manufacturer ID: 0x5449", "Die ID: 0x3220")),
+        Step("CONN-007A", "Runtime I2C frequency lower boundary", "freq 10000",
+             ("Status: OK", "I2C frequency: 10000 Hz")),
+        Step("CONN-007B", "Identity at 10 kHz", "ids",
+             ("Manufacturer ID: 0x5449", "Die ID: 0x3220")),
+        Step("CONN-008", "Runtime I2C frequency 400 kHz", "freq 400000",
+             ("Status: OK", "I2C frequency: 400000 Hz")),
         Step("STATE-001", "Lifecycle/health", "drv",
              ("Driver Health", "State: READY\n", "Online: yes\n",
               "Consecutive failures: 0\n", "Total failures: 0\n")),
@@ -334,39 +466,154 @@ def default_steps(stress_count: int, stress_mix_count: int) -> list[Step]:
         Step("BASE-006", "Baseline channel 2", "chen 2 1", ("Status: OK",)),
         Step("BASE-007", "Baseline channel 3", "chen 3 1", ("Status: OK",)),
         Step("BASE-008", "Baseline profile verification", "recover", ("Status: OK",)),
+        Step("BASE-009", "Desired profile diagnostics", "profile",
+             ("Desired Device Profile", "Bound: YES  Initialized: YES  Address: 0x40",
+              "Mode: SHUNT_BUS_CONT", "Channels=0x07", "direction=NORMAL",
+              "Power-valid window:")),
+        Step("BASE-010", "Managed-register verification", "verify",
+             ("Managed Register Verification Evidence", "Registers: 11",
+              "Mismatches: 0", "Read failures: 0", "VERIFY_RESULT: PASS",
+              "Status: OK")),
+        Step("BASE-011", "Retained verification evidence", "mismatch",
+             ("Managed Register Verification Evidence", "Registers: 11",
+              "VERIFY_RESULT: PASS")),
+        Step("BASE-012", "Full cache-only diagnostics", "diag",
+             ("Full INA3221 Diagnostics (cache-only)", "Selected address: 0x40",
+              "I2C frequency: 400000 Hz", "Driver Health", "Desired Device Profile",
+              "Owner Job Progress", "Managed Register Verification Evidence",
+              "Transport transfers:")),
+        Step("BASE-013", "Cached owner sample", "job lastsample",
+             ("Owner sample request=", "enabled=0x07 valid=0x07", "CH1:", "CH2:",
+              "CH3:")),
+        Step("BASE-014", "Retained alert evidence", "job alerts",
+             ("Retained Alert Evidence", "events=0x", "ConversionReady=")),
+        Step("BASE-014A", "Take owner alert evidence", "job alerts take",
+             ("Taken Alert Evidence", "events=0x", "EvidenceUncertain=")),
+        Step("BASE-015", "Alert snapshot alias", "alertsnap",
+             ("Retained Alert Evidence", "EvidenceUncertain=")),
+        Step("BASE-016", "Take alert evidence", "alertsnap take",
+             ("Taken Alert Evidence", "events=0x")),
+        Step("BASE-017", "Current direction query", "direction",
+             ("Current direction: CH1=NORMAL CH2=NORMAL CH3=NORMAL",)),
+        Step("BASE-018", "Invert channel 1 direction", "direction 1 1",
+             ("Status: IN_PROGRESS",), pacing_s=0.5),
+        Step("BASE-019", "Inverted direction query", "direction",
+             ("Current direction: CH1=INVERTED CH2=NORMAL CH3=NORMAL",)),
+        Step("BASE-020", "Restore channel 1 direction", "direction 1 0",
+             ("Status: IN_PROGRESS",), pacing_s=0.5),
+        Step("BASE-021", "Restored direction query", "direction",
+             ("Current direction: CH1=NORMAL CH2=NORMAL CH3=NORMAL",)),
+        Step("BASE-022", "Invert channel 2 direction", "direction 2 1",
+             ("Status: IN_PROGRESS",), pacing_s=0.5),
+        Step("BASE-023", "Invert channel 3 direction", "direction 3 1",
+             ("Status: IN_PROGRESS",), pacing_s=0.5),
+        Step("BASE-024", "All current directions query", "direction",
+             ("Current direction: CH1=NORMAL CH2=INVERTED CH3=INVERTED",)),
+        Step("BASE-025", "Restore channel 2 direction", "direction 2 0",
+             ("Status: IN_PROGRESS",), pacing_s=0.5),
+        Step("BASE-026", "Restore channel 3 direction", "direction 3 0",
+             ("Status: IN_PROGRESS",), pacing_s=0.5),
+        Step("BASE-027", "All current directions restored", "direction",
+             ("Current direction: CH1=NORMAL CH2=NORMAL CH3=NORMAL",)),
         Step("OWNER-001", "Owner idle progress", "job",
-             ("Owner job kind=0", "stage=0 state=0", "pending=0")),
+             ("Owner Job Progress", "Kind: NONE (0)", "Stage: IDLE (0)",
+              "State: IDLE (0)", "Result pending: 0")),
         Step("OWNER-001A", "Owner triggered-mode profile", "mode sbtrig",
              ("Status: IN_PROGRESS", "Conversion started")),
         Step("OWNER-001B", "Owner triggered-mode verification", "recover",
              ("Status: OK",)),
-        Step("OWNER-002", "Owner triggered sample", "job sample",
-             ("Status: IN_PROGRESS", "Owner job kind=4", "terminal=2",
-              "Status: OK", "Owner sample request=", "valid=0x07",
-              "CH1:", "CH2:", "CH3:"), post_prompt_capture_s=0.5),
-        Step("OWNER-003", "Owner idle cancellation", "job cancel",
-             ("Status: NO_ACTIVE_JOB", "No active owner job"),
-             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
-        Step("OWNER-004", "Owner cancel timing average", "avg 2", ("Status: OK",)),
-        Step("OWNER-005", "Owner cancel timing bus CT", "vbusct 6", ("Status: OK",)),
-        Step("OWNER-006", "Owner cancel timing shunt CT", "vshct 6", ("Status: OK",)),
-        Step("OWNER-006A", "Owner slow-profile conversion settle", "poll",
-             ("Conversion ready:",), post_prompt_capture_s=1.0),
-        Step("OWNER-007", "Owner cancel profile verification", "recover", ("Status: OK",)),
-        Step("OWNER-008", "Owner active sample", "job sample", ("Status: IN_PROGRESS",),
-             pacing_s=0.02),
-        Step("OWNER-009", "Owner active progress", "job",
-             ("Owner job kind=4", "state=1"), pacing_s=0.02),
-        Step("OWNER-010", "Owner active cancellation", "job cancel",
-             ("Status: CANCELLED", "Owner job kind=4", "terminal=4"),
+        Step("OWNER-002", "Owner transfer counter reset", "xfer_reset",
+             ("XFER_RESET read=0 write=0 total=0",)),
+        Step("OWNER-003", "Owner triggered sample start", "job sample",
+             ("Status: IN_PROGRESS",)),
+        Step("OWNER-004", "Owner active progress", "job progress",
+             ("Kind: TRIGGERED_SAMPLE (4)", "State: ACTIVE (1)",
+              "Result pending: 0")),
+        Step("OWNER-005", "Zero-budget owner poll", "job step 0",
+             ("Status: IN_PROGRESS", "Last poll: 0")),
+        Step("OWNER-006", "Zero-budget transfer assertion", "xfer_assert 0 0 0",
+             ("XFER_ASSERT PASS read=0 write=0 total=0",)),
+        Step("OWNER-007", "One-budget owner poll", "job step 1",
+             ("Status: IN_PROGRESS", "Last poll: 1")),
+        Step("OWNER-008", "One-budget transfer assertion", "xfer_assert 0 1 1",
+             ("XFER_ASSERT PASS read=0 write=1 total=1",)),
+        Step("OWNER-009", "Enable automatic owner service", "job auto 1",
+             ("Owner auto service: ON",), pacing_s=0.5),
+        Step("OWNER-010", "Triggered sample terminal result", "job result",
+             ("Owner Job Result", "Kind: TRIGGERED_SAMPLE (4)",
+              "State: SUCCEEDED (2)", "Status: OK", "Owner sample",
+              "enabled=0x07 valid=0x07", "CH1:", "CH2:", "CH3:")),
+        Step("OWNER-011", "Owner terminal result cache", "job result",
+             ("Owner Job Result", "State: SUCCEEDED (2)", "Status: OK")),
+        Step("OWNER-012", "Disable automatic owner service", "job auto 0",
+             ("Owner auto service: OFF",)),
+        Step("OWNER-013", "Owner cancellation sample start", "job sample",
+             ("Status: IN_PROGRESS",)),
+        Step("OWNER-014", "Owner cancellation active progress", "job progress",
+             ("Kind: TRIGGERED_SAMPLE (4)", "State: ACTIVE (1)")),
+        Step("OWNER-015", "Owner active cancellation", "job cancel",
+             ("Status: CANCELLED", "Kind: TRIGGERED_SAMPLE (4)",
+              "State: CANCELLED (4)"),
              failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic"),
              post_prompt_capture_s=0.2),
-        Step("OWNER-011", "Owner average restore", "avg 0", ("Status: OK",)),
-        Step("OWNER-012", "Owner bus CT restore", "vbusct 4", ("Status: OK",)),
-        Step("OWNER-013", "Owner shunt CT restore", "vshct 4", ("Status: OK",)),
-        Step("OWNER-014", "Owner post-cancel reconcile", "recover", ("Status: OK",)),
-        Step("OWNER-015", "Owner post-cancel state", "settings",
+        Step("OWNER-016", "Owner cancelled terminal result", "job result",
+             ("Owner Job Result", "State: CANCELLED (4)", "Status: CANCELLED"),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("OWNER-017", "Restore automatic owner service", "job auto 1",
+             ("Owner auto service: ON",)),
+        Step("OWNER-017A", "Automatic owner service query", "job auto",
+             ("Owner auto service: ON",)),
+        Step("OWNER-018", "Owner post-cancel reconcile", "recover", ("Status: OK",)),
+        Step("OWNER-019", "Owner post-cancel state", "settings",
              ("State: READY\n", "Hardware config dirty: NO\n")),
+        Step("OWNER-020", "Initialize job start", "job init", ("Status: IN_PROGRESS",)),
+        Step("OWNER-021", "Initialize job auto service", "job auto 1",
+             ("Owner auto service: ON",), pacing_s=1.0),
+        Step("OWNER-022", "Initialize job result", "job result",
+             ("Kind: INITIALIZE (1)", "State: SUCCEEDED (2)", "Status: OK")),
+        Step("OWNER-023", "Apply-profile job start", "job apply",
+             ("Status: IN_PROGRESS",)),
+        Step("OWNER-024", "Apply-profile job auto service", "job auto 1",
+             ("Owner auto service: ON",), pacing_s=1.0),
+        Step("OWNER-025", "Apply-profile job result", "job result",
+             ("Kind: APPLY_PROFILE (2)", "State: SUCCEEDED (2)", "Status: OK")),
+        Step("OWNER-026", "Reconcile job start", "job reconcile",
+             ("Status: IN_PROGRESS",)),
+        Step("OWNER-027", "Reconcile job auto service", "job auto 1",
+             ("Owner auto service: ON",), pacing_s=1.0),
+        Step("OWNER-028", "Reconcile job result", "job result",
+             ("Kind: RECONCILE (3)", "State: SUCCEEDED (2)", "Status: OK")),
+        Step("OWNER-029", "Continuous profile for owner sample", "mode sbc",
+             ("Status: OK",)),
+        Step("OWNER-030", "Continuous profile reconcile", "recover", ("Status: OK",)),
+        Step("OWNER-031", "Continuous sample job start", "job continuous 1",
+             ("Status: IN_PROGRESS",)),
+        Step("OWNER-032", "Continuous sample job auto service", "job auto 1",
+             ("Owner auto service: ON",), pacing_s=0.5),
+        Step("OWNER-033", "Continuous sample job result", "job result",
+             ("Kind: CONTINUOUS_SAMPLE (5)", "State: SUCCEEDED (2)",
+              "Status: OK", "enabled=0x07 valid=0x07", "Sample Alert Evidence")),
+        Step("OWNER-033A", "Bare continuous sample start", "job continuous",
+             ("Status: IN_PROGRESS",)),
+        Step("OWNER-033B", "Bare continuous sample cancellation", "job cancel",
+             ("Status: CANCELLED", "Kind: CONTINUOUS_SAMPLE (5)",
+              "State: CANCELLED (4)"),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("OWNER-033C", "Continuous sample without alert consume", "job continuous 0",
+             ("Status: IN_PROGRESS",)),
+        Step("OWNER-033D", "Continuous no-consume auto service", "job auto 1",
+             ("Owner auto service: ON",), pacing_s=0.5),
+        Step("OWNER-033E", "Continuous no-consume result", "job result",
+             ("Kind: CONTINUOUS_SAMPLE (5)", "State: SUCCEEDED (2)",
+              "Status: OK", "enabled=0x07 valid=0x07")),
+        Step("OWNER-034", "Power-down job start", "job powerdown",
+             ("Status: IN_PROGRESS",)),
+        Step("OWNER-035", "Power-down job auto service", "job auto 1",
+             ("Owner auto service: ON",), pacing_s=0.5),
+        Step("OWNER-036", "Power-down job result", "job result",
+             ("Kind: POWER_DOWN (6)", "State: SUCCEEDED (2)", "Status: OK")),
+        Step("OWNER-037", "Continuous mode restore", "mode sbc", ("Status: OK",)),
+        Step("OWNER-038", "Power-down recovery", "recover", ("Status: OK",)),
         Step("DATA-001", "Timing", "timing", ("Timing Info", "Cycle time")),
         Step("DATA-002", "Config", "config", ("Config:", "Mode:")),
         Step("DATA-003", "Aggregate read", "read", ("CH1:", "CH2:", "CH3:")),
@@ -588,8 +835,22 @@ def default_steps(stress_count: int, stress_mix_count: int) -> list[Step]:
              ("Reg 0x07 = 0x7FF0", "32752")),
         Step("REG-008", "Raw alert-limit typed readback", "crit 1",
              ("critical limit: 32752",)),
+        Step("REG-008A", "Register mismatch verification", "verify",
+             ("REG 0x07 CH1_CRIT", "actual=0x7FF0 expected=0x7FF8",
+              "mask=0xFFFF delta=0x0008 MISMATCH", "Mismatches: 1",
+              "VERIFY_RESULT: FAIL", "Status: PROFILE_MISMATCH")),
+        Step("REG-008B", "Retained register mismatch evidence", "mismatch",
+             ("REG 0x07 CH1_CRIT", "actual=0x7FF0 expected=0x7FF8",
+              "mask=0xFFFF delta=0x0008 MISMATCH", "VERIFY_RESULT: FAIL")),
+        Step("REG-008C", "Mismatch in full diagnostics", "diag",
+             ("Full INA3221 Diagnostics (cache-only)",
+              "Managed Register Verification Evidence", "Mismatches: 1",
+              "REG 0x07 CH1_CRIT", "VERIFY_RESULT: FAIL")),
         Step("REG-009", "Raw alert-limit restore", "crit 1 32760", ("Status: OK",)),
         Step("REG-010", "Raw alert profile reconcile", "recover", ("Status: OK",)),
+        Step("REG-010A", "Restored managed-register verification", "verify",
+             ("Mismatches: 0", "Read failures: 0", "VERIFY_RESULT: PASS",
+              "Status: OK")),
         Step("REG-011", "Post-raw-write state", "settings",
              ("State: READY\n", "Hardware config dirty: NO")),
         Step("MATH-001", "Shunt conversion", "convert shunt -1",
@@ -658,6 +919,63 @@ def default_steps(stress_count: int, stress_mix_count: int) -> list[Step]:
              ("Invalid count",), failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
         Step("ERR-025", "Oversized conversion raw", "convert shunt 32768",
              ("Invalid raw value",), failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("ERR-026", "Invalid selected address", "addr 0x44",
+             ("Invalid address; use 0x40-0x43",),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("ERR-027", "Invalid I2C frequency low", "freq 9999",
+             ("Status: OUT_OF_RANGE", "detail=9999",
+              "I2C frequency must be 10000-400000 Hz", "I2C frequency: 400000 Hz")),
+        Step("ERR-027A", "Invalid I2C frequency high", "freq 400001",
+             ("Status: OUT_OF_RANGE", "detail=400001",
+              "I2C frequency must be 10000-400000 Hz", "I2C frequency: 400000 Hz")),
+        Step("ERR-028", "Invalid I2C frequency token", "freq fast",
+             ("Usage: freq <10000..400000>",),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("ERR-029", "Invalid direction", "direction 4 1",
+             ("Usage: direction <1|2|3> <0|1>",),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("ERR-030", "Invalid owner auto setting", "job auto 2",
+             ("Usage: job auto <0|1>",),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("ERR-031", "Invalid owner transfer budget", "job step 256",
+             ("Usage: job step <0..255>",),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("ERR-032", "Invalid owner stress count", "stress_owner 0",
+             ("Invalid count (1-10000)",),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("ERR-033", "Invalid frequency stress count", "stress_freq 0",
+             ("Invalid count (1-10000)",),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("AUTO-001", "HIL synchronization marker", "hilmark QUALIFICATION",
+             ("HILMARK QUALIFICATION",)),
+        Step("AUTO-002", "Direct HIL frame", "hilrun SELF 1 version",
+             ("HIL_BEGIN token=SELF seq=1", "Version Info",
+              "HIL_END token=SELF seq=1 status=OK"), raw=True),
+        Step("AUTO-003", "Malformed HIL frame", "hilrun SELF",
+             ("HIL_BEGIN token= seq=", "Status: INVALID_PARAM",
+              "HIL_END token= seq= status=INVALID_PARAM"),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic"), raw=True),
+        Step("AUTO-004", "Nested HIL rejection", "hilrun SELF 2 hilrun X 1 version",
+             ("HIL_BEGIN token=SELF seq=2", "Status: INVALID_PARAM",
+              "malformed or nested hilrun",
+              "HIL_END token=SELF seq=2 status=INVALID_PARAM"),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic"), raw=True),
+        Step("AUTO-005", "Transfer counter reset", "xfer_reset",
+             ("XFER_RESET read=0 write=0 total=0",)),
+        Step("AUTO-006", "Single physical register transfer", "reg 0xFE",
+             ("Reg 0xFE = 0x5449",)),
+        Step("AUTO-007", "Exact transfer-count assertion", "xfer_assert 1 0 1",
+             ("XFER_ASSERT PASS read=1 write=0 total=1",)),
+        Step("AUTO-008", "Transfer-count diagnostics", "xfer_stats",
+             ("XFER_STATS read=1 write=0 total=1",)),
+        Step("AUTO-009", "Failing transfer-count assertion", "xfer_assert 0 0 0",
+             ("XFER_ASSERT FAIL", "read=1 write=0 total=1",
+              "Status: PROFILE_MISMATCH", "Transfer count mismatch")),
+        Step("AUTO-010", "Transfer count unchanged after assertion", "xfer_assert 1 0 1",
+             ("XFER_ASSERT PASS read=1 write=0 total=1",)),
+        Step("AUTO-011", "Overlong input rejection", "x" * 140,
+             ("Input line exceeds 128 bytes; command rejected",),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic"), raw=True),
         Step("STRESS-000", "Default measurement stress", "stress",
              ("Target: 10\n", "Attempts: 10\n", "Success: 10\n", "Errors: 0\n"),
              timeout_s=20.0),
@@ -672,9 +990,32 @@ def default_steps(stress_count: int, stress_mix_count: int) -> list[Step]:
         Step("STRESS-003", "Mixed stress", f"stress_mix {stress_mix_count}",
              ("stress_mix summary", f"ok={stress_mix_count * 6} fail=0 ("),
              timeout_s=long_timeout),
+        Step("STRESS-004", "Cooperative owner-job stress", "stress_owner 25",
+             ("stress_owner summary", "Target: 25  pass=25 fail=0",
+              "max_transfers="), timeout_s=30.0),
+        Step("STRESS-005", "Runtime-frequency stress", "stress_freq 20",
+             ("stress_freq summary", "Target: 20  pass=20 fail=0",
+              "restored_hz=400000"), timeout_s=30.0),
+        Step("LIFE-001", "Explicit driver shutdown", "end",
+             ("Driver unbound; physical device state and I2C bus are unchanged",)),
+        Step("LIFE-002", "Unbound profile retention", "profile",
+             ("Desired Device Profile", "Bound: NO  Initialized: NO  Address: 0x40")),
+        Step("LIFE-003", "Unbound read rejection", "read",
+             ("Status: NOT_INITIALIZED", "Driver not initialized"),
+             failure_tokens=("[E]", "[FAIL]", "Guru Meditation", "panic")),
+        Step("LIFE-004", "Runtime driver initialization", "init",
+             ("Status: IN_PROGRESS",), pacing_s=1.0),
+        Step("LIFE-005", "Post-initialize address binding", "addr",
+             ("Selected INA3221 address: 0x40", "Active driver address: 0x40")),
+        Step("LIFE-006", "Post-initialize state", "settings",
+             ("Initialized: YES", "State: READY", "Address: 0x40")),
+        Step("LIFE-007", "Post-initialize verification", "verify",
+             ("Mismatches: 0", "Read failures: 0", "VERIFY_RESULT: PASS",
+              "Status: OK")),
         Step("FINAL-001", "Final health", "drv",
              ("Driver Health", "State: READY\n", "Online: yes\n",
-              "Consecutive failures: 0\n", "Total failures: 0\n")),
+              "Consecutive failures: 0\n", "Total failures: 0\n",
+              "Last error: never")),
     ]
 
 
@@ -723,20 +1064,46 @@ def run_step(
         print(f"{step.test_id}: {step.command}")
 
     start = time.monotonic()
-    session.send_command(step.command)
-    output, prompt_seen = session.read_until_prompt(timeout_s, step.post_prompt_capture_s)
+    if step.raw:
+        session.send_command(step.command)
+        output, complete = session.read_until_prompt(
+            timeout_s, step.post_prompt_capture_s
+        )
+    else:
+        token = "INA3221"
+        session.send_command(f"hilrun {token} {step.test_id} {step.command}")
+        output, complete = session.read_until_hil_end(
+            token, step.test_id, timeout_s, step.post_prompt_capture_s
+        )
     elapsed = time.monotonic() - start
     transcript.append(output)
 
+    classified_output = output
+    if not step.raw:
+        frame = extract_hil_frame(output, "INA3221", step.test_id)
+        if frame is not None:
+            classified_output = frame
     status, note = classify_output(
-        output,
+        classified_output,
         expected=step.expected,
         failure_tokens=step.failure_tokens,
-        timed_out=not prompt_seen,
+        timed_out=not complete,
     )
+    if not step.raw and complete:
+        frame_status = hil_end_status(output, "INA3221", step.test_id)
+        allowed_statuses = expected_hil_statuses(step)
+        if frame_status is None:
+            status = "FAIL"
+            note = "HIL_END status field missing"
+        elif frame_status not in allowed_statuses:
+            status = "FAIL"
+            note = (
+                f"unexpected HIL_END status {frame_status}; expected "
+                + ", ".join(sorted(allowed_statuses))
+            )
     if step.notes:
         note = f"{note}; {step.notes}"
-    if not prompt_seen and resync_timeout_s > 0.0:
+    if not complete and resync_timeout_s > 0.0:
         transcript.append(f"\n===== RESYNC after {step.test_id} =====\n")
         extra, resynced = session.read_until_prompt(resync_timeout_s)
         transcript.append(extra)
@@ -919,6 +1286,13 @@ def git_value(args: list[str]) -> str:
     return command_output(["git", *args])
 
 
+def platformio_version() -> str:
+    wrapper = Path.cwd() / "scripts" / "pio.cmd"
+    if os.name == "nt" and wrapper.exists():
+        return command_output(["cmd", "/d", "/c", str(wrapper), "--version"])
+    return command_output(["pio", "--version"])
+
+
 def write_markdown_report(
     path: Path,
     transcript_path: Optional[Path],
@@ -947,7 +1321,7 @@ def write_markdown_report(
     lines.append(f"- Commit: `{git_value(['rev-parse', 'HEAD'])}`")
     lines.append(f"- Host: `{platform.platform()}`")
     lines.append(f"- Python: `{sys.version.split()[0]}`")
-    lines.append(f"- PlatformIO: `{command_output(['pio', '--version'])}`")
+    lines.append(f"- PlatformIO: `{platformio_version()}`")
     lines.append(f"- Serial: `{args.port or 'not set'}` at `{args.baud}` baud")
     lines.append(f"- Serial line state: `DTR={'1' if args.dtr else '0'}, RTS={'1' if args.rts else '0'}`")
     lines.append(f"- Per-command timeout: `{args.timeout_s}` s")

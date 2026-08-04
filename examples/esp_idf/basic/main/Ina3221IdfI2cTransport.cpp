@@ -46,6 +46,50 @@ esp_err_t addDevice(Ina3221IdfI2c& ctx, uint8_t address, i2c_master_dev_handle_t
   return i2c_master_bus_add_device(ctx.bus, &devConfig, &dev);
 }
 
+INA3221::Status replaceDevice(uint8_t address, uint32_t frequencyHz) {
+  if (gTransport.bus == nullptr) {
+    return INA3221::Status::Error(INA3221::Err::I2C_BUS,
+                                  "IDF I2C bus not configured");
+  }
+  if (address < 0x08U || address > 0x77U) {
+    return INA3221::Status::Error(INA3221::Err::INVALID_PARAM,
+                                  "Invalid seven-bit I2C address", address);
+  }
+  if (frequencyHz < 10000U || frequencyHz > 400000U) {
+    return INA3221::Status::Error(INA3221::Err::OUT_OF_RANGE,
+                                  "I2C frequency must be 10000-400000 Hz",
+                                  static_cast<int32_t>(frequencyHz));
+  }
+  const uint8_t previousAddress = gTransport.address;
+  const uint32_t previousFrequencyHz = gTransport.frequencyHz;
+  if (gTransport.dev != nullptr) {
+    gTransport.lastError = i2c_master_bus_rm_device(gTransport.dev);
+    if (gTransport.lastError != ESP_OK) {
+      return mapEspErr(gTransport.lastError, "I2C device removal failed");
+    }
+    gTransport.dev = nullptr;
+  }
+  gTransport.address = address;
+  gTransport.frequencyHz = frequencyHz;
+  gTransport.lastError = addDevice(gTransport, address, gTransport.dev);
+  if (gTransport.lastError == ESP_OK) return INA3221::Status::Ok();
+
+  const esp_err_t configurationError = gTransport.lastError;
+  gTransport.address = previousAddress;
+  gTransport.frequencyHz = previousFrequencyHz;
+  gTransport.dev = nullptr;
+  const esp_err_t rollbackError = addDevice(
+      gTransport, previousAddress, gTransport.dev);
+  if (rollbackError != ESP_OK) {
+    gTransport.lastError = rollbackError;
+    return INA3221::Status::Error(INA3221::Err::I2C_BUS,
+                                  "I2C device reconfiguration rollback failed",
+                                  static_cast<int32_t>(rollbackError));
+  }
+  gTransport.lastError = configurationError;
+  return mapEspErr(configurationError, "I2C device configuration failed");
+}
+
 INA3221::Status validateContext(uint8_t addr, void* user, Ina3221IdfI2c*& ctx) {
   ctx = static_cast<Ina3221IdfI2c*>(user);
   if (ctx == nullptr || ctx->dev == nullptr) {
@@ -108,11 +152,36 @@ void ina3221IdfDeinitI2c() {
   }
 }
 
+INA3221::Status ina3221IdfSetAddress(uint8_t address) {
+  return replaceDevice(address, gTransport.frequencyHz);
+}
+
+INA3221::Status ina3221IdfSetFrequency(uint32_t frequencyHz) {
+  return replaceDevice(gTransport.address, frequencyHz);
+}
+
+void ina3221IdfResetTransferStats() {
+  gTransport.readTransfers = 0;
+  gTransport.writeTransfers = 0;
+}
+
+Ina3221IdfTransferStats ina3221IdfTransferStats() {
+  Ina3221IdfTransferStats stats{};
+  stats.read = gTransport.readTransfers;
+  stats.write = gTransport.writeTransfers;
+  return stats;
+}
+
 INA3221::Status ina3221IdfProbeAddress(uint8_t address, uint16_t timeoutMs) {
   if (gTransport.bus == nullptr) {
     return INA3221::Status::Error(INA3221::Err::I2C_BUS, "IDF I2C bus not configured");
   }
   gTransport.lastError = i2c_master_probe(gTransport.bus, address, timeoutMs);
+  if (gTransport.lastError == ESP_ERR_NOT_FOUND) {
+    return INA3221::Status::Error(INA3221::Err::I2C_NACK_ADDR,
+                                  "I2C address NACK",
+                                  static_cast<int32_t>(gTransport.lastError));
+  }
   return mapEspErr(gTransport.lastError, "I2C address probe failed");
 }
 
@@ -136,6 +205,7 @@ INA3221::Status ina3221IdfI2cWrite(uint8_t addr, const uint8_t* data, size_t len
   if (!st.ok()) return st;
 
   // Exactly one physical attempt. Retry and recovery belong to the bus owner.
+  if (ctx->writeTransfers != UINT32_MAX) ++ctx->writeTransfers;
   ctx->lastError = i2c_master_transmit(ctx->dev, data, len, transferTimeoutMs);
   return mapEspErr(ctx->lastError, "I2C write failed");
 }
@@ -158,6 +228,7 @@ INA3221::Status ina3221IdfI2cWriteRead(uint8_t addr, const uint8_t* txData,
   if (!st.ok()) return st;
 
   // Exactly one combined physical attempt. There is no hidden retry/recovery.
+  if (ctx->readTransfers != UINT32_MAX) ++ctx->readTransfers;
   ctx->lastError = i2c_master_transmit_receive(
       ctx->dev, txData, txLen, rxData, rxLen, transferTimeoutMs);
   return mapEspErr(ctx->lastError, "I2C write-read failed");
@@ -192,12 +263,20 @@ INA3221::Status ina3221IdfI2cWriteReadAt(uint8_t addr, const uint8_t* txData,
     return INA3221::Status::Error(INA3221::Err::I2C_BUS, "IDF I2C device not configured");
   }
 
-  ctx->lastError = i2c_master_transmit_receive(
+  if (ctx->readTransfers != UINT32_MAX) ++ctx->readTransfers;
+  const esp_err_t transactionError = i2c_master_transmit_receive(
       dev, txData, txLen, rxData, rxLen, transferTimeoutMs);
   if (tempDev != nullptr) {
-    (void)i2c_master_bus_rm_device(tempDev);
+    const esp_err_t removalError = i2c_master_bus_rm_device(tempDev);
+    if (removalError != ESP_OK) {
+      ctx->lastError = removalError;
+      return INA3221::Status::Error(
+          INA3221::Err::I2C_BUS, "I2C temporary device removal failed",
+          static_cast<int32_t>(removalError));
+    }
   }
-  return mapEspErr(ctx->lastError, "I2C write-read failed");
+  ctx->lastError = transactionError;
+  return mapEspErr(transactionError, "I2C write-read failed");
 }
 
 uint32_t ina3221IdfNowMs(void*) {

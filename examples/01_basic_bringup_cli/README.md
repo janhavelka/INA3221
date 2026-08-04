@@ -38,9 +38,9 @@ configuration for board wiring; the library must not own pins or bus setup.
 From the repository root:
 
 ```bash
-python -m platformio run -e esp32s3dev
-python -m platformio run -e esp32s3dev -t upload
-python -m platformio device monitor -e esp32s3dev
+.\scripts\pio.cmd run -e esp32s3dev
+.\scripts\pio.cmd run -e esp32s3dev -t upload
+.\scripts\pio.cmd device monitor -e esp32s3dev
 ```
 
 Use `esp32s2dev` in the same commands for the ESP32-S2 target. The monitor is
@@ -87,15 +87,24 @@ production-flow commands are:
 
 | Command | Purpose |
 |---|---|
-| `job` | Show current cooperative progress/result state |
-| `job sample` | Admit a budget-one triggered sample |
+| `job progress` / `job result` | Show full cooperative progress or the retained terminal result |
+| `job init` / `job apply` / `job reconcile` | Admit lifecycle/profile jobs |
+| `job sample` / `job continuous [0\|1]` | Admit triggered or continuous fixed-unit samples |
+| `job powerdown` | Admit verified power-down |
+| `job step <0..255>` / `job auto <0\|1>` | Select an exact manual transfer budget or loop servicing |
 | `job cancel` | Cancel the active job without I2C |
-| `settings` | Show cached configuration and certainty |
-| `drv` | Show driver state and transport health |
+| `job lastsample` / `job alerts [take]` | Inspect retained sample and alert evidence |
+| `scanina` / `addr` / `init` / `end` | Discover, select, bind, initialize, and unbind addresses `0x40`-`0x43` |
+| `freq [10000..400000]` | Inspect or change the application-owned I2C clock with identity verification and rollback |
+| `profile` / `direction` | Inspect the complete desired profile or set host current polarity |
+| `settings` / `drv` / `diag` | Show configuration certainty, complete health, and cache-only aggregate diagnostics |
+| `verify` / `mismatch` | Capture all 11 managed registers or replay exact retained mismatch evidence |
 | `probe` | Perform raw identity diagnostics |
 | `selftest` | Run bounded safe command checks |
 | `stress [N]` | Run bounded measurement cycles |
 | `stress_mix [N]` | Exercise a bounded mixed-operation sequence |
+| `stress_owner [N]` / `stress_freq [N]` | Stress cooperative jobs or alternate 100/400 kHz with ID checks |
+| `hilrun` / `hilmark` / `xfer_*` | Provide framed automation and exact physical-transfer evidence |
 
 Raw writes and configuration mutation are diagnostic tools. They can make the
 managed profile `DIRTY` or `UNKNOWN`; do not treat the result as production

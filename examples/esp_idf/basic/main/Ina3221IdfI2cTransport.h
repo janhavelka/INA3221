@@ -15,13 +15,24 @@ struct Ina3221IdfI2c {
   i2c_master_dev_handle_t dev = nullptr;
   uint8_t address = 0x40;
   uint32_t frequencyHz = 400000;
+  uint32_t readTransfers = 0;
+  uint32_t writeTransfers = 0;
   esp_err_t lastError = ESP_OK;
+};
+
+struct Ina3221IdfTransferStats {
+  uint32_t read = 0;
+  uint32_t write = 0;
 };
 
 Ina3221IdfI2c& ina3221IdfTransportContext();
 bool ina3221IdfInitI2c(int sda, int scl, uint32_t freqHz, uint16_t timeoutMs,
                        uint8_t address);
 void ina3221IdfDeinitI2c();
+INA3221::Status ina3221IdfSetAddress(uint8_t address);
+INA3221::Status ina3221IdfSetFrequency(uint32_t frequencyHz);
+void ina3221IdfResetTransferStats();
+Ina3221IdfTransferStats ina3221IdfTransferStats();
 INA3221::Status ina3221IdfProbeAddress(uint8_t address, uint16_t timeoutMs);
 esp_err_t ina3221IdfLastError();
 
