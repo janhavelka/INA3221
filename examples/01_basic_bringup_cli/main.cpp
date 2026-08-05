@@ -38,8 +38,6 @@ INA3221::Err hilCommandStatus = INA3221::Err::OK;
     } \
   } while (0)
 
-static constexpr uint8_t INA3221_ADDR_MIN = 0x40U;
-static constexpr uint8_t INA3221_ADDR_MAX = 0x43U;
 static constexpr uint32_t I2C_FREQ_MIN_HZ = 10000U;
 static constexpr uint32_t I2C_FREQ_MAX_HZ = 400000U;
 uint8_t selectedAddress = board::INA3221_I2C_ADDR;
@@ -57,7 +55,9 @@ OwnerDemoPhase ownerDemoPhase = OwnerDemoPhase::IDLE;
 bool startupSamplePending = false;
 bool ownerAutoService = true;
 uint32_t ownerRequestId = 1000U;
-static constexpr uint64_t OWNER_JOB_TIMEOUT_MS = 1000U;
+// Leave enough bounded time for a human (or HIL) to inspect progress and issue
+// manual job-step commands without expiring an otherwise healthy operation.
+static constexpr uint64_t OWNER_JOB_TIMEOUT_MS = 5000U;
 
 struct RegisterEvidence {
   uint8_t reg = 0;
@@ -229,10 +229,6 @@ const char* directionToStr(INA3221::CurrentDirection direction) {
   return direction == INA3221::CurrentDirection::POSITIVE_SHUNT_IS_NEGATIVE_CURRENT
              ? "INVERTED"
              : "NORMAL";
-}
-
-bool isValidIna3221Address(uint8_t address) {
-  return address >= INA3221_ADDR_MIN && address <= INA3221_ADDR_MAX;
 }
 
 const char* stateColor(INA3221::DriverState st, bool online, uint8_t consecutiveFailures) {
@@ -963,21 +959,11 @@ bool parseAddress(const String& token, uint8_t& address) {
   String normalized = token;
   normalized.trim();
   if (!parseU32(normalized, value) || value > 0xFFU ||
-      !isValidIna3221Address(static_cast<uint8_t>(value))) {
+      !i2c_scanner::isIna3221Address(static_cast<uint8_t>(value))) {
     return false;
   }
   address = static_cast<uint8_t>(value);
   return true;
-}
-
-const char* addressStrap(uint8_t address) {
-  switch (address) {
-    case 0x40U: return "A0=GND";
-    case 0x41U: return "A0=VS";
-    case 0x42U: return "A0=SDA";
-    case 0x43U: return "A0=SCL";
-    default: return "invalid";
-  }
 }
 
 INA3221::Status readRegisterAt(uint8_t address, uint8_t reg, uint16_t& value) {
@@ -992,8 +978,11 @@ INA3221::Status readRegisterAt(uint8_t address, uint8_t reg, uint16_t& value) {
 void scanIna3221Addresses() {
   Serial.println("=== INA3221 Address Probe (raw, no driver-health tracking) ===");
   uint8_t healthy = 0;
-  for (uint8_t address = INA3221_ADDR_MIN; address <= INA3221_ADDR_MAX; ++address) {
-    Serial.printf("  0x%02X (%s): ", address, addressStrap(address));
+  for (uint8_t address = i2c_scanner::INA3221_ADDR_MIN;
+       address <= i2c_scanner::INA3221_ADDR_MAX;
+       ++address) {
+    Serial.printf("  0x%02X (%s): ", address,
+                  i2c_scanner::ina3221AddressStrap(address));
     INA3221::Status st = transport::probeAddress(address, board::I2C_TIMEOUT_MS);
     if (!st.ok()) {
       Serial.printf("NO_ACK code=%s detail=%ld\n", errToStr(st.code),
@@ -1045,7 +1034,7 @@ void retainCurrentProfile() {
 }
 
 INA3221::Status initializeDeviceAt(uint8_t address, bool automaticService) {
-  if (!isValidIna3221Address(address)) {
+  if (!i2c_scanner::isIna3221Address(address)) {
     return INA3221::Status::Error(INA3221::Err::INVALID_PARAM,
                                   "Address must be 0x40-0x43", address);
   }
@@ -2197,7 +2186,8 @@ void processCommand(const String& cmdLine) {
     printDriverHealth();
   } else if (cmd == "addr") {
     Serial.printf("  Selected INA3221 address: 0x%02X (%s)\n",
-                  selectedAddress, addressStrap(selectedAddress));
+                  selectedAddress,
+                  i2c_scanner::ina3221AddressStrap(selectedAddress));
     if (device.isBound()) {
       Serial.printf("  Active driver address: 0x%02X\n",
                     device.deviceProfile().i2cAddress);
@@ -2213,7 +2203,8 @@ void processCommand(const String& cmdLine) {
     }
     selectedAddress = address;
     Serial.printf("  Selected INA3221 address: 0x%02X (%s); run init to apply\n",
-                  selectedAddress, addressStrap(selectedAddress));
+                  selectedAddress,
+                  i2c_scanner::ina3221AddressStrap(selectedAddress));
   } else if (cmd == "init" || cmd.startsWith("init ")) {
     uint8_t address = selectedAddress;
     if (cmd.length() > 4U && !parseAddress(cmd.substring(5), address)) {

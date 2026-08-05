@@ -18,10 +18,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Cache PlatformIO
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/pip
@@ -29,7 +29,7 @@ jobs:
           key: ${{ runner.os }}-pio-6.1.19-${{ hashFiles('platformio.ini') }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -43,10 +43,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Cache PlatformIO
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/pip
@@ -54,7 +54,7 @@ jobs:
           key: ${{ runner.os }}-pio-native-6.1.19-${{ hashFiles('platformio.ini') }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -74,10 +74,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -114,32 +114,32 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Select ESP32-S3 with ESP-IDF 6.0.1
         run: >-
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp
-          -v "$PWD:/project" -w /project
+          -v "$PWD:/INA3221" -w /INA3221
           espressif/idf:v6.0.1
           idf.py -C examples/esp_idf/basic set-target esp32s3
 
       - name: Build ESP32-S3 ESP-IDF example
         run: >-
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp
-          -v "$PWD:/project" -w /project
+          -v "$PWD:/INA3221" -w /INA3221
           espressif/idf:v6.0.1
           idf.py -C examples/esp_idf/basic build
 
       - name: Select ESP32-S2 with ESP-IDF 6.0.1
         run: >-
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp
-          -v "$PWD:/project" -w /project
+          -v "$PWD:/INA3221" -w /INA3221
           espressif/idf:v6.0.1
           idf.py -C examples/esp_idf/basic set-target esp32s2
 
       - name: Build ESP32-S2 ESP-IDF example
         run: >-
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp
-          -v "$PWD:/project" -w /project
+          -v "$PWD:/INA3221" -w /INA3221
           espressif/idf:v6.0.1
           idf.py -C examples/esp_idf/basic build

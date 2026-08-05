@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-08-05
+
 ### Added
 
 - Added complete Arduino and native ESP-IDF diagnostic CLI coverage for all
@@ -36,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restored the ESP32-S3 example to USB Serial/JTAG HWCDC and qualified its
   single-port upload/CLI path under Arduino-ESP32 `3.3.11`, preserving one
   stable COM-port identity for long HIL sessions.
+- Updated GitHub Actions to the current Node 24 action majors and preserved the
+  `INA3221` component directory name in ESP-IDF container builds.
 - Consolidated maintained documentation under `docs/` and removed completed
   audits, dated validation reports, task prompts, generated extraction archives,
   and implementation-era research material.
@@ -78,6 +82,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Initialized the Arduino `Wire` bus atomically at the requested frequency,
+  avoiding pioarduino `55.03.311`'s false `setClock()` failure before any
+  device handles exist, and verified the applied clock before publishing the
+  example transport context.
+- Increased the bounded example owner-job deadline to five seconds so manual
+  progress inspection and exact-budget stepping do not expire healthy jobs.
+- Fixed the Doxygen main-page collision and made the ESP-IDF CI container keep
+  the local component's `INA3221` directory name.
 - Avoided flushing the two-byte CLI prompt on ESP32-S3 HWCDC, where a
   transient SOF connection-state flap can make `HWCDC::flush()` discard the
   queued prompt. The prompt now yields to the USB Serial/JTAG TX ISR while
@@ -321,7 +333,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `end()` now best-effort powers the monitor down before clearing runtime state.
 - `recover()` now re-validates manufacturer / die IDs, clears conversion state, and reapplies cached configuration.
 
-[Unreleased]: https://github.com/janhavelka/INA3221/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/janhavelka/INA3221/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/janhavelka/INA3221/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/janhavelka/INA3221/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/janhavelka/INA3221/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/janhavelka/INA3221/compare/v1.1.0...v1.2.0

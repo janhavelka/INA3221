@@ -62,7 +62,8 @@ adds three more. Every ordinary step is enclosed by a sequence-specific
 `HIL_BEGIN`/`HIL_END` frame, so an asynchronous prompt cannot be mistaken for
 command completion. It covers:
 
-- identity, all four valid address straps, runtime selection/init/end,
+- identity on the fixture's physical `0x40` strap, valid address-selection
+  inputs for `0x40`-`0x43`, runtime selection/init/end,
   10/100/400 kHz switching and input-bound validation, aliases, cache certainty, and
   health;
 - every cooperative job kind, symbolic progress/deadlines, explicit zero/one
@@ -100,14 +101,8 @@ remain external.
 
 | Date | Target and port | Stack | Result | Evidence |
 |---|---|---|---|---|
+| 2026-08-05 | ESP32-S3 rev 0.1, COM26, 4 MB QIO flash, 2 MB QSPI PSRAM | INA3221 `3.1.0`; pioarduino `55.03.311`; Arduino `3.3.11`; IDF `5.5.5`; PlatformIO `6.1.19` | PASS: 379/379 bounded checks; 50/50 measurement stress; 300/300 mixed operations; 25/25 owner jobs; 20/20 frequency switches; post-run `READY`, online, 2,212 successes, zero failures, last error never, configuration verified | External `release-short-hil.md` SHA-256 `716A4E6416F83AE7BC2F0AEFDDE1E94E20F3B4EABAA8C23589E7E81076E7D874`; transcript SHA-256 `7DCBAB18DCB3A09C2C79B4DD32B803D327BFC20156BD37C1BC6BEF97B5B4FF11`; release-candidate worktree based on `afe1c1b8702e90fed4e5ca5f9d81696362cbff92` |
 | 2026-07-31 | ESP32-S3 rev 0.1, COM26, 4 MB QIO flash, 2 MB QSPI PSRAM | pioarduino `55.03.311`; Arduino `3.3.11`; IDF `5.5.5`; PlatformIO `6.1.19` | PASS: 289/289 feature checks; 500/500 measurement stress; 3,000/3,000 mixed operations; 13,540/13,540 soak commands over 7,200.0 s; post-run `READY`, online, 162,915 successes, zero failures, configuration verified | External `qualification-2h-final-pass.md` SHA-256 `5CCD2CD0E420A2BF1EAD4D48AE89D8804D5590F76397180CB41F39C5A984EEAE`; transcript SHA-256 `AAFDB5FD95EF4B02C59587D4123A1835C4366C86FB057A2D4843ADE694449AFF`; source worktree was dirty at `7d15782259f786ef11ee923ba57447881b258873` |
-
-An earlier fail-fast run is retained as negative evidence. It completed all 279
-then-current feature checks and 9,001 soak commands before a two-byte HWCDC
-prompt was lost after 4,798 seconds; INA3221 health still showed zero transport
-failures. That result led to the HWCDC prompt-flush fix before the passing run.
-The failed report is `qualification-2h-final.md`, SHA-256
-`5B55021E0EF0C152361024EC3A691BEC086922BD98FE8A0846EF3E9C906D2ED0`.
 
 ## Validation boundary
 

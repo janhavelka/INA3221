@@ -86,5 +86,39 @@ Breaking API, `Config`, or enum changes require prior discussion and a major
 version. New backward-compatible features use a minor version; fixes and
 documentation use a patch version when released.
 
+## Release procedure
+
+Prepare releases from an up-to-date `main` branch with no unrelated changes.
+`library.json` is the version source of truth; use the generator rather than
+editing `Version.h`:
+
+```powershell
+python scripts/generate_version.py set X.Y.Z
+```
+
+Update `idf_component.yml`, the Doxygen project version and brief, the README
+version/install tag, and promote the changelog's `[Unreleased]` entries to a
+dated release section. Run the complete validation matrix above, package the
+library, and review any applicable HIL evidence. Then commit and push the
+release preparation:
+
+```powershell
+git add -A
+git commit -m "Release vX.Y.Z"
+git push origin main
+gh run watch --exit-status
+```
+
+Create the annotated tag only after the pushed commit's CI run is green:
+
+```powershell
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push origin refs/tags/vX.Y.Z
+```
+
+On GitHub, create a new release from the existing tag, use
+`INA3221 vX.Y.Z` as the title, copy/review the matching changelog section, and
+publish it. Do not move or reuse a published release tag.
+
 For questions, open a GitHub issue or discussion. Report security concerns
 privately as described in [SECURITY.md](SECURITY.md).

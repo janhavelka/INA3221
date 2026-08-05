@@ -51,7 +51,9 @@ OwnerDemoPhase ownerDemoPhase = OwnerDemoPhase::IDLE;
 bool startupSamplePending = false;
 bool ownerAutoService = true;
 uint32_t ownerRequestId = 1000U;
-static constexpr uint64_t OWNER_JOB_TIMEOUT_MS = 1000U;
+// Leave enough bounded time for a human (or HIL) to inspect progress and issue
+// manual job-step commands without expiring an otherwise healthy operation.
+static constexpr uint64_t OWNER_JOB_TIMEOUT_MS = 5000U;
 
 struct RegisterEvidence {
   uint8_t reg = 0;

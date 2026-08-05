@@ -58,9 +58,19 @@ def main() -> int:
             "Doxygen project version",
         ),
         (
+            "Doxyfile",
+            r'^PROJECT_BRIEF\s*=.*release\s+(\d+\.\d+\.\d+)["\']?\s*$',
+            "Doxygen project brief version",
+        ),
+        (
             "README.md",
             r'^Library version:\s*`v(\d+\.\d+\.\d+)`\s*$',
             "README documented version",
+        ),
+        (
+            "README.md",
+            r'^\s*https://github\.com/janhavelka/INA3221\.git#v(\d+\.\d+\.\d+)\s*$',
+            "README installation tag",
         ),
     )
 

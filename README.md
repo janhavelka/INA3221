@@ -4,7 +4,11 @@ Framework-neutral, production-oriented INA3221 triple-channel voltage/current
 monitor driver for ESP32-S2 and ESP32-S3 projects using Arduino, PlatformIO, or
 native ESP-IDF.
 
-Library version: `v3.0.0`
+Library version: `v3.1.0`
+
+Version 3.1 adds complete Arduino/native-IDF diagnostic CLI parity, retained
+register-mismatch evidence, runtime address and I2C-frequency control, bounded
+self/stress tests, and sequence-framed HIL automation.
 
 The v3 production API separates application-owned I2C transport from a complete
 device profile and executes hardware work through one cooperative,
@@ -380,7 +384,7 @@ Pin a release tag:
 
 ```ini
 lib_deps =
-  https://github.com/janhavelka/INA3221.git#v3.0.0
+  https://github.com/janhavelka/INA3221.git#v3.1.0
 ```
 
 Then include the public umbrella header:
@@ -440,6 +444,10 @@ builds from the root:
 CI compiles native tests, both Arduino targets, and both native ESP-IDF targets.
 A static source-contract check is not an ESP-IDF compile. When `idf.py` is not
 available, report the corresponding local build as not run.
+
+The release-candidate Arduino fixture is covered by the reviewed 379-step
+short-HIL result in [docs/HIL.md](docs/HIL.md). That run is intentionally
+separate from native-IDF and ESP32-S2 hardware claims.
 
 Doxygen HTML is generated at `docs/doxygen/html/index.html` and is intentionally
 ignored by Git. Public headers are checked for undocumented symbols and missing

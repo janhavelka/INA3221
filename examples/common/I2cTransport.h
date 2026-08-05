@@ -220,10 +220,14 @@ inline bool initWire(int sda, int scl, uint32_t freq = 400000, uint16_t timeoutM
   delayMicroseconds(5);
 #endif
 
-  if (!Wire.begin(sda, scl)) {
+  // Pass the frequency into begin() atomically. In pioarduino 55.03.311 the
+  // new I2C backend's i2cSetClock() returns ESP_FAIL when no device handles
+  // exist yet, even though it updates the bus frequency. Calling setClock()
+  // immediately after begin() would therefore report a false startup failure.
+  if (!Wire.begin(sda, scl, freq)) {
     return false;
   }
-  if (!Wire.setClock(freq)) {
+  if (Wire.getClock() != freq) {
     Wire.end();
     return false;
   }

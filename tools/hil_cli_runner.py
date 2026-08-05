@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import json
 import os
 import platform
 import re
@@ -42,6 +43,22 @@ DEFAULT_FAILURE_TOKENS = (
 # Recognize the prompt at the start of a line instead of requiring it to remain
 # the final bytes in the accumulated receive buffer.
 PROMPT_RE = re.compile(r"(?:^|\n)>[ \t]+")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_project_version() -> str:
+    metadata_path = PROJECT_ROOT / "library.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        version = metadata["version"]
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError(f"Cannot read project version from {metadata_path}: {exc}") from exc
+    if not isinstance(version, str) or re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
+        raise RuntimeError(f"Invalid project version in {metadata_path}: {version!r}")
+    return version
+
+
+PROJECT_VERSION = load_project_version()
 
 
 @dataclass(frozen=True)
@@ -405,7 +422,7 @@ def default_steps(stress_count: int, stress_mix_count: int) -> list[Step]:
     long_timeout = max(20.0, float(max(stress_count, stress_mix_count)) * 0.25)
     return [
         Step("CONN-001", "Serial CLI", "version",
-             ("Version Info", "INA3221 library version: 3.0.0",
+             ("Version Info", f"INA3221 library version: {PROJECT_VERSION}",
               "Arduino-ESP32 version: 3.3.11", "ESP-IDF version: v5.5.5",
               "Flash size: 4194304 bytes", "PSRAM size: 2097152 bytes")),
         Step("CONN-001A", "Serial CLI help", "help",
