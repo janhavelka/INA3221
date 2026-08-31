@@ -24,25 +24,32 @@ You are a professional embedded software engineer building a production-grade IN
 ```
 include/INA3221/         - Public API headers only (Doxygen)
   CommandTable.h         - Register addresses and bit masks
-  Status.h
-  Config.h
-  INA3221.h
+  Status.h               - Err enum and Status
+  Config.h               - TransportConfig, DeviceProfile, legacy Config
+  INA3221.h              - Driver class and public data types
   Version.h              - Auto-generated (do not edit)
-src/                     - Implementation (.cpp)
+src/INA3221.cpp          - The whole implementation
+test/                    - Native (host) Unity tests and ScriptedTransport fake
 examples/
-  01_*/
-  common/                - Example-only helpers (Log.h, BoardConfig.h, I2cTransport.h,
-                           I2cScanner.h, CliStyle.h)
+  01_basic_bringup_cli/  - Arduino/PlatformIO diagnostic CLI
+  esp_idf/basic/         - Native ESP-IDF application and its I2C adapter
+  common/                - Arduino-example-only helpers (Log.h, BoardConfig.h,
+                           BuildConfig.h, I2cTransport.h, I2cScanner.h, CliStyle.h)
+tools/                   - Static contract checkers and the HIL runner
+scripts/                 - Version generator, PlatformIO wrapper and hooks
+docs/                    - Maintained guides and the bundled datasheet
+.github/workflows/ci.yml - Build, native test, contract, Doxygen and IDF jobs
+CMakeLists.txt           - ESP-IDF component registration
+idf_component.yml        - ESP-IDF component metadata
+Doxyfile                 - API documentation configuration
 platformio.ini
-library.json
-README.md
-CHANGELOG.md
-AGENTS.md
+library.json             - Version source of truth
+README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md AGENTS.md LICENSE CODEOWNERS
 ```
 
 Rules:
 - `examples/common/` is NOT part of the library. It simulates project glue and keeps examples self-contained.
-- No board-specific pins/bus in library code; only in `Config`.
+- No board-specific pins/bus in library code; only in the application's `TransportConfig`/`DeviceProfile`.
 - Public headers only in `include/INA3221/`.
 - Examples demonstrate usage and may use `examples/common/BoardConfig.h`.
 - Public/core library headers and `src/` must not include Arduino or ESP-IDF framework headers.
@@ -75,8 +82,8 @@ Rules:
 - Recovery logic must be bounded, deterministic, and testable.
 - Prefer explicit state, explicit ownership, and small local helpers over hidden global state.
 - Do not hide hardware failures behind silent retries or fake success.
-- Non-blocking lifecycle: `Status begin(const Config&)`, `void tick(uint32_t nowMs)`, `void end()`.
-- Any I/O that can exceed ~1-2 ms must be split into state machine steps driven by `tick()`.
+- Non-blocking lifecycle: `bind()`, `start*()`, `pollJob(const PollContext&)`, `takeJobResult()`, `unbind()`.
+- Any I/O that can exceed ~1-2 ms must be split into cooperative job stages driven by `pollJob()`.
 - No heap allocation in steady state (no `String`, `std::vector`, `new` in normal ops).
 - Avoid dynamic allocation in steady embedded paths unless it is already an accepted local pattern and the bound is clear.
 - No logging in library code; examples may log.
@@ -89,7 +96,8 @@ Rules:
 - The I2C bus must have one clear owner.
 - The library MUST NOT own I2C. It never touches `Wire` directly.
 - Device drivers must not directly own or reconfigure a shared bus unless this repository's architecture explicitly says so.
-- `Config` MUST accept a transport adapter (function pointers or abstract interface).
+- `TransportConfig` (and the legacy `Config`) MUST accept a transport adapter (function pointers or abstract interface).
+- Each transport callback is exactly one physical attempt; retry, recovery and bus reconfiguration are application policy.
 - I2C transactions MUST be timeout-bounded and report errors clearly.
 - Transport errors MUST map to `Status` (no leaking `Wire`, `esp_err_t`, etc.).
 - The library MUST NOT configure bus timeouts or pins.
@@ -142,14 +150,26 @@ struct Status {
 
 ---
 
-## Driver Architecture: Managed Synchronous Driver
+## Driver Architecture: Cooperative Owner Engine
 
-The driver follows a **managed synchronous** model with health tracking:
+The driver is a **single-owner cooperative job engine** with passive health telemetry:
 
-- All public I2C operations are **blocking** (no complex async - INA3221 has no EEPROM/NVM writes).
-- `tick()` may be used for single-shot conversion wait or continuous mode polling.
+- The application owns the bus, the clock, the deadlines, and the poll cadence.
+  `bind()` stores a `TransportConfig` and a complete `DeviceProfile` without I2C.
+- All hardware work runs as one cooperative job (`INITIALIZE`, `APPLY_PROFILE`,
+  `RECONCILE`, `TRIGGERED_SAMPLE`, `CONTINUOUS_SAMPLE`, `POWER_DOWN`) advanced by
+  `pollJob(const PollContext&)` under a strict per-call transfer budget and an
+  absolute deadline. Every terminal outcome publishes a take-once `JobResult`.
+- Managed-register certainty is explicit: `measurementConfigState()` and
+  `alertConfigState()` are `APPLIED` / `DIRTY` / `UNKNOWN`, and every job result
+  carries a `HardwareEffect`.
 - Health is tracked via **tracked transport wrappers** -- public API never calls `_updateHealth()` directly.
-- Recovery is **manual** via `recover()` - the application controls retry strategy.
+- Recovery is **manual** via `startReconcile()`/`startInitialize()` (or the
+  synchronous `recover()` facade) - the application controls retry strategy.
+- `Config`, `begin()`, `tick()`, `end()`, `readBlocking()`, the direct
+  getters/setters and the staged `start*/poll*` helpers are a **bounded
+  synchronous compatibility facade** for standalone bring-up and diagnostics.
+  They are layered on the same job engine and are not the shared-bus steady path.
 
 ### DriverState (4 states only)
 
@@ -174,22 +194,24 @@ State transitions:
 All I2C goes through layered wrappers:
 
 ```
-Public API (readShuntVoltage, readBusVoltage, etc.)
+Public API (pollJob, readShuntVoltage, readBusVoltage, etc.)
     ↓
-Register helpers (readRegister16, writeRegister16)
+Register helpers (_jobReadRegister/_jobWriteRegister, readRegister16, writeRegister16)
     ↓
 TRACKED wrappers (_i2cWriteReadTracked, _i2cWriteTracked)
     ↓  <- _updateHealth() called here ONLY
 RAW wrappers (_i2cWriteReadRaw, _i2cWriteRaw)
     ↓
-Transport callbacks (Config::i2cWrite, i2cWriteRead)
+Transport callbacks (TransportConfig::i2cWrite, i2cWriteRead)
 ```
 
 **Rules:**
 - Public API methods NEVER call `_updateHealth()` directly
-- `readRegister16()`/`writeRegister16()` use TRACKED wrappers -> health updated automatically
+- `readRegister16()`/`writeRegister16()` and every cooperative job transfer use
+  TRACKED wrappers -> health updated automatically
 - `probe()` uses RAW wrappers -> no health tracking (diagnostic only)
-- `recover()` tracks probe failures (driver is initialized, so failures count)
+- `recover()` runs a full `INITIALIZE` job through tracked transfers, so its
+  failures do count
 
 ### Health Tracking Rules
 
@@ -205,7 +227,7 @@ Transport callbacks (Config::i2cWrite, i2cWriteRead)
 - `_lastErrorMs` - timestamp of last failed I2C operation
 - `_lastError` - most recent error Status
 - `_consecutiveFailures` - failures since last success (resets on success)
-- `_totalFailures` / `_totalSuccess` - lifetime counters (wrap at max)
+- `_totalFailures` / `_totalSuccess` - object-lifetime counters that saturate at max
 
 ---
 

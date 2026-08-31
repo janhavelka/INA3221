@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `PollJobSnapshot::nextChannel` and `PollJobSnapshot::conversionStartMs` are
+  now published from the live cooperative-job cursor. Both were backed by
+  fields that were never written and always reported zero.
+
+### Changed
+
+- Corrected public Doxygen contracts that did not match the implementation:
+  `readConversionReady()` (never returns `CONVERSION_NOT_READY`), `end()`
+  (bus-silent, performs no power-down), `softReset()` (a confirmed reset leaves
+  certainty `DIRTY`, not `UNKNOWN`), `writeRegister16()` (every accepted or
+  ambiguous raw write invalidates its certainty family, not only Configuration
+  and Mask/Enable), `profileGeneration()` (also advanced by
+  `setShuntResistance()`), and `SampleBatch::validChannels` (gated on derived
+  quantities as well as raw reads).
+- Replaced the stale v2 "managed synchronous driver" architecture description
+  in `AGENTS.md` with the current cooperative owner engine, corrected the
+  repository layout, the lifecycle rule, the `recover()` health note, and the
+  saturating-counter description.
+
 ## [3.1.0] - 2026-08-05
 
 ### Added

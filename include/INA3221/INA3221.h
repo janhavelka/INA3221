@@ -167,7 +167,7 @@ enum class SampleCoherence : uint8_t {
 struct SampleBatch {
   FixedChannelReading channels[3]; ///< Fixed CH1-through-CH3 result slots
   ChannelMask enabledChannels = 0; ///< Profile channel mask used for acquisition
-  ChannelMask validChannels = 0; ///< Channels with all mode-requested raw reads completed
+  ChannelMask validChannels = 0; ///< Channels whose mode-requested raw and derived quantities are all valid
   AlertSnapshot alerts{}; ///< Alert evidence consumed during this acquisition
   bool alertSnapshotValid = false; ///< True only when this sample consumed Mask/Enable
   SampleCoherence coherence = SampleCoherence::TRIGGERED_ATOMIC; ///< Batch coherence class
@@ -315,7 +315,9 @@ public:
   /// @return Verification state of alert-related managed registers.
   AppliedConfigState alertConfigState() const { return _alertConfigState; }
 
-  /// @return Generation counter incremented after a profile is fully verified.
+  /// @return Generation counter incremented after a profile is fully verified
+  /// and after setShuntResistance() changes host-only calibration, so a cached
+  /// SampleBatch can always be matched against the calibration that produced it.
   uint32_t profileGeneration() const { return _profileGeneration; }
 
   /// @brief Start identity verification and complete profile reconciliation.
@@ -431,8 +433,11 @@ public:
   /// @return OK after verification, otherwise a precondition/transport error.
   /// @note The driver remains initialized on success.
   Status powerDown();
-  /// Best-effort power the device down and clear cached conversion state.
-  /// @note Use powerDown() first when shutdown I2C failures must be observed.
+  /// Bus-silent release of the binding and all cached state; equivalent to
+  /// unbind(). The physical device keeps its current configuration and
+  /// continues converting.
+  /// @note Call powerDown() first when the device must actually be powered
+  ///       down and shutdown I2C failures must be observed.
   void end();
 
   /// @return `true` after successful initialization and before unbind()/end().
@@ -555,8 +560,9 @@ public:
   /// @note This reads Mask/Enable and therefore clears CVRF and latched alert flags
   ///       per the INA3221 register semantics.
   /// @param ready Receives the observed conversion-ready state.
-  /// @return OK after a valid observation, CONVERSION_NOT_READY while the
-  /// configured delay has not elapsed, or a precondition/transport error.
+  /// @return OK after a valid observation, or a precondition/transport error.
+  /// Before the configured conversion delay has elapsed this returns OK with
+  /// `ready` false and performs no I2C.
   Status readConversionReady(bool& ready);
   /// Convenience wrapper around readConversionReady(); returns false on errors.
   /// @note Convenience-only: this hides Status detail and can still perform a
@@ -713,8 +719,11 @@ public:
   /// @note Triggered mode bits start and track a single-shot conversion.
   Status writeConfig(uint16_t config);
 
-  /// @brief Issue a software reset and leave configuration certainty unknown.
+  /// @brief Issue a software reset and invalidate configuration certainty.
   /// @return Status from the reset write.
+  /// @note A confirmed reset leaves both certainty families DIRTY (the device
+  ///       is known to hold power-on defaults, not the desired profile); an
+  ///       ambiguous write leaves them UNKNOWN. Reconcile before measuring.
   Status softReset();
 
   // === Alert Limits ===
@@ -829,8 +838,10 @@ public:
   /// @param reg Valid writable register address.
   /// @param value Raw host-order register value to send big-endian.
   /// @return Status from address validation, precondition, and transport checks.
-  /// @note Diagnostic raw writes bypass typed cache helpers. Writes to
-  ///       Configuration or Mask/Enable mark hardwareConfigDirty().
+  /// @note Diagnostic raw writes bypass typed cache helpers. Every accepted or
+  ///       ambiguous write marks hardwareConfigDirty() and drops the affected
+  ///       certainty family (measurement for Configuration, alert for the
+  ///       others) to UNKNOWN; reconcile before returning to the job engine.
   Status writeRegister16(uint8_t reg, uint16_t value);
 
   // === Utility ===

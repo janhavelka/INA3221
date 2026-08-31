@@ -2134,6 +2134,8 @@ Status INA3221::pollSingleShot(uint32_t nowMs, uint8_t maxInstructions) {
   (void)getJobProgress(progress);
   _pollInstructionsLast = progress.lastPollTransfers;
   _pollInstructionsTotal = progress.totalTransfers;
+  _pollNextChannel = _jobChannelIndex;
+  _pollConversionStartMs = static_cast<uint32_t>(_jobConversionStartMs);
   if (progress.stage == JobStage::WAIT_CONVERSION) _pollJobStage = PollJobStage::WAIT_CONVERSION;
   else if (progress.stage == JobStage::READ_ALERTS) _pollJobStage = PollJobStage::READ_READY;
   else if (progress.stage == JobStage::READ_CHANNELS) _pollJobStage = PollJobStage::READ_CHANNELS;
@@ -2189,6 +2191,7 @@ Status INA3221::pollContinuousRead(uint32_t nowMs, uint8_t maxInstructions) {
   (void)getJobProgress(progress);
   _pollInstructionsLast = progress.lastPollTransfers;
   _pollInstructionsTotal = progress.totalTransfers;
+  _pollNextChannel = _jobChannelIndex;
   _pollJobStage = progress.stage == JobStage::READ_ALERTS
                       ? PollJobStage::READ_READY
                       : PollJobStage::READ_CHANNELS;
