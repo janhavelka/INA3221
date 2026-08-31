@@ -17,17 +17,81 @@ FORBIDDEN_CALLS = {
 }
 
 INCLUDE_ARDUINO_RE = re.compile(r'^\s*#\s*include\s*[<\"]Arduino\.h[>\"]', re.MULTILINE)
-BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
-LINE_COMMENT_RE = re.compile(r"//[^\n]*")
-STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
+RAW_STRING_START_RE = re.compile(
+    r'(?:u8|u|U|L)?R"(?P<delimiter>[^ ()\\\t\r\n]{0,16})\('
+)
+
+
+def _blank_non_code(text: str) -> str:
+    return "".join("\n" if char == "\n" else " " for char in text)
+
+
+def _quoted_literal_end(text: str, start: int, quote: str) -> int:
+    cursor = start + 1
+    while cursor < len(text):
+        if text[cursor] == "\\":
+            cursor = min(cursor + 2, len(text))
+        elif text[cursor] == quote:
+            return cursor + 1
+        else:
+            cursor += 1
+    return len(text)
 
 def strip_non_code(text: str) -> str:
-    # Remove literals before comments so comment-looking text inside a string
-    # cannot hide real code later on the same source line.
-    text = STRING_RE.sub('""', text)
-    text = BLOCK_COMMENT_RE.sub("", text)
-    text = LINE_COMMENT_RE.sub("", text)
-    return text
+    """Blank comments and C++ literals without letting either spoof the other."""
+    output: list[str] = []
+    cursor = 0
+    while cursor < len(text):
+        if text.startswith("//", cursor):
+            end = text.find("\n", cursor + 2)
+            if end < 0:
+                end = len(text)
+            output.append(_blank_non_code(text[cursor:end]))
+            cursor = end
+            continue
+        if text.startswith("/*", cursor):
+            end = text.find("*/", cursor + 2)
+            end = len(text) if end < 0 else end + 2
+            output.append(_blank_non_code(text[cursor:end]))
+            cursor = end
+            continue
+
+        raw = RAW_STRING_START_RE.match(text, cursor)
+        at_token_start = cursor == 0 or not (
+            text[cursor - 1].isalnum() or text[cursor - 1] == "_"
+        )
+        if raw is not None and at_token_start:
+            terminator = ")" + raw.group("delimiter") + '"'
+            end = text.find(terminator, raw.end())
+            end = len(text) if end < 0 else end + len(terminator)
+            output.append(_blank_non_code(text[cursor:end]))
+            cursor = end
+            continue
+
+        if text[cursor] in ('"', "'"):
+            end = _quoted_literal_end(text, cursor, text[cursor])
+            output.append(_blank_non_code(text[cursor:end]))
+            cursor = end
+            continue
+
+        output.append(text[cursor])
+        cursor += 1
+    return "".join(output)
+
+
+def verify_strip_non_code() -> None:
+    adversarial = (
+        'const char* line = "// hidden"; millis();\n'
+        '/* unmatched quote \" */ micros();\n'
+        'const char* raw = R"tag(/* delayMicroseconds() */)tag"; yield();\n'
+        '// millis(); "\n'
+    )
+    code = strip_non_code(adversarial)
+    for call_name in ("millis", "micros", "yield"):
+        if len(FORBIDDEN_CALLS[call_name].findall(code)) != 1:
+            raise RuntimeError(f"strip_non_code self-test failed for {call_name}")
+    if FORBIDDEN_CALLS["delayMicroseconds"].search(code) is not None:
+        raise RuntimeError("strip_non_code raw-string self-test failed")
 
 
 def collect_sources() -> list[pathlib.Path]:
@@ -43,6 +107,7 @@ def collect_sources() -> list[pathlib.Path]:
 
 
 def main() -> int:
+    verify_strip_non_code()
     observed_calls: dict[str, dict[str, int]] = {}
     observed_includes: dict[str, int] = {}
 

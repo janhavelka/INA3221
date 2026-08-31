@@ -52,6 +52,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adapter configuration errors rather than bus timeouts.
 - Hardened the core timing checker so comment markers inside string literals
   cannot hide forbidden calls later on the same line.
+- Kept the legacy observed Configuration view coherent across raw writes,
+  host-only calibration changes, settings snapshots, readiness polling, and
+  explicit re-triggers; owner admission now also clears completed legacy-ready
+  provenance before taking control.
+- Preserved active/completed legacy conversion evidence after definitely
+  non-reaching Configuration-write failures, retained Mask/Enable observations
+  after ambiguous resets, and preserved the original dirty-register diagnostic
+  when a different typed setter is successfully verified.
+- Invalidated stale legacy conversion timing after confirmed or ambiguous raw
+  Configuration writes while preserving it after definitely non-reaching
+  diagnostic failures.
+- Made disabled-channel legacy calibration ignore every invalid representation,
+  including finite values outside the fixed-unit range, and made the timing
+  guard lex comments, ordinary literals, and raw strings with an adversarial
+  self-test instead of relying on substitution order.
 
 ### Changed
 
@@ -71,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   power-down retention, timing-control semantics, non-atomic live profile
   application, fixed-timeout adapter admission, legacy cancellation, and the
   provenance of reserved/transport-supplied error codes.
+- Clarified that callback-local validation may be bus-silent and that owner
+  transfer counts measure callback invocations rather than guaranteed physical
+  bus attempts.
 
 ## [3.1.0] - 2026-08-05
 

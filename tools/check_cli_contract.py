@@ -66,6 +66,18 @@ def main() -> int:
         ensure_exists(common_dir / name, f"common helper {name}")
 
     text = bringup_main.read_text(encoding="utf-8", errors="replace")
+    wire_transport = (common_dir / "I2cTransport.h").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    local_case_one = re.findall(
+        r"case\s+1\s*:\s*return\s+INA3221::Status::Error\("
+        r"INA3221::Err::INVALID_PARAM,",
+        wire_transport,
+    )
+    if len(local_case_one) != 2:
+        fail("Wire local data-too-long result must remain a validation error")
+    if "Requested deadline is tighter than fixed Wire timeout" not in wire_transport:
+        fail("Wire fixed-timeout callback-local validation is missing")
     for token in (
         "profile.mode = INA3221::Mode::SHUNT_BUS_TRIG;",
         "startTriggeredSample(",

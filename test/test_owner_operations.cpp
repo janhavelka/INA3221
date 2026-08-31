@@ -586,6 +586,46 @@ void test_owner_interior_deadline_is_bus_silent_and_terminalizes_timed_out() {
                           static_cast<uint8_t>(device.measurementConfigState()));
 }
 
+void test_owner_triggered_interior_deadline_is_partial_but_keeps_config_applied() {
+  const DeviceProfile profile =
+      makeProfile(0x42, CHANNEL_1, Mode::SHUNT_BUS_TRIG);
+  ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+  INA3221::INA3221 device;
+  TEST_ASSERT_TRUE(initializeApplied(device, bus, profile));
+  bus.resetHarness();
+  bus.expectWrite(cmd::REG_CONFIG,
+                  configValue(profile, Mode::SHUNT_BUS_TRIG));
+
+  TEST_ASSERT_TRUE(
+      device.startTriggeredSample(Mode::SHUNT_BUS_TRIG, 500U, 100U)
+          .inProgress());
+  TEST_ASSERT_TRUE(
+      device.pollJob(pollContext(0U, 100U, DEFAULT_TIMEOUT_MS, 1U))
+          .inProgress());
+  TEST_ASSERT_TRUE(
+      device.pollJob(pollContext(1U, 100U, DEFAULT_TIMEOUT_MS, 0U))
+          .inProgress());
+  JobProgress progress{};
+  TEST_ASSERT_TRUE(device.getJobProgress(progress).ok());
+  TEST_ASSERT_LESS_THAN_UINT64(99U, progress.readyAtMs);
+
+  const uint32_t callsBefore = static_cast<uint32_t>(bus.callCount());
+  const Status st =
+      device.pollJob(pollContext(99U, 100U, DEFAULT_TIMEOUT_MS, 2U));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEADLINE_EXPIRED),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(callsBefore, bus.callCount());
+  TEST_ASSERT_TRUE(bus.scriptConsumed());
+  JobResult result{};
+  TEST_ASSERT_TRUE(device.takeJobResult(result).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobTerminalState::TIMED_OUT),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareEffect::PARTIAL),
+                          static_cast<uint8_t>(result.hardwareEffect));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::APPLIED),
+                          static_cast<uint8_t>(device.measurementConfigState()));
+}
+
 void test_owner_cancel_is_bus_silent_before_and_after_hardware_effects() {
   const DeviceProfile profile =
       makeProfile(0x42, CHANNEL_1, Mode::SHUNT_BUS_TRIG);
@@ -661,7 +701,7 @@ void test_owner_cancel_is_bus_silent_before_and_after_hardware_effects() {
     TEST_ASSERT_TRUE(device.takeJobResult(result).ok());
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareEffect::PARTIAL),
                             static_cast<uint8_t>(result.hardwareEffect));
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::DIRTY),
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::APPLIED),
                             static_cast<uint8_t>(device.measurementConfigState()));
   }
   {
@@ -1764,6 +1804,7 @@ void runOwnerOperationTests() {
   RUN_TEST(test_owner_budget_zero_one_and_many_are_exact);
   RUN_TEST(test_owner_timeout_clamps_to_remaining_deadline_and_exact_deadline_expires);
   RUN_TEST(test_owner_interior_deadline_is_bus_silent_and_terminalizes_timed_out);
+  RUN_TEST(test_owner_triggered_interior_deadline_is_partial_but_keeps_config_applied);
   RUN_TEST(test_owner_cancel_is_bus_silent_before_and_after_hardware_effects);
   RUN_TEST(test_owner_cancel_is_bus_silent_across_profile_transfer_stages);
   RUN_TEST(test_owner_permanently_low_cvrf_waits_until_owner_deadline);

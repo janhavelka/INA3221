@@ -241,7 +241,7 @@ struct JobResult {
   HardwareEffect hardwareEffect = HardwareEffect::NONE; ///< Write-effect certainty
   Status status = Status::Ok(); ///< Final success or failure status
   uint32_t requestId = 0; ///< Request identity supplied at admission
-  uint16_t transfers = 0; ///< Physical callback attempts made by the operation
+  uint16_t transfers = 0; ///< Transport callback invocations made by the operation
   uint32_t profileGeneration = 0; ///< Profile generation after terminalization
   bool mismatchValid = false; ///< True when register verification captured a mismatch
   uint8_t mismatchRegister = 0; ///< Register address whose verification failed
@@ -736,6 +736,8 @@ public:
   /// @param config Raw 16-bit Configuration-register value.
   /// @return Status from validation and the unverified raw register write.
   /// @note Triggered mode bits start and track a single-shot conversion.
+  ///       A failed write that may have reached hardware clears prior
+  ///       conversion timing; a definitely non-reaching failure preserves it.
   /// @note The retained DeviceProfile is unchanged so recover()/reconcile can
   ///       restore it; managed configuration certainty becomes UNKNOWN.
   Status writeConfig(uint16_t config);
@@ -865,6 +867,9 @@ public:
   ///       affected certainty family (measurement for Configuration, alert for
   ///       the others) to UNKNOWN. A confirmed reset instead leaves both
   ///       families DIRTY. Reconcile before returning to the job engine.
+  /// @note A non-reset Configuration write that succeeds or may have reached
+  ///       hardware clears legacy conversion timing because this diagnostic
+  ///       API does not synchronize the compatibility view.
   Status writeRegister16(uint8_t reg, uint16_t value);
 
   // === Utility ===
@@ -998,7 +1003,7 @@ public:
   /// @return `true` when the address is a documented writable register.
   static bool isWritableRegister(uint8_t reg);
   /// Maximum callbacks on the success path when CVRF is set at its first
-  /// eligible check. A low CVRF is rechecked no sooner than 1 ms later and is
+  /// eligible check. A low CVRF is rechecked no sooner than 50 ms later and is
   /// bounded by the caller's absolute deadline and poll cadence.
   /// @param kind Cooperative operation to bound; NONE is invalid.
   /// @param profile Valid complete profile used to count enabled channels.
@@ -1108,7 +1113,8 @@ private:
   Status _readRegister16Raw(uint8_t reg, uint16_t& value);
   Status _readRegister16Tracked(uint8_t reg, uint16_t& value);
   Status _writeRegister16Tracked(uint8_t reg, uint16_t value);
-  Status _writeManagedRegisterVerified(uint8_t reg, uint16_t value);
+  Status _writeManagedRegisterVerified(uint8_t reg, uint16_t value,
+                                       bool* writeConfirmed = nullptr);
   Status _applyConfigVerified(const DeviceProfile& profile);
 
   // === Health Tracking ===
@@ -1119,6 +1125,7 @@ private:
   // === Internal ===
   Status _readConversionReadyAt(uint32_t nowMs, bool& ready);
   Status _ensureMeasurementReadyForRead();
+  void _clearLegacyConversionState();
   void _handleConfigWriteSideEffects(const DeviceProfile& activeProfile);
   void _handleResetWriteEffect(bool confirmed);
   void _clearPollJob();

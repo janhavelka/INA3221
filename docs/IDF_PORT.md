@@ -36,11 +36,13 @@ calls and callbacks in one non-ISR context. The object is non-copyable,
 non-movable, non-reentrant, and not ISR-safe. It creates no task or lock and
 does not configure pins, clock, pull-ups, or controller timeouts.
 
-Each `I2cWriteFn` callback is exactly one physical transmit attempt. Each
-`I2cWriteReadFn` callback is exactly one non-interleaved pointer-write/read
-attempt. Success means the requested lengths completed. Callbacks must not
-retry, recover, reconfigure the bus, interleave a second device, or call back
-into the INA3221 object.
+Callbacks may reject unsupported parameters with `INVALID_CONFIG` or
+`INVALID_PARAM` before backend access. Otherwise, each `I2cWriteFn` callback is
+exactly one physical transmit attempt and each `I2cWriteReadFn` callback is one
+non-interleaved pointer-write/read attempt. Success means the requested lengths
+completed. Callbacks must not retry, recover, reconfigure the bus, interleave a
+second device, or call back into the INA3221 object. Owner transfer counters
+count callback invocations, including a callback-local validation rejection.
 
 The native adapter:
 

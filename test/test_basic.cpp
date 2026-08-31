@@ -335,18 +335,22 @@ void test_begin_rejects_nan_shunt_resistance() {
 }
 
 void test_begin_ignores_invalid_shunts_on_disabled_channels() {
-  FakeBus bus;
-  INA3221::INA3221 dev;
-  Config cfg = makeConfig(bus);
-  cfg.ch2Enable = false;
-  cfg.ch3Enable = false;
-  cfg.shuntResistance[1] = 0.0f;
-  cfg.shuntResistance[2] = std::numeric_limits<float>::quiet_NaN();
-  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
-  TEST_ASSERT_EQUAL_UINT32(0U,
-                           dev.deviceProfile().shunts[1].resistanceMicroOhms);
-  TEST_ASSERT_EQUAL_UINT32(0U,
-                           dev.deviceProfile().shunts[2].resistanceMicroOhms);
+  const float invalidValues[] = {
+      0.0f, std::numeric_limits<float>::quiet_NaN(), 5000.0f};
+  for (float invalid : invalidValues) {
+    FakeBus bus;
+    INA3221::INA3221 dev;
+    Config cfg = makeConfig(bus);
+    cfg.ch2Enable = false;
+    cfg.ch3Enable = false;
+    cfg.shuntResistance[1] = invalid;
+    cfg.shuntResistance[2] = invalid;
+    TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+    TEST_ASSERT_EQUAL_UINT32(
+        0U, dev.deviceProfile().shunts[1].resistanceMicroOhms);
+    TEST_ASSERT_EQUAL_UINT32(
+        0U, dev.deviceProfile().shunts[2].resistanceMicroOhms);
+  }
 }
 
 void test_begin_rejects_active_mode_with_all_channels_disabled() {
@@ -1219,6 +1223,108 @@ void test_typed_config_setter_requires_matching_readback() {
   TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
 }
 
+void test_definite_config_write_failure_preserves_legacy_conversion_state() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  TEST_ASSERT_TRUE(dev.startConversion().inProgress());
+
+  const uint32_t startBefore = dev._conversionStartMs;
+  const uint32_t delayBefore = dev._conversionReadyDelayMs;
+  bus.writeStatus =
+      Status::Error(Err::I2C_NACK_ADDR, "definite address NACK", -80);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+      static_cast<uint8_t>(dev.setAveraging(Averaging::AVG_4).code));
+  TEST_ASSERT_TRUE(dev._conversionStarted);
+  TEST_ASSERT_FALSE(dev._conversionReady);
+  TEST_ASSERT_EQUAL_UINT32(startBefore, dev._conversionStartMs);
+  TEST_ASSERT_EQUAL_UINT32(delayBefore, dev._conversionReadyDelayMs);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::APPLIED),
+                          static_cast<uint8_t>(dev.measurementConfigState()));
+
+  bus.writeStatus = Status::Ok();
+  bus.nowMs += 20U;
+  bool ready = false;
+  TEST_ASSERT_TRUE(dev.readConversionReady(ready).ok());
+  TEST_ASSERT_TRUE(ready);
+  TEST_ASSERT_FALSE(dev._conversionStarted);
+  TEST_ASSERT_TRUE(dev._conversionReady);
+
+  bus.writeStatus =
+      Status::Error(Err::DEVICE_NOT_FOUND, "definite missing device", -81);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(Err::DEVICE_NOT_FOUND),
+      static_cast<uint8_t>(dev.setAveraging(Averaging::AVG_16).code));
+  TEST_ASSERT_FALSE(dev._conversionStarted);
+  TEST_ASSERT_TRUE(dev._conversionReady);
+}
+
+void test_ambiguous_write_config_clears_legacy_conversion_state() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  TEST_ASSERT_TRUE(dev.startConversion().inProgress());
+
+  bus.writeStatus =
+      Status::Error(Err::I2C_TIMEOUT, "ambiguous raw config timeout", -83);
+  const uint16_t rawTriggered = dev._buildConfigRegister(dev.deviceProfile());
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(Err::I2C_TIMEOUT),
+      static_cast<uint8_t>(dev.writeConfig(rawTriggered).code));
+  TEST_ASSERT_FALSE(dev._conversionStarted);
+  TEST_ASSERT_FALSE(dev._conversionReady);
+  TEST_ASSERT_EQUAL_UINT32(0U, dev._conversionStartMs);
+  TEST_ASSERT_EQUAL_UINT32(0U, dev._conversionReadyDelayMs);
+}
+
+void test_generic_config_write_clears_only_when_it_can_take_effect() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  const uint16_t rawTriggered = dev._buildConfigRegister(dev.deviceProfile());
+
+  TEST_ASSERT_TRUE(dev.startConversion().inProgress());
+  TEST_ASSERT_TRUE(dev.writeRegister16(cmd::REG_CONFIG, rawTriggered).ok());
+  TEST_ASSERT_FALSE(dev._conversionStarted);
+  TEST_ASSERT_FALSE(dev._conversionReady);
+  TEST_ASSERT_EQUAL_UINT32(0U, dev._conversionStartMs);
+  TEST_ASSERT_EQUAL_UINT32(0U, dev._conversionReadyDelayMs);
+
+  TEST_ASSERT_TRUE(dev.startConversion().inProgress());
+  bus.writeStatus =
+      Status::Error(Err::I2C_TIMEOUT, "ambiguous generic timeout", -84);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(Err::I2C_TIMEOUT),
+      static_cast<uint8_t>(
+          dev.writeRegister16(cmd::REG_CONFIG, rawTriggered).code));
+  TEST_ASSERT_FALSE(dev._conversionStarted);
+  TEST_ASSERT_FALSE(dev._conversionReady);
+  TEST_ASSERT_EQUAL_UINT32(0U, dev._conversionStartMs);
+  TEST_ASSERT_EQUAL_UINT32(0U, dev._conversionReadyDelayMs);
+
+  bus.writeStatus = Status::Ok();
+  TEST_ASSERT_TRUE(dev.startConversion().inProgress());
+  const uint32_t startBefore = dev._conversionStartMs;
+  const uint32_t delayBefore = dev._conversionReadyDelayMs;
+  bus.writeStatus =
+      Status::Error(Err::I2C_NACK_ADDR, "definite generic NACK", -85);
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+      static_cast<uint8_t>(
+          dev.writeRegister16(cmd::REG_CONFIG, rawTriggered).code));
+  TEST_ASSERT_TRUE(dev._conversionStarted);
+  TEST_ASSERT_FALSE(dev._conversionReady);
+  TEST_ASSERT_EQUAL_UINT32(startBefore, dev._conversionStartMs);
+  TEST_ASSERT_EQUAL_UINT32(delayBefore, dev._conversionReadyDelayMs);
+}
+
 void test_typed_alert_setter_requires_matching_readback() {
   FakeBus bus;
   INA3221::INA3221 dev;
@@ -1265,6 +1371,85 @@ void test_legacy_conversion_can_be_cancelled_or_abandoned_for_recovery() {
   TEST_ASSERT_TRUE(dev.startConversion().inProgress());
   TEST_ASSERT_TRUE(dev.powerDown().ok());
   TEST_ASSERT_FALSE(dev._conversionStarted);
+}
+
+void test_successful_rebind_discards_active_legacy_conversion_bus_silently() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  TEST_ASSERT_TRUE(dev.startConversion().inProgress());
+
+  TransportConfig transport{};
+  DeviceProfile profile{};
+  TEST_ASSERT_TRUE(
+      INA3221::INA3221::_legacyToContracts(cfg, transport, profile).ok());
+  const uint32_t callsBefore = bus.readCalls + bus.writeCalls;
+  TEST_ASSERT_TRUE(dev.bind(transport, profile).ok());
+  TEST_ASSERT_EQUAL_UINT32(callsBefore, bus.readCalls + bus.writeCalls);
+  TEST_ASSERT_TRUE(dev.isBound());
+  TEST_ASSERT_FALSE(dev.isInitialized());
+  TEST_ASSERT_FALSE(dev._conversionStarted);
+  TEST_ASSERT_FALSE(dev._conversionReady);
+}
+
+void test_owner_admission_discards_completed_legacy_ready_evidence() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  TEST_ASSERT_TRUE(dev.startConversion().inProgress());
+  bus.nowMs += 20U;
+  bool ready = false;
+  TEST_ASSERT_TRUE(dev.readConversionReady(ready).ok());
+  TEST_ASSERT_TRUE(ready);
+  TEST_ASSERT_TRUE(dev._conversionReady);
+
+  DeviceProfile changed = dev.deviceProfile();
+  changed.averaging = Averaging::AVG_4;
+  TEST_ASSERT_TRUE(
+      dev.startApplyProfile(changed, 91U, UINT64_MAX).inProgress());
+  TEST_ASSERT_FALSE(dev._conversionStarted);
+  TEST_ASSERT_FALSE(dev._conversionReady);
+  PollContext context{};
+  context.nowMs = bus.nowMs;
+  context.deadlineMs = UINT64_MAX;
+  context.transferTimeoutMs = 10U;
+  context.maxTransfers = 33U;
+  TEST_ASSERT_TRUE(dev.pollJob(context).ok());
+  JobResult result{};
+  TEST_ASSERT_TRUE(dev.takeJobResult(result).ok());
+
+  const uint32_t readsBefore = bus.readCalls;
+  int16_t raw = 0;
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(Err::CONVERSION_NOT_READY),
+      static_cast<uint8_t>(dev.readShuntRaw(Channel::CH1, raw).code));
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+}
+
+void test_shunt_sum_rejects_bus_only_modes_without_i2c() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  TEST_ASSERT_TRUE(dev.setSummationChannels(true, false, false).ok());
+
+  TEST_ASSERT_TRUE(dev.setMode(Mode::BUS_CONT).ok());
+  uint32_t readsBefore = bus.readCalls;
+  int16_t raw = 0;
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(Err::INVALID_CONFIG),
+      static_cast<uint8_t>(dev.readShuntSumRaw(raw).code));
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
+
+  TEST_ASSERT_TRUE(dev.setMode(Mode::BUS_TRIG).inProgress());
+  readsBefore = bus.readCalls;
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(Err::INVALID_CONFIG),
+      static_cast<uint8_t>(dev.readShuntSumRaw(raw).code));
+  TEST_ASSERT_EQUAL_UINT32(readsBefore, bus.readCalls);
 }
 
 void test_failed_config_write_marks_hardware_config_dirty_and_recover_clears() {
@@ -1482,6 +1667,130 @@ void test_write_config_with_reset_bit_syncs_cached_defaults() {
   TEST_ASSERT_FALSE(dev._conversionStarted);
   TEST_ASSERT_FALSE(dev._conversionReady);
   TEST_ASSERT_EQUAL_HEX16(0u, dev._maskEnableWritableCache);
+
+  SettingsSnapshot snapshot{};
+  TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+  TEST_ASSERT_TRUE(snapshot.ch1Enable);
+  TEST_ASSERT_TRUE(snapshot.ch2Enable);
+  TEST_ASSERT_TRUE(snapshot.ch3Enable);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Averaging::AVG_1),
+                          static_cast<uint8_t>(snapshot.averaging));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SHUNT_BUS_CONT),
+                          static_cast<uint8_t>(snapshot.mode));
+}
+
+void test_raw_config_view_survives_host_updates_and_drives_readiness() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+
+  const uint16_t rawTriggered = static_cast<uint16_t>(
+      cmd::MASK_CH1EN |
+      (static_cast<uint16_t>(Averaging::AVG_4) << cmd::BIT_AVG) |
+      (static_cast<uint16_t>(ConvTime::CT_204US) << cmd::BIT_VBUSCT) |
+      (static_cast<uint16_t>(ConvTime::CT_332US) << cmd::BIT_VSHCT) |
+      static_cast<uint16_t>(Mode::SHUNT_BUS_TRIG));
+  TEST_ASSERT_TRUE(dev.writeConfig(rawTriggered).ok());
+  TEST_ASSERT_TRUE(dev.setShuntResistance(Channel::CH1, 0.2f).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SHUNT_BUS_TRIG),
+                          static_cast<uint8_t>(dev.getMode()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Averaging::AVG_4),
+                          static_cast<uint8_t>(dev.getAveraging()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConvTime::CT_204US),
+                          static_cast<uint8_t>(dev.getVBusConvTime()));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ConvTime::CT_332US),
+                          static_cast<uint8_t>(dev.getVShuntConvTime()));
+
+  SettingsSnapshot snapshot{};
+  TEST_ASSERT_TRUE(dev.getSettings(snapshot).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(dev.getMode()),
+                          static_cast<uint8_t>(snapshot.mode));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(dev.getAveraging()),
+                          static_cast<uint8_t>(snapshot.averaging));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(dev.getVBusConvTime()),
+                          static_cast<uint8_t>(snapshot.vBusCt));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(dev.getVShuntConvTime()),
+                          static_cast<uint8_t>(snapshot.vShCt));
+  TEST_ASSERT_FLOAT_WITHIN(0.000001f, dev.getShuntResistance(Channel::CH1),
+                           snapshot.shuntResistance[0]);
+
+  writeFakeRegister(bus, cmd::REG_MASK_ENABLE, cmd::MASK_CVRF);
+  bus.nowMs += 20U;
+  const uint32_t readsBeforeTick = bus.readCalls;
+  TEST_ASSERT_TRUE(dev.tickStatus(bus.nowMs).ok());
+  TEST_ASSERT_EQUAL_UINT32(readsBeforeTick + 1U, bus.readCalls);
+  TEST_ASSERT_FALSE(dev._conversionStarted);
+  TEST_ASSERT_TRUE(dev._conversionReady);
+
+  TEST_ASSERT_TRUE(dev.writeConfig(rawTriggered).ok());
+  bus.nowMs += 20U;
+  AlertFlags flags{};
+  TEST_ASSERT_TRUE(dev.readAlertFlags(flags).ok());
+  TEST_ASSERT_TRUE(flags.conversionReady);
+  TEST_ASSERT_FALSE(dev._conversionStarted);
+  TEST_ASSERT_TRUE(dev._conversionReady);
+}
+
+void test_start_conversion_restores_desired_view_and_delay_gate() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  const uint16_t rawContinuous = static_cast<uint16_t>(
+      cmd::MASK_CH1EN | cmd::MASK_CH2EN | cmd::MASK_CH3EN |
+      (static_cast<uint16_t>(ConvTime::CT_1100US) << cmd::BIT_VBUSCT) |
+      (static_cast<uint16_t>(ConvTime::CT_1100US) << cmd::BIT_VSHCT) |
+      static_cast<uint16_t>(Mode::SHUNT_BUS_CONT));
+  TEST_ASSERT_TRUE(dev.writeConfig(rawContinuous).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SHUNT_BUS_CONT),
+                          static_cast<uint8_t>(dev.getMode()));
+  TEST_ASSERT_TRUE(dev.startConversion().inProgress());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Mode::SHUNT_BUS_TRIG),
+                          static_cast<uint8_t>(dev.getMode()));
+
+  const uint32_t readsBeforeReady = bus.readCalls;
+  bool ready = true;
+  TEST_ASSERT_TRUE(dev.readConversionReady(ready).ok());
+  TEST_ASSERT_FALSE(ready);
+  TEST_ASSERT_EQUAL_UINT32(readsBeforeReady, bus.readCalls);
+}
+
+void test_ambiguous_reset_preserves_observed_mask_enable_cache() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  TEST_ASSERT_TRUE(dev.setSummationChannels(true, false, true).ok());
+  const uint16_t cacheBefore = dev._maskEnableWritableCache;
+
+  bus.writeStatus =
+      Status::Error(Err::I2C_TIMEOUT, "ambiguous reset timeout", -82);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::I2C_TIMEOUT),
+                          static_cast<uint8_t>(dev.softReset().code));
+  TEST_ASSERT_EQUAL_HEX16(cacheBefore, dev._maskEnableWritableCache);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::UNKNOWN),
+                          static_cast<uint8_t>(dev.alertConfigState()));
+}
+
+void test_managed_setter_preserves_prior_dirty_diagnostic() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  TEST_ASSERT_TRUE(
+      dev.writeRegister16(cmd::REG_CH1_CRIT_LIMIT, 0x0190U).ok());
+  const Status dirtyBefore = dev.hardwareConfigDirtyStatus();
+  TEST_ASSERT_EQUAL_INT32(cmd::REG_CH1_CRIT_LIMIT, dirtyBefore.detail);
+
+  TEST_ASSERT_TRUE(dev.setWarningAlertLimit(Channel::CH2, 0x0320).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::UNKNOWN),
+                          static_cast<uint8_t>(dev.alertConfigState()));
+  TEST_ASSERT_TRUE(dev.hardwareConfigDirty());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(dirtyBefore.code),
+                          static_cast<uint8_t>(
+                              dev.hardwareConfigDirtyStatus().code));
+  TEST_ASSERT_EQUAL_INT32(dirtyBefore.detail,
+                          dev.hardwareConfigDirtyStatus().detail);
 }
 
 void test_soft_reset_preserves_real_retained_alert_evidence() {
@@ -2099,8 +2408,14 @@ int main() {
   RUN_TEST(test_set_averaging);
   RUN_TEST(test_set_averaging_rolls_back_cached_config_on_write_failure);
   RUN_TEST(test_typed_config_setter_requires_matching_readback);
+  RUN_TEST(test_definite_config_write_failure_preserves_legacy_conversion_state);
+  RUN_TEST(test_ambiguous_write_config_clears_legacy_conversion_state);
+  RUN_TEST(test_generic_config_write_clears_only_when_it_can_take_effect);
   RUN_TEST(test_typed_alert_setter_requires_matching_readback);
   RUN_TEST(test_legacy_conversion_can_be_cancelled_or_abandoned_for_recovery);
+  RUN_TEST(test_successful_rebind_discards_active_legacy_conversion_bus_silently);
+  RUN_TEST(test_owner_admission_discards_completed_legacy_ready_evidence);
+  RUN_TEST(test_shunt_sum_rejects_bus_only_modes_without_i2c);
   RUN_TEST(test_failed_config_write_marks_hardware_config_dirty_and_recover_clears);
   RUN_TEST(test_set_channel_enable);
   RUN_TEST(test_set_channel_enable_rejects_disabling_last_active_channel);
@@ -2113,6 +2428,10 @@ int main() {
   RUN_TEST(test_failed_mask_enable_write_marks_hardware_config_dirty);
   RUN_TEST(test_raw_cached_register_write_and_reset_remain_dirty_until_recover);
   RUN_TEST(test_write_config_with_reset_bit_syncs_cached_defaults);
+  RUN_TEST(test_raw_config_view_survives_host_updates_and_drives_readiness);
+  RUN_TEST(test_start_conversion_restores_desired_view_and_delay_gate);
+  RUN_TEST(test_ambiguous_reset_preserves_observed_mask_enable_cache);
+  RUN_TEST(test_managed_setter_preserves_prior_dirty_diagnostic);
   RUN_TEST(test_soft_reset_preserves_real_retained_alert_evidence);
   RUN_TEST(test_alert_limit_writes_clear_reserved_bits);
 

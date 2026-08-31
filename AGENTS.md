@@ -97,7 +97,9 @@ Rules:
 - The library MUST NOT own I2C. It never touches `Wire` directly.
 - Device drivers must not directly own or reconfigure a shared bus unless this repository's architecture explicitly says so.
 - `TransportConfig` (and the legacy `Config`) MUST accept a transport adapter (function pointers or abstract interface).
-- Each transport callback is exactly one physical attempt; retry, recovery and bus reconfiguration are application policy.
+- A transport callback may reject unsupported parameters before backend access;
+  otherwise it is exactly one physical attempt. Retry, recovery, and bus
+  reconfiguration are application policy.
 - I2C transactions MUST be timeout-bounded and report errors clearly.
 - Transport errors MUST map to `Status` (no leaking `Wire`, `esp_err_t`, etc.).
 - The library MUST NOT configure bus timeouts or pins.

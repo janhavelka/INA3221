@@ -10,10 +10,12 @@ namespace INA3221 {
 
 /// @brief I2C write callback signature.
 ///
-/// The callback is synchronous and represents exactly one physical transfer
-/// attempt. Success means all requested bytes were transferred. It must not
-/// retry, recover or reconfigure the bus, interleave another bus user, or call
-/// back into the INA3221 object. The application owns those policies.
+/// The callback is synchronous. It may reject unsupported parameters with
+/// INVALID_CONFIG/INVALID_PARAM before backend access; otherwise it represents
+/// exactly one physical transfer attempt. Success means all requested bytes
+/// were transferred. It must not retry, recover or reconfigure the bus,
+/// interleave another bus user, or call back into the INA3221 object. The
+/// application owns those policies.
 /// @param addr     I2C device address (7-bit)
 /// @param data     Pointer to data to write
 /// @param len      Number of bytes to write
@@ -26,11 +28,12 @@ using I2cWriteFn = Status (*)(uint8_t addr, const uint8_t* data, size_t len,
 
 /// @brief I2C write-then-read callback signature.
 ///
-/// The callback is synchronous and represents one non-interleaved register
-/// pointer write followed by the exact requested read. Repeated-START versus
-/// STOP/START is a backend policy supported by the device. Success means both
-/// exact lengths completed. There must be no hidden retry, recovery, bus
-/// reconfiguration, or driver re-entry.
+/// The callback is synchronous. It may reject unsupported parameters with
+/// INVALID_CONFIG/INVALID_PARAM before backend access; otherwise it represents
+/// one non-interleaved register-pointer write followed by the exact requested
+/// read. Repeated-START versus STOP/START is a backend policy supported by the
+/// device. Success means both exact lengths completed. There must be no hidden
+/// retry, recovery, bus reconfiguration, or driver re-entry.
 /// @param addr     I2C device address (7-bit)
 /// @param txData   Pointer to data to write
 /// @param txLen    Number of bytes to write
@@ -189,7 +192,9 @@ struct Config {
   Mode mode = Mode::SHUNT_BUS_CONT;             ///< Operating mode
 
   // === Shunt Resistor Values (ohms) ===
-  float shuntResistance[3] = {0.1f, 0.1f, 0.1f}; ///< Shunt resistor per channel (ohms)
+  /// Shunt resistance per channel in ohms. Enabled channels require a finite
+  /// positive value; invalid values on disabled channels are ignored.
+  float shuntResistance[3] = {0.1f, 0.1f, 0.1f};
 
   // === Health Tracking ===
   uint8_t offlineThreshold = 5;    ///< Consecutive failures before OFFLINE

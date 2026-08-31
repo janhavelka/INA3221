@@ -563,10 +563,7 @@ void INA3221::unbind() {
   _measurementConfigState = AppliedConfigState::UNKNOWN;
   _alertConfigState = AppliedConfigState::UNKNOWN;
   _profileGeneration = 0;
-  _conversionStarted = false;
-  _conversionReady = false;
-  _conversionStartMs = 0;
-  _conversionReadyDelayMs = 0;
+  _clearLegacyConversionState();
   _maskEnableWritableCache = 0;
   _lastCallbackInvoked = false;
   _clearPollJob();
@@ -632,6 +629,10 @@ Status INA3221::_legacyToContracts(const Config& config,
     }
     const double microOhms = static_cast<double>(config.shuntResistance[i]) * 1000000.0;
     if (microOhms < 1.0 || microOhms > UINT32_MAX) {
+      if (!enabled) {
+        profile.shunts[i].resistanceMicroOhms = 0U;
+        continue;
+      }
       return Status::Error(Err::OUT_OF_RANGE, "Shunt resistance out of range");
     }
     profile.shunts[i].resistanceMicroOhms =
@@ -689,12 +690,10 @@ Status INA3221::_startJob(JobKind kind, uint32_t requestId,
        kind == JobKind::CONTINUOUS_SAMPLE)) {
     return Status::Error(Err::CONVERSION_BUSY, "Legacy conversion active");
   }
-  if (_conversionStarted) {
-    _conversionStarted = false;
-    _conversionReady = false;
-    _conversionStartMs = 0;
-    _conversionReadyDelayMs = 0;
-  }
+  // Every accepted owner job takes over conversion provenance. Sample jobs
+  // reject an active legacy trigger above; completed legacy-ready evidence and
+  // lifecycle-superseded bookkeeping are cache-only and safe to discard.
+  _clearLegacyConversionState();
   _clearPollJob();
   _resetOperationState();
   _jobKind = kind;
@@ -1072,6 +1071,9 @@ void INA3221::_finishJobFailure(const Status& status, bool writeStage,
   if (writeUncertain && isWritableRegisterAddress(writeRegister)) {
     _markRegisterUnknown(writeRegister);
   }
+  if (_jobAnyWriteConfirmed && _jobKind == JobKind::POWER_DOWN) {
+    _markRegisterDirty(cmd::REG_CONFIG);
+  }
   const HardwareEffect effect = writeUncertain
                                     ? HardwareEffect::INDETERMINATE
                                     : (_jobAnyWriteConfirmed
@@ -1130,7 +1132,7 @@ Status INA3221::cancelJob() {
     return Status::Error(Err::NO_ACTIVE_JOB, "No active owner job");
   }
   if (_jobAnyWriteConfirmed) {
-    if (_jobKind == JobKind::TRIGGERED_SAMPLE || _jobKind == JobKind::POWER_DOWN)
+    if (_jobKind == JobKind::POWER_DOWN)
       _measurementConfigState = AppliedConfigState::DIRTY;
   }
   _sampleWork = SampleBatch{};
@@ -1515,7 +1517,6 @@ Status INA3221::_pollSampleOperation(const PollContext& context,
         }
         const Status st = Status::Error(Err::DEADLINE_EXPIRED,
                                         "Conversion wait exceeds owner deadline");
-        _measurementConfigState = AppliedConfigState::DIRTY;
         _finishJob(JobTerminalState::TIMED_OUT, st, HardwareEffect::PARTIAL);
         return st;
       }
@@ -1693,16 +1694,9 @@ Status INA3221::pollJob(const PollContext& context) {
     return Status::Error(Err::NO_ACTIVE_JOB, "No active owner job");
   }
   if (_deadlineExpired(context)) {
-    if (_jobAnyWriteConfirmed &&
-        (_jobKind == JobKind::TRIGGERED_SAMPLE ||
-         _jobKind == JobKind::POWER_DOWN)) {
-      _measurementConfigState = AppliedConfigState::DIRTY;
-    }
     const Status timeout = Status::Error(Err::DEADLINE_EXPIRED,
                                          "Owner deadline expired");
-    _finishJob(JobTerminalState::TIMED_OUT, timeout,
-               _jobAnyWriteConfirmed ? HardwareEffect::PARTIAL
-                                     : HardwareEffect::NONE);
+    _finishJobFailure(timeout);
     return timeout;
   }
   uint8_t transfersLeft = context.maxTransfers;
@@ -1731,9 +1725,7 @@ Status INA3221::pollJob(const PollContext& context) {
                                            : static_cast<uint8_t>(used);
   if (st.code == Err::DEADLINE_EXPIRED &&
       _jobState == JobTerminalState::ACTIVE) {
-    _finishJob(JobTerminalState::TIMED_OUT, st,
-               _jobAnyWriteConfirmed ? HardwareEffect::PARTIAL
-                                     : HardwareEffect::NONE);
+    _finishJobFailure(st);
   }
   return st;
 }
@@ -1771,7 +1763,7 @@ Status INA3221::tickStatus(uint32_t nowMs) {
   if (_jobState == JobTerminalState::ACTIVE) {
     return Status::Error(Err::JOB_BUSY, "Owner job active");
   }
-  if (_isTriggeredMode() && _conversionStarted && !_conversionReady) {
+  if (_conversionStarted && !_conversionReady) {
     bool ready = false;
     return _readConversionReadyAt(nowMs, ready);
   }
@@ -1837,21 +1829,22 @@ Status INA3221::recover() {
 Status INA3221::getSettings(SettingsSnapshot& out) const {
   out.initialized = _initialized;
   out.state = _driverState;
-  out.i2cAddress = _profile.i2cAddress;
-  out.i2cTimeoutMs = _transport.defaultTransferTimeoutMs;
-  out.offlineThreshold = _transport.offlineThreshold;
-  out.hasNowMsHook = _transport.nowMs != nullptr;
-  out.hasCooperativeYieldHook = _transport.cooperativeYield != nullptr;
-  out.ch1Enable = (_profile.enabledChannels & CHANNEL_1) != 0U;
-  out.ch2Enable = (_profile.enabledChannels & CHANNEL_2) != 0U;
-  out.ch3Enable = (_profile.enabledChannels & CHANNEL_3) != 0U;
-  out.averaging = _profile.averaging;
-  out.vBusCt = _profile.vBusCt;
-  out.vShCt = _profile.vShCt;
-  out.mode = _profile.mode;
-  out.shuntResistance[0] = static_cast<float>(_profile.shunts[0].resistanceMicroOhms) / 1000000.0f;
-  out.shuntResistance[1] = static_cast<float>(_profile.shunts[1].resistanceMicroOhms) / 1000000.0f;
-  out.shuntResistance[2] = static_cast<float>(_profile.shunts[2].resistanceMicroOhms) / 1000000.0f;
+  out.i2cAddress = _legacyConfigView.i2cAddress;
+  out.i2cTimeoutMs = _legacyConfigView.i2cTimeoutMs;
+  out.offlineThreshold = _legacyConfigView.offlineThreshold;
+  out.hasNowMsHook = _legacyConfigView.nowMs != nullptr;
+  out.hasCooperativeYieldHook =
+      _legacyConfigView.cooperativeYield != nullptr;
+  out.ch1Enable = _legacyConfigView.ch1Enable;
+  out.ch2Enable = _legacyConfigView.ch2Enable;
+  out.ch3Enable = _legacyConfigView.ch3Enable;
+  out.averaging = _legacyConfigView.averaging;
+  out.vBusCt = _legacyConfigView.vBusCt;
+  out.vShCt = _legacyConfigView.vShCt;
+  out.mode = _legacyConfigView.mode;
+  out.shuntResistance[0] = _legacyConfigView.shuntResistance[0];
+  out.shuntResistance[1] = _legacyConfigView.shuntResistance[1];
+  out.shuntResistance[2] = _legacyConfigView.shuntResistance[2];
   out.conversionStarted = _conversionStarted;
   out.conversionReady = _conversionReady;
   out.conversionStartMs = _conversionStartMs;
@@ -2064,6 +2057,7 @@ Status INA3221::startConversion() {
   // Writing to config register triggers single-shot conversion
   Status st = _applyConfigVerified(_profile);
   if (!st.ok()) return st;
+  _syncLegacyConfigViewFromProfile();
   _handleConfigWriteSideEffects(_profile);
   return Status{Err::IN_PROGRESS, 0, "Conversion started"};
 }
@@ -2101,10 +2095,7 @@ Status INA3221::cancelConversion() {
   if (!_conversionStarted) {
     return Status::Error(Err::NO_ACTIVE_JOB, "No legacy conversion active");
   }
-  _conversionStarted = false;
-  _conversionReady = false;
-  _conversionStartMs = 0;
-  _conversionReadyDelayMs = 0;
+  _clearLegacyConversionState();
   return Status::Ok();
 }
 
@@ -2499,9 +2490,12 @@ Status INA3221::setShuntResistance(Channel ch, float ohms) {
   if (microOhms < 1.0 || microOhms > UINT32_MAX) {
     return Status::Error(Err::OUT_OF_RANGE, "Shunt resistance out of range");
   }
-  _profile.shunts[static_cast<uint8_t>(ch)].resistanceMicroOhms =
+  const uint8_t index = static_cast<uint8_t>(ch);
+  _profile.shunts[index].resistanceMicroOhms =
       static_cast<uint32_t>(microOhms + 0.5);
-  _syncLegacyConfigViewFromProfile();
+  _legacyConfigView.shuntResistance[index] =
+      static_cast<float>(_profile.shunts[index].resistanceMicroOhms) /
+      1000000.0f;
   if (_profileGeneration < UINT32_MAX) ++_profileGeneration;
   return Status::Ok();
 }
@@ -2556,7 +2550,11 @@ Status INA3221::writeConfig(uint16_t config) {
 
   Status st = _writeRegister16Tracked(cmd::REG_CONFIG, config);
   if (!st.ok()) {
-    if (_writeMayHaveReachedDevice(st)) _markRegisterUnknown(cmd::REG_CONFIG);
+    if (_writeMayHaveReachedDevice(st)) {
+      _clearLegacyConversionState();
+      _clearPollJob();
+      _markRegisterUnknown(cmd::REG_CONFIG);
+    }
     return st;
   }
 
@@ -2788,7 +2786,7 @@ Status INA3221::readAlertFlags(AlertFlags& flags) {
 
   _decodeAlertFlags(regVal, flags);
 
-  if (flags.conversionReady && _isTriggeredMode()) {
+  if (flags.conversionReady && _conversionStarted) {
     _conversionStarted = false;
     _conversionReady = true;
   }
@@ -3074,6 +3072,15 @@ Status INA3221::writeRegister16(uint8_t reg, uint16_t value) {
   Status st = _writeRegister16Tracked(reg, value);
   const bool resetWrite = reg == cmd::REG_CONFIG &&
                           (value & cmd::MASK_RST) != 0U;
+  const bool configWriteMayHaveTakenEffect =
+      reg == cmd::REG_CONFIG && !resetWrite &&
+      (st.ok() || _writeMayHaveReachedDevice(st));
+  if (configWriteMayHaveTakenEffect) {
+    // Generic register access deliberately does not decode/synchronize the
+    // legacy Configuration view, so it cannot establish fresh provenance.
+    _clearLegacyConversionState();
+    _clearPollJob();
+  }
   if (resetWrite && st.ok()) {
     _handleResetWriteEffect(true);
   } else if (resetWrite && _writeMayHaveReachedDevice(st)) {
@@ -3109,17 +3116,22 @@ Status INA3221::_writeRegister16Tracked(uint8_t reg, uint16_t value) {
   return _i2cWriteTracked(tx, sizeof(tx));
 }
 
-Status INA3221::_writeManagedRegisterVerified(uint8_t reg, uint16_t value) {
+Status INA3221::_writeManagedRegisterVerified(uint8_t reg, uint16_t value,
+                                               bool* writeConfirmed) {
+  if (writeConfirmed != nullptr) *writeConfirmed = false;
   Status available = _requireNoOwnerJob();
   if (!available.ok()) return available;
   const bool measurement = _registerIsMeasurementConfig(reg);
   const AppliedConfigState priorState =
       measurement ? _measurementConfigState : _alertConfigState;
+  const bool priorHardwareDirty = _hardwareConfigDirty;
+  const Status priorHardwareDirtyStatus = _hardwareConfigDirtyStatus;
   Status st = _writeRegister16Tracked(reg, value);
   if (!st.ok()) {
     if (_writeMayHaveReachedDevice(st)) _markRegisterUnknown(reg);
     return st;
   }
+  if (writeConfirmed != nullptr) *writeConfirmed = true;
   _markRegisterDirty(reg);
   uint16_t actual = 0;
   st = _readRegister16Tracked(reg, actual);
@@ -3138,18 +3150,20 @@ Status INA3221::_writeManagedRegisterVerified(uint8_t reg, uint16_t value) {
   if (_measurementConfigState == AppliedConfigState::APPLIED &&
       _alertConfigState == AppliedConfigState::APPLIED) {
     _clearHardwareConfigDirty();
+  } else if (priorHardwareDirty) {
+    _hardwareConfigDirty = true;
+    _hardwareConfigDirtyStatus = priorHardwareDirtyStatus;
   }
   return Status::Ok();
 }
 
 Status INA3221::_applyConfigVerified(const DeviceProfile& profile) {
+  bool writeConfirmed = false;
   const Status st = _writeManagedRegisterVerified(
-      cmd::REG_CONFIG, _buildConfigRegister(profile));
-  if (!st.ok()) {
-    _conversionStarted = false;
-    _conversionReady = false;
-    _conversionStartMs = 0;
-    _conversionReadyDelayMs = 0;
+      cmd::REG_CONFIG, _buildConfigRegister(profile), &writeConfirmed);
+  if (!st.ok() &&
+      (writeConfirmed || _writeMayHaveReachedDevice(st))) {
+    _clearLegacyConversionState();
   }
   return st;
 }
@@ -3259,6 +3273,13 @@ void INA3221::_clearPollJob() {
   _resetPollSampleCache();
 }
 
+void INA3221::_clearLegacyConversionState() {
+  _conversionStarted = false;
+  _conversionReady = false;
+  _conversionStartMs = 0;
+  _conversionReadyDelayMs = 0;
+}
+
 void INA3221::_resetPollSampleCache() {
   for (uint8_t i = 0; i < 3; ++i) {
     _pollChannels[i] = ChannelRawMeasurement{};
@@ -3355,20 +3376,14 @@ void INA3221::_handleConfigWriteSideEffects(
     return;
   }
 
-  _conversionStarted = false;
-  _conversionReady = false;
-  _conversionStartMs = 0;
-  _conversionReadyDelayMs = 0;
+  _clearLegacyConversionState();
 }
 
 void INA3221::_handleResetWriteEffect(bool confirmed) {
-  _conversionStarted = false;
-  _conversionReady = false;
-  _conversionStartMs = 0;
-  _conversionReadyDelayMs = 0;
-  _maskEnableWritableCache = 0;
+  _clearLegacyConversionState();
   _clearPollJob();
   if (confirmed) {
+    _maskEnableWritableCache = 0;
     _legacyConfigView.ch1Enable = true;
     _legacyConfigView.ch2Enable = true;
     _legacyConfigView.ch3Enable = true;
