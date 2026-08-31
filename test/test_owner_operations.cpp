@@ -564,6 +564,28 @@ void test_owner_timeout_clamps_to_remaining_deadline_and_exact_deadline_expires(
   TEST_ASSERT_TRUE(device.takeJobResult(result).ok());
 }
 
+void test_owner_interior_deadline_is_bus_silent_and_terminalizes_timed_out() {
+  const DeviceProfile profile = makeProfile();
+  ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+  INA3221::INA3221 device;
+  TEST_ASSERT_TRUE(device.bind(bus.makeTransportConfig(), profile).ok());
+  TEST_ASSERT_TRUE(device.startInitialize(499U, 100U).inProgress());
+
+  PollContext context = pollContext(99U, 100U, DEFAULT_TIMEOUT_MS, 2U);
+  const Status st = device.pollJob(context);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Err::DEADLINE_EXPIRED),
+                          static_cast<uint8_t>(st.code));
+  TEST_ASSERT_EQUAL_UINT32(0U, bus.callCount());
+  JobResult result{};
+  TEST_ASSERT_TRUE(device.takeJobResult(result).ok());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(JobTerminalState::TIMED_OUT),
+                          static_cast<uint8_t>(result.state));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(HardwareEffect::NONE),
+                          static_cast<uint8_t>(result.hardwareEffect));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::UNKNOWN),
+                          static_cast<uint8_t>(device.measurementConfigState()));
+}
+
 void test_owner_cancel_is_bus_silent_before_and_after_hardware_effects() {
   const DeviceProfile profile =
       makeProfile(0x42, CHANNEL_1, Mode::SHUNT_BUS_TRIG);
@@ -1351,13 +1373,15 @@ void test_owner_alert_events_are_retained_and_taken_exactly_by_owner() {
       cmd::MASK_CF1 | cmd::MASK_WF2 | cmd::MASK_CVRF | cmd::MASK_CF3 |
       cmd::MASK_SF | cmd::MASK_WF3),
       snapshot.events);
-  TEST_ASSERT_TRUE(snapshot.timingControl);
+  TEST_ASSERT_FALSE(snapshot.timingControl);
+  TEST_ASSERT_TRUE(snapshot.timingControlFault);
   TEST_ASSERT_FALSE(snapshot.powerValid);
   TEST_ASSERT_TRUE(device.takeAlertEvents(snapshot).ok());
   AlertSnapshot after{};
   TEST_ASSERT_TRUE(device.peekAlertEvents(after).ok());
   TEST_ASSERT_EQUAL_HEX16(0U, after.events);
-  TEST_ASSERT_TRUE(after.timingControl);
+  TEST_ASSERT_FALSE(after.timingControl);
+  TEST_ASSERT_TRUE(after.timingControlFault);
 }
 
 void test_owner_triggered_sample_is_atomic_and_preserves_last_good_on_failures() {
@@ -1739,6 +1763,7 @@ void runOwnerOperationTests() {
   RUN_TEST(test_owner_apply_profile_failure_at_every_transfer_stage);
   RUN_TEST(test_owner_budget_zero_one_and_many_are_exact);
   RUN_TEST(test_owner_timeout_clamps_to_remaining_deadline_and_exact_deadline_expires);
+  RUN_TEST(test_owner_interior_deadline_is_bus_silent_and_terminalizes_timed_out);
   RUN_TEST(test_owner_cancel_is_bus_silent_before_and_after_hardware_effects);
   RUN_TEST(test_owner_cancel_is_bus_silent_across_profile_transfer_stages);
   RUN_TEST(test_owner_permanently_low_cvrf_waits_until_owner_deadline);

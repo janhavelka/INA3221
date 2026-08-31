@@ -61,8 +61,9 @@ new integrations.
 ### Transport contract
 
 `TransportConfig` is non-owning. Both callbacks are required, and
-`defaultTransferTimeoutMs` must be non-zero. Each callback represents exactly
-one synchronous physical attempt and must:
+`defaultTransferTimeoutMs` must be non-zero. A callback may reject unsupported
+parameters locally with `INVALID_CONFIG`/`INVALID_PARAM`; otherwise it
+represents exactly one synchronous physical attempt and must:
 
 - transfer the exact requested lengths before returning `OK`;
 - return no later than the supplied timeout;
@@ -70,8 +71,16 @@ one synchronous physical attempt and must:
 - avoid hidden retry, recovery, bus reconfiguration, or interleaving; and
 - avoid calling back into the same `INA3221` object.
 
-`nowMs` and `cooperativeYield` exist for legacy blocking helpers. The production
-job API receives 64-bit monotonic time directly through `PollContext`.
+`nowMs` drives legacy blocking helpers and the health timestamps exposed as
+`lastOkMs()` / `lastErrorMs()`; `cooperativeYield` is used only by blocking
+compatibility work. The production job API receives 64-bit monotonic time
+directly through `PollContext`.
+
+The driver records whether it invoked a callback before classifying an owner
+deadline failure or possible write effect. Callback-local validation should
+return `INVALID_CONFIG` or `INVALID_PARAM`; actual bus failures should use the
+most accurate transport error available. In particular, a deadline that rounds
+to zero inside the driver is bus-silent and cannot make a write indeterminate.
 
 ### Complete device profile
 
@@ -118,6 +127,10 @@ The normal lifecycle is:
 5. `takeJobResult()` consumes every terminal result exactly once.
 6. Start sample, profile, reconcile, or power-down jobs under the same policy.
 7. Finish `startPowerDown()` when required, then call bus-silent `unbind()`.
+
+A successful power-down replaces the retained desired mode with `POWER_DOWN`.
+`startReconcile()` and `recover()` consequently keep the device powered down;
+wake it by applying a profile with a measurement mode.
 
 Every start call requires a non-zero request ID and a non-zero absolute deadline
 in the same monotonic millisecond domain as `PollContext::nowMs`. `IN_PROGRESS`
@@ -231,8 +244,14 @@ Reading Mask/Enable is destructive for CVRF and latched CF/SF/WF events. Every
 library read retains those event bits before exposing the current value.
 `peekAlertEvents()` is non-consuming; `takeAlertEvents()` acknowledges the
 retained events after copying them. `AlertSnapshot` separately exposes the raw
-read, writable SCC/WEN/CEN bits, condition-level PVF, sticky TCF observation,
-CVRF, and `evidenceUncertain`.
+read, writable SCC/WEN/CEN bits, condition-level PVF, the latest raw TCF level,
+a derived `timingControlFault` condition (TCF low), CVRF, and
+`evidenceUncertain`.
+
+The timing-control function is enabled by the INA3221 power-up/reset sequence.
+A Configuration-register write before that sequence completes disables the
+function until the next power cycle or reset; applications that depend on TC
+must account for when initialization writes occur.
 
 If a failed or short transport attempt may already have reached a destructive
 read, `evidenceUncertain` remains set until the application takes the retained
@@ -249,6 +268,11 @@ with `measurementConfigState()` and `alertConfigState()`:
 
 `HardwareEffect::PARTIAL` and `INDETERMINATE` deliberately avoid claiming
 rollback after confirmed or ambiguous writes.
+
+Profile application is verified register by register, but is not an atomic
+hardware transaction. A live apply can transiently expose the newly written
+Configuration register alongside older alert limits until the job completes;
+admit it only under application policy appropriate for the connected load.
 
 When profile or power-down readback fails, `JobResult::mismatchValid` is true
 and `mismatchRegister`, `mismatchExpected`, `mismatchActual`, and
@@ -276,10 +300,10 @@ count read, optional write, and readback verification for every managed
 register; already-matching profiles use fewer calls.
 
 If triggered CVRF is low at the first eligible check, the engine retains the
-observed alert bits, waits for a strictly later caller timestamp, and then arms
-an additional 1 ms wait before reading Mask/Enable again. The fault-path read
-count is therefore bounded by the absolute deadline and owner poll cadence, not
-by the eight-callback success figure.
+observed alert bits and uses a fixed 50 ms fault-recheck interval. If another
+bounded read cannot fit, it remains bus-silent until the absolute deadline.
+The fault-path read count is therefore bounded by that deadline, not by the
+eight-callback success figure.
 
 With `maxTransfers = 1`, one `pollJob()` call performs at most one synchronous
 callback. For a larger budget, the driver divides the remaining effective
@@ -325,6 +349,10 @@ detail, and a static-lifetime message. Transport adapters should preserve a
 useful backend code in `detail`. Validation and precondition failures do not
 count as transport-health failures.
 
+Tracked initialization transfers do count before `begin()` succeeds, so a
+failed first bring-up still preserves `lastError`, timestamps, and counters
+while `DriverState` remains `UNINIT`.
+
 `READY`, `DEGRADED`, and `OFFLINE` are passive diagnostics only. `OFFLINE` never
 suppresses an admitted transfer; the application owns admission, backoff,
 retry, and recovery policy. A tracked success returns health to `READY` and
@@ -357,20 +385,26 @@ shared-I2C-owner steady path.
 |---|---|
 | `begin()` / `recover()` | Up to 35 synchronous callbacks in one call |
 | `probe()` | Two synchronous raw identity reads; no health update |
-| Direct raw/scaled read or setter | Normally one callback; `readChannel()` and `readPower()` use two |
+| Direct raw/scaled read | One callback in continuous mode; triggered reads also consume Mask/Enable readiness, while `readChannel()` and `readPower()` use multiple data reads |
+| Typed hardware setter | Two callbacks: write plus verification readback |
 | `powerDown()` | Up to three callbacks for read/write/verify |
 | `readBlocking()` | Budget-one internal polling plus bounded cooperative polls until timeout |
 | Legacy staged APIs | Caller-supplied instruction budget and a derived finite deadline |
 
 Each callback still has its configured timeout, so a multi-transfer synchronous
 call can block for the sum of callback bounds plus local work. Compatibility
-calls reject an active production job, and production jobs reject a legacy
-conversion in progress. Diagnostic writes can make profile certainty `DIRTY`
-or `UNKNOWN`; reconcile before returning to the production engine.
+calls reject an active production job. Production sample jobs reject a legacy
+conversion in progress; lifecycle/recovery jobs abandon that legacy bookkeeping
+bus-silently because they rewrite Configuration. The `cancelConversion()`
+compatibility method provides an explicit bus-silent escape. Diagnostic writes
+can make profile certainty `DIRTY` or `UNKNOWN`; reconcile before returning to
+the production engine.
 
 The staged compatibility methods extend their 32-bit monotonic time input
 through one wrap for the active job; callers must poll at least once per 32-bit
-clock period. `readBlocking()` uses wrap-safe elapsed time. When its timeout is
+clock period. `readBlocking()` uses wrap-safe elapsed time, publishes capture
+uptime in the caller's absolute monotonic domain, and has a stalled-clock spin
+guard that resets on time or transfer progress. When its timeout is
 omitted, it derives a finite bound from the verified profile, maximum conversion
 time, successful-path transfer count, and configured per-transfer timeout. An
 explicit timeout remains available when the application needs a tighter bound.
@@ -411,9 +445,10 @@ application's separate toolchain.
 Add this repository as a component through `EXTRA_COMPONENT_DIRS`, a project
 component checkout, or equivalent component-manager integration. The root
 `CMakeLists.txt` exports `include/`, compiles `src/INA3221.cpp`, and requests
-C++17. The native example is independently compiled with ESP-IDF `6.0.1` and
-its `driver/i2c_master.h` API; that is separate from the IDF `5.5.5` bundled
-inside the Arduino build above.
+C++17. The native example uses an example-local component shim named
+`INA3221`, so its build does not depend on the checkout directory name. It is
+independently compiled with ESP-IDF `6.0.1` and `driver/i2c_master.h`; that is
+separate from IDF `5.5.5` bundled inside the Arduino build above.
 
 See the [native ESP-IDF integration guide](docs/IDF_PORT.md).
 
@@ -462,6 +497,8 @@ parameter documentation with warnings treated as errors.
 - [Native ESP-IDF integration](docs/IDF_PORT.md) — bus ownership and adapter rules.
 - [Hardware-in-the-loop validation](docs/HIL.md) — reproducible fixture run and
   reviewed evidence ledger.
+- [Code audit resolution](docs/CODE_AUDIT_RESOLUTION.md) records the
+  finding-by-finding verification and selected remedies for the 2026-08-27 audit.
 - <a href="docs/INA3221_datasheet.pdf">INA3221 datasheet</a> — authoritative
   bundled device reference.
 

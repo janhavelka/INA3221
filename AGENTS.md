@@ -169,7 +169,9 @@ The driver is a **single-owner cooperative job engine** with passive health tele
 - `Config`, `begin()`, `tick()`, `end()`, `readBlocking()`, the direct
   getters/setters and the staged `start*/poll*` helpers are a **bounded
   synchronous compatibility facade** for standalone bring-up and diagnostics.
-  They are layered on the same job engine and are not the shared-bus steady path.
+  Lifecycle/blocking/staged operations share the owner engine; direct
+  register/getter/setter calls use the same tracked transport and certainty
+  contracts without becoming owner jobs. None is the shared-bus steady path.
 
 ### DriverState (4 states only)
 

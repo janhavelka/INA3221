@@ -613,6 +613,7 @@ void printHelp() {
   printHelpItem("start", "Start single-shot conversion");
   printHelpItem("start <strig|btrig|sbtrig>", "Start selected triggered conversion");
   printHelpItem("poll", "Read conversion-ready flag");
+  printHelpItem("cancel", "Abandon an outstanding legacy conversion without I2C");
   printHelpItem("job / job progress", "Show cooperative owner-job progress");
   printHelpItem("job init", "Start identity/profile initialization");
   printHelpItem("job apply", "Apply and verify the active desired profile");
@@ -748,8 +749,10 @@ void printAlertSnapshot(const INA3221::AlertSnapshot& alerts, const char* title)
   out("=== %s ===\n", title);
   out("  Raw: 0x%04X events=0x%04X writable=0x%04X\n",
       alerts.raw, alerts.events, alerts.writableBits);
-  out("  PowerValid=%u TimingControl=%u ConversionReady=%u EvidenceUncertain=%u\n",
+  out("  PowerValid=%u TimingControl=%u TimingControlFault=%u "
+      "ConversionReady=%u EvidenceUncertain=%u\n",
       alerts.powerValid ? 1U : 0U, alerts.timingControl ? 1U : 0U,
+      alerts.timingControlFault ? 1U : 0U,
       alerts.conversionReady ? 1U : 0U, alerts.evidenceUncertain ? 1U : 0U);
 }
 
@@ -1203,10 +1206,11 @@ void printMaskEnable() {
       (raw & INA3221::cmd::MASK_WF1) != 0,
       (raw & INA3221::cmd::MASK_WF2) != 0,
       (raw & INA3221::cmd::MASK_WF3) != 0);
-  out("  SF=%d PVF=%d TCF=%d CVRF=%d\n",
+  out("  SF=%d PVF=%d TC=%d TC_FAULT=%d CVRF=%d\n",
       (raw & INA3221::cmd::MASK_SF) != 0,
       (raw & INA3221::cmd::MASK_PVF) != 0,
       (raw & INA3221::cmd::MASK_TCF) != 0,
+      (raw & INA3221::cmd::MASK_TCF) == 0,
       (raw & INA3221::cmd::MASK_CVRF) != 0);
 }
 
@@ -2157,6 +2161,8 @@ void processCommand(char* line) {
     const INA3221::Status st = device.cancelJob();
     printStatus(st);
     if (st.code == INA3221::Err::CANCELLED) serviceOwnerJob();
+  } else if (std::strcmp(cmd, "cancel") == 0) {
+    printStatus(device.cancelConversion());
   } else if (std::strcmp(cmd, "job auto") == 0) {
     out("  Owner auto service: %s\n", ownerAutoService ? "ON" : "OFF");
   } else if ((arg = argAfter(cmd, "job auto ")) != nullptr) {
@@ -2488,8 +2494,10 @@ void processCommand(char* line) {
         flags.criticalCh1, flags.criticalCh2, flags.criticalCh3);
     out("  Warning: CH1=%d CH2=%d CH3=%d\n",
         flags.warningCh1, flags.warningCh2, flags.warningCh3);
-    out("  Summation=%d PowerValid=%d TimingCtl=%d ConvReady=%d\n",
-        flags.summation, flags.powerValid, flags.timingControl, flags.conversionReady);
+    out("  Summation=%d PowerValid=%d TimingCtl=%d TimingCtlFault=%d "
+        "ConvReady=%d\n",
+        flags.summation, flags.powerValid, flags.timingControl,
+        flags.timingControlFault, flags.conversionReady);
   } else if (std::strcmp(cmd, "alertsnap") == 0 ||
              std::strcmp(cmd, "alertsnap take") == 0) {
     INA3221::AlertSnapshot snapshot{};

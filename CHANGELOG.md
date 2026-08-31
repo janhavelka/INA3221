@@ -7,11 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added bus-silent `cancelConversion()` to release stale legacy single-shot
+  bookkeeping, exposed it as `cancel` in both diagnostic CLIs, and added the
+  explicit `timingControlFault` condition alongside the raw TCF level.
+- Added an example-local fixed-name ESP-IDF component shim so the native
+  example builds independently of the repository checkout directory name.
+
 ### Fixed
 
 - `PollJobSnapshot::nextChannel` and `PollJobSnapshot::conversionStartMs` are
   now published from the live cooperative-job cursor. Both were backed by
   fields that were never written and always reported zero.
+- Reworked `readBlocking()` around the absolute extended monotonic deadline and
+  a progress-resetting stalled-clock guard, preserving absolute sample capture
+  uptime even across the 32-bit clock wrap.
+- Made typed Configuration and alert setters commit staged profile state only
+  after write/readback verification, so successful setters remain `APPLIED`
+  and mismatches/failures retain honest `DIRTY`/`UNKNOWN` certainty.
+- Allowed initialize/reconcile/power-down jobs and rebind to abandon stale
+  legacy conversion bookkeeping while keeping sample-job cross-driving
+  rejected.
+- Applied profile current-direction calibration to all legacy float current and
+  power paths without reducing their precision.
+- Corrected TCF polarity (`true` is TC high/no fault), exposed TCF-low fault
+  state, and retained only real Mask/Enable observations across software reset.
+- Rejected shunt-sum reads before I2C unless shunt conversion, selected sum
+  channels, and verified alert configuration make the register meaningful.
+- Centralized owner failure terminalization so interior deadline exhaustion is
+  `TIMED_OUT`, bus-silent failures cannot become indeterminate writes, and
+  confirmed earlier writes remain `PARTIAL`.
+- Recorded tracked initialization transfers in health counters/timestamps while
+  keeping `DriverState::UNINIT` until initialization succeeds.
+- Reduced permanent-CVRF-low traffic to a fixed 50 ms fault recheck and a
+  bus-silent wait when the next bounded read cannot fit before the deadline.
+- Clamped float-to-register conversion before `lrintf`, accepted absent
+  calibration on disabled legacy channels, and removed dead owner state and
+  dead power-valid range checks.
+- Made Mask/Enable typed setters compose from the desired profile instead of a
+  destructive-read observation cache, then verify the complete write.
+- Made the Arduino owner loop cap/pause transfer budgets that cannot honor its
+  fixed Wire timeout, reporting unsupported tighter callback deadlines as
+  adapter configuration errors rather than bus timeouts.
+- Hardened the core timing checker so comment markers inside string literals
+  cannot hide forbidden calls later on the same line.
 
 ### Changed
 
@@ -27,6 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `AGENTS.md` with the current cooperative owner engine, corrected the
   repository layout, the lifecycle rule, the `recover()` health note, and the
   saturating-counter description.
+- Documented verified-setter callback counts, initial health telemetry,
+  power-down retention, timing-control semantics, non-atomic live profile
+  application, fixed-timeout adapter admission, legacy cancellation, and the
+  provenance of reserved/transport-supplied error codes.
 
 ## [3.1.0] - 2026-08-05
 

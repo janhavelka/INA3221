@@ -514,6 +514,7 @@ void printHelp() {
   cli::printHelpItem("start", "Start single-shot conversion");
   cli::printHelpItem("start <mode>", "Start with triggered mode (strig/btrig/sbtrig)");
   cli::printHelpItem("poll", "Check if conversion is ready");
+  cli::printHelpItem("cancel", "Abandon an outstanding legacy conversion without I2C");
   cli::printHelpItem("job / job progress", "Show cooperative owner-job progress");
   cli::printHelpItem("job init", "Start identity/profile initialization");
   cli::printHelpItem("job apply", "Apply and verify the active desired profile");
@@ -722,9 +723,11 @@ void printAlertSnapshot(const INA3221::AlertSnapshot& alerts, const char* title)
   Serial.printf("=== %s ===\n", title);
   Serial.printf("  Raw: 0x%04X  events=0x%04X  writable=0x%04X\n",
                 alerts.raw, alerts.events, alerts.writableBits);
-  Serial.printf("  PowerValid=%u TimingControl=%u ConversionReady=%u EvidenceUncertain=%u\n",
+  Serial.printf("  PowerValid=%u TimingControl=%u TimingControlFault=%u "
+                "ConversionReady=%u EvidenceUncertain=%u\n",
                 alerts.powerValid ? 1U : 0U,
                 alerts.timingControl ? 1U : 0U,
+                alerts.timingControlFault ? 1U : 0U,
                 alerts.conversionReady ? 1U : 0U,
                 alerts.evidenceUncertain ? 1U : 0U);
 }
@@ -764,7 +767,10 @@ void serviceOwnerJob() {
     context.nowMs = now;
     context.deadlineMs = progress.deadlineMs;
     context.transferTimeoutMs = board::I2C_TIMEOUT_MS;
-    context.maxTransfers = 1U;  // Normal owner-loop budget: at most one callback.
+    const uint64_t remaining = progress.deadlineMs > now
+                                   ? progress.deadlineMs - now : 0U;
+    context.maxTransfers =
+        remaining >= board::I2C_TIMEOUT_MS ? 1U : 0U;
     (void)device.pollJob(context);
     (void)device.getJobProgress(progress);
   }
@@ -840,7 +846,21 @@ INA3221::Status stepOwnerJob(uint8_t maxTransfers) {
   context.nowMs = ownerNowMs();
   context.deadlineMs = progress.deadlineMs;
   context.transferTimeoutMs = board::I2C_TIMEOUT_MS;
-  context.maxTransfers = maxTransfers;
+  const uint64_t remaining = progress.deadlineMs > context.nowMs
+                                 ? progress.deadlineMs - context.nowMs : 0U;
+  const uint64_t supported = remaining / board::I2C_TIMEOUT_MS;
+  const uint8_t safeBudget = supported < maxTransfers
+                                 ? static_cast<uint8_t>(supported)
+                                 : maxTransfers;
+  if (safeBudget != maxTransfers) {
+    Serial.printf("  Wire-safe transfer budget: %u (requested %u, remaining "
+                  "%llu ms, fixed timeout %u ms)\n",
+                  static_cast<unsigned>(safeBudget),
+                  static_cast<unsigned>(maxTransfers),
+                  static_cast<unsigned long long>(remaining),
+                  static_cast<unsigned>(board::I2C_TIMEOUT_MS));
+  }
+  context.maxTransfers = safeBudget;
   st = device.pollJob(context);
   ownerAutoService = false;
   serviceOwnerJob();
@@ -1512,10 +1532,11 @@ void printMaskEnable() {
                 (raw & INA3221::cmd::MASK_WF1) != 0,
                 (raw & INA3221::cmd::MASK_WF2) != 0,
                 (raw & INA3221::cmd::MASK_WF3) != 0);
-  Serial.printf("  SF=%d  PVF=%d  TCF=%d  CVRF=%d\n",
+  Serial.printf("  SF=%d  PVF=%d  TC=%d  TC_FAULT=%d  CVRF=%d\n",
                 (raw & INA3221::cmd::MASK_SF) != 0,
                 (raw & INA3221::cmd::MASK_PVF) != 0,
                 (raw & INA3221::cmd::MASK_TCF) != 0,
+                (raw & INA3221::cmd::MASK_TCF) == 0,
                 (raw & INA3221::cmd::MASK_CVRF) != 0);
   Serial.println("  Note: reading this register clears latched alert and conversion-ready flags.");
 }
@@ -2126,6 +2147,8 @@ void processCommand(const String& cmdLine) {
     const INA3221::Status st = device.cancelJob();
     printStatus(st);
     if (st.code == INA3221::Err::CANCELLED) serviceOwnerJob();
+  } else if (cmd == "cancel") {
+    printStatus(device.cancelConversion());
   } else if (cmd == "job auto") {
     Serial.printf("  Owner auto service: %s\n", ownerAutoService ? "ON" : "OFF");
   } else if (cmd.startsWith("job auto ")) {
@@ -2635,8 +2658,10 @@ void processCommand(const String& cmdLine) {
                   flags.criticalCh1, flags.criticalCh2, flags.criticalCh3);
     Serial.printf("  Warning:  CH1=%d  CH2=%d  CH3=%d\n",
                   flags.warningCh1, flags.warningCh2, flags.warningCh3);
-    Serial.printf("  Summation=%d  PowerValid=%d  TimingCtl=%d  ConvReady=%d\n",
-                  flags.summation, flags.powerValid, flags.timingControl, flags.conversionReady);
+    Serial.printf("  Summation=%d  PowerValid=%d  TimingCtl=%d  "
+                  "TimingCtlFault=%d  ConvReady=%d\n",
+                  flags.summation, flags.powerValid, flags.timingControl,
+                  flags.timingControlFault, flags.conversionReady);
   } else if (cmd == "alertsnap" || cmd == "alertsnap take") {
     INA3221::AlertSnapshot snapshot{};
     const INA3221::Status st = cmd == "alertsnap take"

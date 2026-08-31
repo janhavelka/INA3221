@@ -80,6 +80,13 @@ The transport adapter performs one bounded transaction attempt per callback;
 the combined-read callback keeps its pointer write/read non-interleaved. Retry,
 recovery, scheduling, and admission remain application policy.
 
+ESP32 `TwoWire` exposes a fixed bus-level timeout rather than a tighter timeout
+for each callback. Automatic service pauses bus traffic during the last fixed
+timeout window before an owner deadline, and `job step` caps an oversized
+budget to `remainingMs / configuredTimeoutMs` while printing the adjustment.
+This prevents the driver from requesting a callback bound the backend cannot
+honor; a zero safe budget is a deliberate bus-silent poll.
+
 ## CLI use
 
 Type `help` or `?` for the authoritative command list. Particularly useful
@@ -93,6 +100,7 @@ production-flow commands are:
 | `job powerdown` | Admit verified power-down |
 | `job step <0..255>` / `job auto <0\|1>` | Select an exact manual transfer budget or loop servicing |
 | `job cancel` | Cancel the active job without I2C |
+| `cancel` | Abandon an outstanding legacy conversion without I2C |
 | `job lastsample` / `job alerts [take]` | Inspect retained sample and alert evidence |
 | `scanina` / `addr` / `init` / `end` | Discover, select, bind, initialize, and unbind addresses `0x40`-`0x43` |
 | `freq [10000..400000]` | Inspect or change the application-owned I2C clock with identity verification and rollback |

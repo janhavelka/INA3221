@@ -21,6 +21,7 @@ REQUIRED_FILES = [
     "CMakeLists.txt",
     "idf_component.yml",
     "examples/esp_idf/basic/CMakeLists.txt",
+    "examples/esp_idf/basic/components/INA3221/CMakeLists.txt",
     "examples/esp_idf/basic/main/CMakeLists.txt",
     "examples/esp_idf/basic/main/main.cpp",
     "examples/esp_idf/basic/main/Ina3221IdfI2cTransport.h",
@@ -45,6 +46,7 @@ MANDATORY_COMMANDS = [
     "timing",
     "start",
     "poll",
+    "cancel",
     "job",
     "mode",
     "avg",
@@ -173,6 +175,18 @@ def main() -> int:
     for component in FORBIDDEN_COMPONENTS:
         if re.search(rf"\b{re.escape(component)}\b", cmake) is not None:
             fail(f"ESP-IDF CMake should not require stale component '{component}'")
+
+    project_cmake = (
+        ROOT / "examples" / "esp_idf" / "basic" / "CMakeLists.txt"
+    ).read_text(encoding="utf-8", errors="replace")
+    if "EXTRA_COMPONENT_DIRS" in project_cmake:
+        fail("ESP-IDF example must not derive the component name from the checkout directory")
+    shim_cmake = (
+        ROOT / "examples" / "esp_idf" / "basic" / "components" /
+        "INA3221" / "CMakeLists.txt"
+    ).read_text(encoding="utf-8", errors="replace")
+    for token in ("src/INA3221.cpp", "include"):
+        require_token(shim_cmake, token, "fixed-name INA3221 component shim")
 
     transport = (
         (ROOT / "examples" / "esp_idf" / "basic" / "main" / "Ina3221IdfI2cTransport.cpp")

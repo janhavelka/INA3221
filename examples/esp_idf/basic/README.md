@@ -39,9 +39,11 @@ Replace `esp32s3` with `esp32s2` for that target. Running `set-target` rewrites
 the example's generated build configuration; do not infer that the other target
 still has current build evidence after switching.
 
-The root repository is loaded as an extra component by the example's
-`CMakeLists.txt`. The example component explicitly depends on the INA3221 core,
-I2C/GPIO drivers, timer, and FreeRTOS.
+The example-local `components/INA3221/CMakeLists.txt` shim loads the root source
+and public include directory under a fixed component name. The build therefore
+does not depend on the checkout directory being named `INA3221`. The main
+component explicitly depends on the INA3221 core, I2C/GPIO drivers, timer, and
+FreeRTOS.
 
 ## Demonstrated ownership model
 

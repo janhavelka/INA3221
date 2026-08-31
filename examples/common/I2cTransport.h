@@ -74,8 +74,9 @@ inline INA3221::Status validateTransferContext(uint32_t timeoutMs, void* user,
   // configures it once in initWire(). Refuse a tighter callback deadline rather
   // than silently exceeding it or reconfiguring the shared bus in a callback.
   if (timeoutMs < context->configuredTimeoutMs) {
-    return INA3221::Status::Error(INA3221::Err::I2C_TIMEOUT,
-                                  "Requested timeout is below Wire timeout");
+    return INA3221::Status::Error(
+        INA3221::Err::INVALID_CONFIG,
+        "Requested deadline is tighter than fixed Wire timeout");
   }
   wire = context->wire;
   return INA3221::Status::Ok();

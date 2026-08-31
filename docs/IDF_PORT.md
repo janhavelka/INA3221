@@ -19,6 +19,11 @@ Core headers and source do not include ESP-IDF, FreeRTOS, Arduino, or Wire
 headers. `idf_component.yml` declares ESP-IDF component metadata and supported
 targets.
 
+The repository example uses a fixed-name shim at
+`examples/esp_idf/basic/components/INA3221/CMakeLists.txt`. It references the
+root source/include paths without deriving the component name from the checkout
+directory, so a renamed checkout still satisfies `REQUIRES INA3221`.
+
 The example-local adapter is under
 `examples/esp_idf/basic/main/Ina3221IdfI2cTransport.*`. Applications should
 normally own an equivalent context alongside their central I2C manager instead
@@ -50,6 +55,14 @@ The native adapter:
 `ESP_ERR_INVALID_RESPONSE` does not reliably identify the NACK phase of a
 combined transfer, so the example maps it to a general I2C error and preserves
 the native detail.
+
+Some other backends expose only one bus-level timeout rather than a true
+per-call timeout. An owner using such an adapter must cap `maxTransfers` so the
+remaining deadline divided across the budget is never tighter than that fixed
+timeout, or poll with a zero transfer budget until enough time/deadline progress
+is available. The Arduino example demonstrates that admission rule. The native
+IDF adapter accepts the driver's per-call timeout directly and needs no such
+cap.
 
 ## Production flow
 

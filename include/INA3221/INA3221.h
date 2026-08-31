@@ -40,8 +40,9 @@ struct AlertFlags {
   bool warningCh2 = false;      ///< WF2: Warning flag Ch2
   bool warningCh3 = false;      ///< WF3: Warning flag Ch3
   bool powerValid = false;      ///< PVF: Power valid flag
-  bool timingControl = false;   ///< TCF: Timing control flag
+  bool timingControl = false;   ///< Raw TCF level: true means TC high/no fault
   bool conversionReady = false; ///< CVRF: Conversion ready flag
+  bool timingControlFault = false; ///< True when TCF is low/TC fault asserted
 };
 
 /// @brief Legacy compatibility polling-job type.
@@ -132,9 +133,10 @@ struct AlertSnapshot {
   uint16_t events = 0;            ///< OR-latched destructive event bits
   uint16_t writableBits = 0;      ///< SCC/WEN/CEN bits from the latest read
   bool powerValid = false;        ///< Latest condition-level PVF value
-  bool timingControl = false;     ///< Sticky TCF observation
+  bool timingControl = false;     ///< Latest raw TCF level: true means TC high/no fault
   bool conversionReady = false;   ///< CVRF in the consuming read
   bool evidenceUncertain = false; ///< Failed read may have cleared unknown events
+  bool timingControlFault = false; ///< Latest derived TCF-low/TC-fault condition
 };
 
 /// @brief Bit values describing valid quantities in a fixed-unit reading.
@@ -368,6 +370,9 @@ public:
   /// @param requestId Non-zero caller identity.
   /// @param deadlineMs Required finite absolute monotonic deadline.
   /// @return IN_PROGRESS on admission, otherwise a precondition/admission error.
+  /// @note Success retains POWER_DOWN as the desired mode. Reconcile/recover
+  ///       therefore keep the device powered down until startApplyProfile()
+  ///       supplies a measurement profile.
   Status startPowerDown(uint32_t requestId, uint64_t deadlineMs);
 
   /// @brief Advance the active cooperative job within a strict callback budget.
@@ -432,6 +437,8 @@ public:
   /// @brief Synchronously enter and verify power-down mode.
   /// @return OK after verification, otherwise a precondition/transport error.
   /// @note The driver remains initialized on success.
+  /// @note Success retains POWER_DOWN as the desired mode. recover() keeps the
+  ///       device powered down; apply a measurement profile to wake it.
   Status powerDown();
   /// Bus-silent release of the binding and all cached state; equivalent to
   /// unbind(). The physical device keeps its current configuration and
@@ -443,8 +450,11 @@ public:
   /// @return `true` after successful initialization and before unbind()/end().
   bool isInitialized() const { return _initialized; }
 
-  /// @return Non-owning reference to the cached legacy configuration.
-  const Config& getConfig() const { return _config; }
+  /// @return Non-owning reference to the cached legacy compatibility view.
+  /// @note The owner engine uses transportConfig() and deviceProfile() as its
+  ///       authoritative contracts. Raw Configuration writes may temporarily
+  ///       make this observed view differ until reconciliation.
+  const Config& getConfig() const { return _legacyConfigView; }
 
   // === Diagnostics (no health tracking) ===
   /// @brief Check device identity without changing health counters.
@@ -523,6 +533,7 @@ public:
   /// @param ch Channel to read.
   /// @param mA Receives signed current in milliamps.
   /// @return Status from validation and the shunt-voltage read.
+  /// @note Applies DeviceProfile::shunts[ch].direction to the result.
   Status readCurrent(Channel ch, float& mA);
 
   /// @brief Read bus/shunt voltage and calculate host-side power.
@@ -540,6 +551,9 @@ public:
   /// @brief Read the raw shunt-voltage summation register.
   /// @param raw Receives the signed datasheet-format sum register.
   /// @return Status from precondition, readiness, and register-read checks.
+  /// @note Requires a shunt-measuring mode, at least one selected summation
+  ///       channel, and verified alert configuration; invalid states are
+  ///       rejected before I2C.
   Status readShuntSumRaw(int16_t& raw);
 
   /// @brief Read and convert the shunt-voltage summation register.
@@ -549,13 +563,17 @@ public:
 
   // === Single-Shot Conversion ===
   /// @brief Trigger the currently configured legacy single-shot mode.
-  /// @return IN_PROGRESS after the trigger write, or a validation/transport error.
+  /// @return IN_PROGRESS after write/readback verification, or an error.
   Status startConversion();
 
   /// @brief Select and trigger a legacy single-shot mode.
   /// @param mode SHUNT_TRIG, BUS_TRIG, or SHUNT_BUS_TRIG.
-  /// @return IN_PROGRESS after the trigger write, or a validation/transport error.
+  /// @return IN_PROGRESS after write/readback verification, or an error.
   Status startConversion(Mode mode);
+  /// @brief Bus-silently abandon an outstanding legacy conversion.
+  /// @return OK after clearing the legacy conversion state, or NO_ACTIVE_JOB
+  ///         when no legacy conversion is outstanding.
+  Status cancelConversion();
   /// Read conversion-ready state with Status propagation.
   /// @note This reads Mask/Enable and therefore clears CVRF and latched alert flags
   ///       per the INA3221 register semantics.
@@ -642,27 +660,28 @@ public:
   // === Configuration ===
   /// Set operating mode.
   /// @param mode Desired valid operating mode.
-  /// @return IN_PROGRESS when a triggered mode write starts a single-shot conversion.
+  /// @return IN_PROGRESS when a verified triggered-mode write starts a
+  ///         single-shot conversion; otherwise the write/readback status.
   Status setMode(Mode mode);
 
   /// @return Cached legacy operating mode.
-  Mode getMode() const { return _config.mode; }
+  Mode getMode() const { return _legacyConfigView.mode; }
 
   /// @brief Write a new averaging setting through the compatibility API.
   /// @param avg Desired averaging setting.
-  /// @return Status from validation and Configuration-register write.
+  /// @return Status from validation, Configuration write, and readback verification.
   Status setAveraging(Averaging avg);
 
   /// @return Cached legacy averaging setting.
-  Averaging getAveraging() const { return _config.averaging; }
+  Averaging getAveraging() const { return _legacyConfigView.averaging; }
 
   /// Set bus-voltage conversion time.
   /// @param ct Desired conversion-time setting.
-  /// @return Status from validation and Configuration-register write.
+  /// @return Status from validation, Configuration write, and readback verification.
   Status setVBusConvTime(ConvTime ct);
   /// Get bus-voltage conversion time.
   /// @return Cached bus-voltage conversion-time setting.
-  ConvTime getVBusConvTime() const { return _config.vBusCt; }
+  ConvTime getVBusConvTime() const { return _legacyConfigView.vBusCt; }
   /// Cross-library naming alias for setVBusConvTime().
   /// @param ct Desired conversion-time setting.
   /// @return Status from setVBusConvTime().
@@ -673,11 +692,11 @@ public:
 
   /// Set shunt-voltage conversion time.
   /// @param ct Desired conversion-time setting.
-  /// @return Status from validation and Configuration-register write.
+  /// @return Status from validation, Configuration write, and readback verification.
   Status setVShuntConvTime(ConvTime ct);
   /// Get shunt-voltage conversion time.
   /// @return Cached shunt-voltage conversion-time setting.
-  ConvTime getVShuntConvTime() const { return _config.vShCt; }
+  ConvTime getVShuntConvTime() const { return _legacyConfigView.vShCt; }
   /// Cross-library naming alias for setVShuntConvTime().
   /// @param ct Desired conversion-time setting.
   /// @return Status from setVShuntConvTime().
@@ -689,7 +708,7 @@ public:
   /// @brief Enable or disable one channel through the compatibility API.
   /// @param ch Channel to update.
   /// @param enable Desired enable state.
-  /// @return Status from profile validation and Configuration-register write.
+  /// @return Status from profile validation, Configuration write, and readback verification.
   Status setChannelEnable(Channel ch, bool enable);
 
   /// @brief Read one channel's cached enable state.
@@ -713,10 +732,12 @@ public:
   /// @param config Receives the raw 16-bit register value.
   /// @return Status from precondition and register-read checks.
   Status readConfig(uint16_t& config);
-  /// Write raw Configuration register and synchronize cached Config.
+  /// Write raw Configuration register and synchronize the legacy view.
   /// @param config Raw 16-bit Configuration-register value.
-  /// @return Status from validation and register write.
+  /// @return Status from validation and the unverified raw register write.
   /// @note Triggered mode bits start and track a single-shot conversion.
+  /// @note The retained DeviceProfile is unchanged so recover()/reconcile can
+  ///       restore it; managed configuration certainty becomes UNKNOWN.
   Status writeConfig(uint16_t config);
 
   /// @brief Issue a software reset and invalidate configuration certainty.
@@ -724,13 +745,14 @@ public:
   /// @note A confirmed reset leaves both certainty families DIRTY (the device
   ///       is known to hold power-on defaults, not the desired profile); an
   ///       ambiguous write leaves them UNKNOWN. Reconcile before measuring.
+  ///       Host-retained alert evidence is not acknowledged or fabricated.
   Status softReset();
 
   // === Alert Limits ===
   /// @brief Set a critical shunt-voltage alert limit.
   /// @param ch Channel.
   /// @param raw Datasheet-format raw threshold; reserved bits are cleared before write.
-  /// @return Status from validation and register write.
+  /// @return Status from validation, register write, and readback verification.
   Status setCriticalAlertLimit(Channel ch, int16_t raw);
 
   /// @brief Read a critical shunt-voltage alert limit.
@@ -742,7 +764,7 @@ public:
   /// @brief Set a warning shunt-voltage alert limit.
   /// @param ch Channel.
   /// @param raw Datasheet-format raw threshold; reserved bits are cleared before write.
-  /// @return Status from validation and register write.
+  /// @return Status from validation, register write, and readback verification.
   Status setWarningAlertLimit(Channel ch, int16_t raw);
 
   /// @brief Read a warning shunt-voltage alert limit.
@@ -753,7 +775,7 @@ public:
 
   /// @brief Set shunt-voltage summation alert limit.
   /// @param raw Datasheet-format raw threshold; reserved bit 0 is cleared before write.
-  /// @return Status from register write.
+  /// @return Status from register write and readback verification.
   Status setShuntSumLimit(int16_t raw);
 
   /// @brief Read shunt-voltage summation alert limit.
@@ -763,7 +785,7 @@ public:
 
   /// @brief Set power-valid upper bus-voltage limit.
   /// @param raw Datasheet-format raw threshold; reserved bits are cleared before write.
-  /// @return Status from register write.
+  /// @return Status from register write and readback verification.
   Status setPowerValidUpperLimit(int16_t raw);
 
   /// @brief Read power-valid upper bus-voltage limit.
@@ -773,7 +795,7 @@ public:
 
   /// @brief Set power-valid lower bus-voltage limit.
   /// @param raw Datasheet-format raw threshold; reserved bits are cleared before write.
-  /// @return Status from register write.
+  /// @return Status from register write and readback verification.
   Status setPowerValidLowerLimit(int16_t raw);
 
   /// @brief Read power-valid lower bus-voltage limit.
@@ -796,13 +818,13 @@ public:
   /// @param ch1 Include channel 1.
   /// @param ch2 Include channel 2.
   /// @param ch3 Include channel 3.
-  /// @return Status from register write.
+  /// @return Status from register write and readback verification.
   Status setSummationChannels(bool ch1, bool ch2, bool ch3);
 
   /// @brief Configure warning and critical alert latch behavior.
   /// @param warningLatch true latches warning alerts.
   /// @param criticalLatch true latches critical alerts.
-  /// @return Status from register write.
+  /// @return Status from register write and readback verification.
   Status setAlertLatchEnable(bool warningLatch, bool criticalLatch);
   /// @brief Schedule complete read/conditional-write/verify reconciliation
   /// after replacing the desired Mask/Enable writable bits.
@@ -839,9 +861,10 @@ public:
   /// @param value Raw host-order register value to send big-endian.
   /// @return Status from address validation, precondition, and transport checks.
   /// @note Diagnostic raw writes bypass typed cache helpers. Every accepted or
-  ///       ambiguous write marks hardwareConfigDirty() and drops the affected
-  ///       certainty family (measurement for Configuration, alert for the
-  ///       others) to UNKNOWN; reconcile before returning to the job engine.
+  ///       ambiguous non-reset write marks hardwareConfigDirty() and drops the
+  ///       affected certainty family (measurement for Configuration, alert for
+  ///       the others) to UNKNOWN. A confirmed reset instead leaves both
+  ///       families DIRTY. Reconcile before returning to the job engine.
   Status writeRegister16(uint8_t reg, uint16_t value);
 
   // === Utility ===
@@ -1011,6 +1034,8 @@ private:
   static constexpr uint8_t MANAGED_PROFILE_REGISTER_COUNT = 11;
   static constexpr uint32_t CONVERSION_WAKE_MARGIN_US = 100;
   static constexpr uint32_t COMPATIBILITY_SCHEDULING_MARGIN_MS = 1000;
+  static constexpr uint32_t STALLED_CLOCK_SPIN_LIMIT = 1000000;
+  static constexpr uint64_t CVRF_FAULT_RECHECK_MS = 50;
 
   Status _validateTransport(const TransportConfig& transport) const;
   static Status _validateProfile(const DeviceProfile& profile);
@@ -1039,7 +1064,9 @@ private:
                           uint8_t& reg, uint16_t& value) const;
   static bool _registerMatches(uint8_t reg, uint16_t actual, uint16_t desired);
   static bool _registerIsMeasurementConfig(uint8_t reg);
-  static bool _ambiguousWriteFailure(const Status& status);
+  bool _writeMayHaveReachedDevice(const Status& status) const;
+  void _finishJobFailure(const Status& status, bool writeStage = false,
+                         uint8_t writeRegister = 0);
   void _markRegisterUnknown(uint8_t reg);
   void _markRegisterDirty(uint8_t reg);
   void _finishJob(JobTerminalState state, const Status& status,
@@ -1047,7 +1074,7 @@ private:
   void _finishJobSuccess();
   void _resetOperationState();
   Status _requireNoOwnerJob() const;
-  void _syncLegacyConfigFromProfile();
+  void _syncLegacyConfigViewFromProfile();
   static Status _legacyToContracts(const Config& config,
                                    TransportConfig& transport,
                                    DeviceProfile& profile);
@@ -1081,6 +1108,8 @@ private:
   Status _readRegister16Raw(uint8_t reg, uint16_t& value);
   Status _readRegister16Tracked(uint8_t reg, uint16_t& value);
   Status _writeRegister16Tracked(uint8_t reg, uint16_t value);
+  Status _writeManagedRegisterVerified(uint8_t reg, uint16_t value);
+  Status _applyConfigVerified(const DeviceProfile& profile);
 
   // === Health Tracking ===
   Status _updateHealth(const Status& st);
@@ -1088,14 +1117,13 @@ private:
   void _clearHardwareConfigDirty();
 
   // === Internal ===
-  Status _applyConfig();
   Status _readConversionReadyAt(uint32_t nowMs, bool& ready);
   Status _ensureMeasurementReadyForRead();
-  void _handleConfigWriteSideEffects();
+  void _handleConfigWriteSideEffects(const DeviceProfile& activeProfile);
   void _handleResetWriteEffect(bool confirmed);
   void _clearPollJob();
   void _resetPollSampleCache();
-  uint16_t _buildConfigRegister() const;
+  uint16_t _buildConfigRegister(const DeviceProfile& profile) const;
   uint32_t _nowMs() const;
   void _cooperativeYield() const;
 
@@ -1112,7 +1140,7 @@ private:
   AppliedConfigState _alertConfigState = AppliedConfigState::UNKNOWN;
   uint32_t _profileGeneration = 0;
 
-  Config _config;
+  Config _legacyConfigView;
   bool _initialized = false;
   DriverState _driverState = DriverState::UNINIT;
 
@@ -1130,7 +1158,9 @@ private:
   bool _conversionStarted = false;
   bool _conversionReady = false;
   uint32_t _conversionStartMs = 0;
+  uint32_t _conversionReadyDelayMs = 0;
   uint16_t _maskEnableWritableCache = 0;
+  bool _lastCallbackInvoked = false;
 
   // === Chunked Poll Job State ===
   PollJobKind _pollJobKind = PollJobKind::NONE;
@@ -1152,15 +1182,12 @@ private:
   JobKind _jobKind = JobKind::NONE;
   OperationStage _jobStage = OperationStage::IDLE;
   JobTerminalState _jobState = JobTerminalState::IDLE;
-  HardwareEffect _jobHardwareEffect = HardwareEffect::NONE;
-  Status _jobStatus = Status::Ok();
   uint32_t _jobRequestId = 0;
   uint64_t _jobDeadlineMs = 0;
   uint16_t _jobTransfers = 0;
   uint8_t _jobTransfersLastPoll = 0;
   uint8_t _jobProfileIndex = 0;
   uint8_t _jobChannelIndex = 0;
-  bool _jobReadBusNext = false;
   bool _jobConsumeAlerts = false;
   bool _jobAnyWriteConfirmed = false;
   Mode _jobSampleMode = Mode::SHUNT_BUS_TRIG;

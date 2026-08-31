@@ -11,20 +11,20 @@ enum class Err : uint8_t {
   OK = 0,                    ///< Operation successful
   NOT_INITIALIZED,           ///< Required binding or initialization is absent
   INVALID_CONFIG,            ///< Invalid configuration parameter
-  I2C_ERROR,                 ///< I2C communication failure
-  TIMEOUT,                   ///< Operation timed out
+  I2C_ERROR,                 ///< Transport-supplied generic I2C communication failure
+  TIMEOUT,                   ///< Legacy/transport-supplied generic timeout category
   INVALID_PARAM,             ///< Invalid parameter value
   DEVICE_NOT_FOUND,          ///< INA3221 not responding on I2C bus
   MANUFACTURER_ID_MISMATCH,  ///< Manufacturer ID != 0x5449
   DIE_ID_MISMATCH,           ///< Die ID != 0x3220
   CONVERSION_NOT_READY,      ///< Conversion not yet complete
-  MEASUREMENT_NOT_READY = CONVERSION_NOT_READY, ///< Alias for cross-library uniformity
-  BUSY,                      ///< Device is busy with conversion
+  MEASUREMENT_NOT_READY = CONVERSION_NOT_READY, ///< Alias of produced CONVERSION_NOT_READY value
+  BUSY,                      ///< Reserved legacy value; not produced by this library
   IN_PROGRESS,               ///< Cooperative operation admitted; continue polling
-  I2C_NACK_ADDR,             ///< I2C address phase was not acknowledged
-  I2C_NACK_DATA,             ///< I2C data phase was not acknowledged
-  I2C_TIMEOUT,               ///< I2C transaction timed out
-  I2C_BUS,                   ///< I2C bus or arbitration error
+  I2C_NACK_ADDR,             ///< Transport-supplied address-phase NACK
+  I2C_NACK_DATA,             ///< Transport-supplied data-phase NACK
+  I2C_TIMEOUT,               ///< Transport-supplied I2C transaction timeout
+  I2C_BUS,                   ///< Transport-supplied bus or arbitration error
   JOB_BUSY,                  ///< A cooperative owner operation is active
   RESULT_PENDING,            ///< A terminal result must be taken first
   NO_RESULT,                 ///< No terminal result is pending
@@ -38,7 +38,7 @@ enum class Err : uint8_t {
   NO_ACTIVE_JOB,             ///< No cooperative operation is active
   JOB_KIND_MISMATCH,         ///< Poll helper does not match the active job
   CONVERSION_BUSY,           ///< Legacy conversion state is active
-  DEVICE_OFFLINE             ///< Passive diagnostic state value (never gates I2C)
+  DEVICE_OFFLINE             ///< Reserved legacy value; passive OFFLINE is exposed through DriverState
 };
 
 /// @brief Status structure returned by all fallible operations.

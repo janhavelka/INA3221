@@ -22,9 +22,12 @@ LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
 
 def strip_non_code(text: str) -> str:
+    # Remove literals before comments so comment-looking text inside a string
+    # cannot hide real code later on the same source line.
+    text = STRING_RE.sub('""', text)
     text = BLOCK_COMMENT_RE.sub("", text)
     text = LINE_COMMENT_RE.sub("", text)
-    return STRING_RE.sub('""', text)
+    return text
 
 
 def collect_sources() -> list[pathlib.Path]:
