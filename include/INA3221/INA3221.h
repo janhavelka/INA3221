@@ -821,12 +821,14 @@ public:
   /// @param ch2 Include channel 2.
   /// @param ch3 Include channel 3.
   /// @return Status from register write and readback verification.
+  /// @note Reading Mask/Enable clears latched alert and conversion-ready flags.
   Status setSummationChannels(bool ch1, bool ch2, bool ch3);
 
   /// @brief Configure warning and critical alert latch behavior.
   /// @param warningLatch true latches warning alerts.
   /// @param criticalLatch true latches critical alerts.
   /// @return Status from register write and readback verification.
+  /// @note Reading Mask/Enable clears latched alert and conversion-ready flags.
   Status setAlertLatchEnable(bool warningLatch, bool criticalLatch);
   /// @brief Schedule complete read/conditional-write/verify reconciliation
   /// after replacing the desired Mask/Enable writable bits.
@@ -1061,6 +1063,7 @@ private:
   Status _readMaskEnableWithTimeout(uint16_t& value, AlertSnapshot* consumed,
                                     uint32_t timeoutMs, bool tracked);
   void _retainMaskEnable(uint16_t raw, AlertSnapshot* consumed);
+  void _handoffConversionReady(uint16_t raw);
   static void _decodeAlertFlags(uint16_t raw, AlertFlags& flags);
   uint32_t _clampedTransferTimeout(const PollContext& context) const;
   bool _deadlineExpired(const PollContext& context) const;

@@ -76,8 +76,28 @@ def main() -> int:
     )
     if len(local_case_one) != 2:
         fail("Wire local data-too-long result must remain a validation error")
-    if "Requested deadline is tighter than fixed Wire timeout" not in wire_transport:
-        fail("Wire fixed-timeout callback-local validation is missing")
+    if re.search(
+        r"INA3221::Err::INVALID_CONFIG,\s*"
+        r'"Requested deadline is tighter than fixed Wire timeout"',
+        wire_transport,
+    ) is None:
+        fail("Wire tighter-timeout rejection must remain INVALID_CONFIG")
+    poll_context_count = len(
+        re.findall(r"\bINA3221::PollContext\b", text)
+    )
+    wire_safe_budget_count = len(
+        re.findall(r"\bwireSafeTransferBudget\s*\(", text)
+    )
+    if wire_safe_budget_count != poll_context_count + 1:
+        fail("Every Arduino PollContext must use the fixed-Wire safe budget helper")
+    for stale_label in (" TC=%d", "TimingCtl"):
+        if stale_label in text:
+            fail(f"Arduino CLI uses stale timing-control label '{stale_label}'")
+    for label in ("TCF=%d", "TC_FAULT=%d", "TimingControl=%d",
+                  "TimingControlFault=%d",
+                  "TC_FAULT is the inverted TCF level"):
+        if label not in text:
+            fail(f"Arduino CLI timing-control label '{label}' is missing")
     for token in (
         "profile.mode = INA3221::Mode::SHUNT_BUS_TRIG;",
         "startTriggeredSample(",

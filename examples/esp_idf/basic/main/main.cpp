@@ -1206,12 +1206,13 @@ void printMaskEnable() {
       (raw & INA3221::cmd::MASK_WF1) != 0,
       (raw & INA3221::cmd::MASK_WF2) != 0,
       (raw & INA3221::cmd::MASK_WF3) != 0);
-  out("  SF=%d PVF=%d TC=%d TC_FAULT=%d CVRF=%d\n",
+  out("  SF=%d PVF=%d TCF=%d TC_FAULT=%d CVRF=%d\n",
       (raw & INA3221::cmd::MASK_SF) != 0,
       (raw & INA3221::cmd::MASK_PVF) != 0,
       (raw & INA3221::cmd::MASK_TCF) != 0,
       (raw & INA3221::cmd::MASK_TCF) == 0,
       (raw & INA3221::cmd::MASK_CVRF) != 0);
+  out("  Note: TC_FAULT is the inverted TCF level (1 when TCF is low).\n");
 }
 
 void printTimingInfo() {
@@ -2494,8 +2495,8 @@ void processCommand(char* line) {
         flags.criticalCh1, flags.criticalCh2, flags.criticalCh3);
     out("  Warning: CH1=%d CH2=%d CH3=%d\n",
         flags.warningCh1, flags.warningCh2, flags.warningCh3);
-    out("  Summation=%d PowerValid=%d TimingCtl=%d TimingCtlFault=%d "
-        "ConvReady=%d\n",
+    out("  Summation=%d PowerValid=%d TimingControl=%d TimingControlFault=%d "
+        "ConversionReady=%d\n",
         flags.summation, flags.powerValid, flags.timingControl,
         flags.timingControlFault, flags.conversionReady);
   } else if (std::strcmp(cmd, "alertsnap") == 0 ||

@@ -198,6 +198,12 @@ struct Config {
 
   // === Health Tracking ===
   uint8_t offlineThreshold = 5;    ///< Consecutive failures before OFFLINE
+
+  // === Current Direction ===
+  CurrentDirection direction[3] = {
+      CurrentDirection::POSITIVE_SHUNT_IS_POSITIVE_CURRENT,
+      CurrentDirection::POSITIVE_SHUNT_IS_POSITIVE_CURRENT,
+      CurrentDirection::POSITIVE_SHUNT_IS_POSITIVE_CURRENT}; ///< Per-channel host-side sign convention
 };
 
 } // namespace INA3221

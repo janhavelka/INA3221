@@ -445,10 +445,14 @@ application's separate toolchain.
 Add this repository as a component through `EXTRA_COMPONENT_DIRS`, a project
 component checkout, or equivalent component-manager integration. The root
 `CMakeLists.txt` exports `include/`, compiles `src/INA3221.cpp`, and requests
-C++17. The native example uses an example-local component shim named
-`INA3221`, so its build does not depend on the checkout directory name. It is
-independently compiled with ESP-IDF `6.0.1` and `driver/i2c_master.h`; that is
-separate from IDF `5.5.5` bundled inside the Arduino build above.
+C++17. With a direct `EXTRA_COMPONENT_DIRS` integration, ESP-IDF derives the
+component name from the checkout directory: keep that leaf directory named
+`INA3221` when consumers declare `REQUIRES INA3221`, or provide an equivalent
+fixed-name wrapper. The native example already uses such an example-local
+component shim, so its build does not depend on the checkout directory name.
+It is independently compiled with ESP-IDF `6.0.1` and
+`driver/i2c_master.h`; that is separate from IDF `5.5.5` bundled inside the
+Arduino build above.
 
 See the [native ESP-IDF integration guide](docs/IDF_PORT.md).
 

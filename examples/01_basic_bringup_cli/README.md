@@ -81,11 +81,12 @@ the combined-read callback keeps its pointer write/read non-interleaved. Retry,
 recovery, scheduling, and admission remain application policy.
 
 ESP32 `TwoWire` exposes a fixed bus-level timeout rather than a tighter timeout
-for each callback. Automatic service pauses bus traffic during the last fixed
-timeout window before an owner deadline, and `job step` caps an oversized
-budget to `remainingMs / configuredTimeoutMs` while printing the adjustment.
-This prevents the driver from requesting a callback bound the backend cannot
-honor; a zero safe budget is a deliberate bus-silent poll.
+for each callback. Every Arduino owner poll path applies the same admission
+rule: automatic service and the `stress_owner` sampler pause bus traffic during
+the last fixed-timeout window before a deadline, while `job step` also caps an
+oversized budget to `remainingMs / configuredTimeoutMs` and prints the
+adjustment. This prevents the driver from requesting a callback bound the
+backend cannot honor; a zero safe budget is a deliberate bus-silent poll.
 
 ## CLI use
 

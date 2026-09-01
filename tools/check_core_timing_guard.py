@@ -68,7 +68,7 @@ def strip_non_code(text: str) -> str:
             cursor = end
             continue
 
-        if text[cursor] in ('"', "'"):
+        if text[cursor] == '"' or (text[cursor] == "'" and at_token_start):
             end = _quoted_literal_end(text, cursor, text[cursor])
             output.append(_blank_non_code(text[cursor:end]))
             cursor = end
@@ -92,6 +92,21 @@ def verify_strip_non_code() -> None:
             raise RuntimeError(f"strip_non_code self-test failed for {call_name}")
     if FORBIDDEN_CALLS["delayMicroseconds"].search(code) is not None:
         raise RuntimeError("strip_non_code raw-string self-test failed")
+
+    separated = strip_non_code(
+        "static const unsigned fast = 400'000;\n"
+        "void separated() { millis(); }\n"
+        "static const unsigned slow = 100'000;\n"
+    )
+    if len(FORBIDDEN_CALLS["millis"].findall(separated)) != 1:
+        raise RuntimeError("strip_non_code digit-separator self-test failed")
+
+    balanced = strip_non_code(
+        "static const unsigned clock = 1'000'000;\n"
+        "void balanced() { millis(); }\n"
+    )
+    if len(FORBIDDEN_CALLS["millis"].findall(balanced)) != 1:
+        raise RuntimeError("strip_non_code balanced digit-separator self-test failed")
 
 
 def collect_sources() -> list[pathlib.Path]:

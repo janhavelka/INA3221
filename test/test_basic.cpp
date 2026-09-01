@@ -19,6 +19,9 @@ static constexpr uint16_t kMaskEnableReadClearFlags =
     cmd::MASK_SF |
     cmd::MASK_WF1 | cmd::MASK_WF2 | cmd::MASK_WF3 |
     cmd::MASK_CVRF;
+static constexpr uint16_t kMaskEnableWritableFlags =
+    cmd::MASK_SCC1 | cmd::MASK_SCC2 | cmd::MASK_SCC3 |
+    cmd::MASK_WEN | cmd::MASK_CEN;
 
 struct FakeBus {
   Status writeStatus = Status::Ok();
@@ -40,6 +43,7 @@ struct FakeBus {
   uint32_t failWriteCall = 0;
   Status failWriteStatus = Status::Error(Err::I2C_ERROR, "forced write failure");
   bool clearMaskEnableReadClearFlags = false;
+  bool preserveMaskEnableReadOnlyBitsOnWrite = false;
 
   // Register values returned on read (keyed by register address)
   // Default: manufacturer ID, die ID, config register
@@ -79,8 +83,19 @@ Status fakeWrite(uint8_t, const uint8_t* data, size_t len, uint32_t, void* user)
     bus->lastWriteReg = data[0];
     bus->lastWriteValue = (static_cast<uint16_t>(data[1]) << 8) | data[2];
     if (bus->commitWrites) {
-      bus->registerData[data[0]][0] = data[1];
-      bus->registerData[data[0]][1] = data[2];
+      uint16_t committed = bus->lastWriteValue;
+      if (data[0] == cmd::REG_MASK_ENABLE &&
+          bus->preserveMaskEnableReadOnlyBitsOnWrite) {
+        const uint16_t existing = static_cast<uint16_t>(
+            (static_cast<uint16_t>(bus->registerData[data[0]][0]) << 8U) |
+            bus->registerData[data[0]][1]);
+        committed = static_cast<uint16_t>(
+            (committed & kMaskEnableWritableFlags) |
+            (existing & static_cast<uint16_t>(~kMaskEnableWritableFlags)));
+      }
+      bus->registerData[data[0]][0] =
+          static_cast<uint8_t>((committed >> 8U) & 0xFFU);
+      bus->registerData[data[0]][1] = static_cast<uint8_t>(committed & 0xFFU);
     }
   }
   return Status::Ok();
@@ -232,6 +247,35 @@ void test_config_defaults() {
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.1f, cfg.shuntResistance[1]);
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.1f, cfg.shuntResistance[2]);
   TEST_ASSERT_EQUAL_UINT8(5, cfg.offlineThreshold);
+  for (uint8_t i = 0; i < 3U; ++i) {
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(CurrentDirection::POSITIVE_SHUNT_IS_POSITIVE_CURRENT),
+        static_cast<uint8_t>(cfg.direction[i]));
+  }
+}
+
+void test_legacy_config_current_direction_round_trips_through_profile() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.direction[0] = CurrentDirection::POSITIVE_SHUNT_IS_NEGATIVE_CURRENT;
+  cfg.direction[2] = CurrentDirection::POSITIVE_SHUNT_IS_NEGATIVE_CURRENT;
+
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(CurrentDirection::POSITIVE_SHUNT_IS_NEGATIVE_CURRENT),
+      static_cast<uint8_t>(dev.deviceProfile().shunts[0].direction));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(CurrentDirection::POSITIVE_SHUNT_IS_POSITIVE_CURRENT),
+      static_cast<uint8_t>(dev.deviceProfile().shunts[1].direction));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(CurrentDirection::POSITIVE_SHUNT_IS_NEGATIVE_CURRENT),
+      static_cast<uint8_t>(dev.getConfig().direction[2]));
+
+  writeFakeRegister(bus, cmd::REG_CH1_SHUNT, 0x00C8U);  // +1 mV
+  float currentMilliAmps = 0.0f;
+  TEST_ASSERT_TRUE(dev.readCurrent(Channel::CH1, currentMilliAmps).ok());
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, -10.0f, currentMilliAmps);
 }
 
 void test_get_settings_snapshot() {
@@ -1565,6 +1609,43 @@ void test_mask_enable_cache_survives_config_writes() {
                           dev._maskEnableWritableCache);
 }
 
+void test_typed_mask_enable_setters_preserve_observed_conversion_ready() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+
+  bus.preserveMaskEnableReadOnlyBitsOnWrite = true;
+  bus.clearMaskEnableReadClearFlags = true;
+
+  TEST_ASSERT_TRUE(dev.startConversion().inProgress());
+  bus.nowMs += 20U;
+  writeFakeRegister(bus, cmd::REG_MASK_ENABLE, cmd::MASK_CVRF);
+  TEST_ASSERT_TRUE(dev.setSummationChannels(true, false, false).ok());
+
+  const uint32_t maskReadsAfterSummation = bus.maskReadCalls;
+  bool ready = false;
+  TEST_ASSERT_TRUE(dev.readConversionReady(ready).ok());
+  TEST_ASSERT_TRUE(ready);
+  TEST_ASSERT_EQUAL_UINT32(maskReadsAfterSummation, bus.maskReadCalls);
+  float shuntMilliVolts = 0.0f;
+  TEST_ASSERT_TRUE(dev.readShuntVoltage(Channel::CH1, shuntMilliVolts).ok());
+  TEST_ASSERT_EQUAL_UINT32(maskReadsAfterSummation, bus.maskReadCalls);
+
+  TEST_ASSERT_TRUE(dev.startConversion().inProgress());
+  bus.nowMs += 20U;
+  writeFakeRegister(bus, cmd::REG_MASK_ENABLE,
+                    cmd::MASK_SCC1 | cmd::MASK_CVRF);
+  TEST_ASSERT_TRUE(dev.setAlertLatchEnable(true, false).ok());
+
+  const uint32_t maskReadsAfterLatch = bus.maskReadCalls;
+  ready = false;
+  TEST_ASSERT_TRUE(dev.readConversionReady(ready).ok());
+  TEST_ASSERT_TRUE(ready);
+  TEST_ASSERT_EQUAL_UINT32(maskReadsAfterLatch, bus.maskReadCalls);
+}
+
 void test_poll_apply_mask_enable_respects_budget_and_completes_profile_apply() {
   FakeBus bus;
   INA3221::INA3221 dev;
@@ -2353,6 +2434,7 @@ int main() {
 
   // Config
   RUN_TEST(test_config_defaults);
+  RUN_TEST(test_legacy_config_current_direction_round_trips_through_profile);
   RUN_TEST(test_get_settings_snapshot);
 
   // Lifecycle
@@ -2424,6 +2506,7 @@ int main() {
   RUN_TEST(test_set_shunt_resistance_rejects_zero);
   RUN_TEST(test_set_shunt_resistance_rejects_nan);
   RUN_TEST(test_mask_enable_cache_survives_config_writes);
+  RUN_TEST(test_typed_mask_enable_setters_preserve_observed_conversion_ready);
   RUN_TEST(test_poll_apply_mask_enable_respects_budget_and_completes_profile_apply);
   RUN_TEST(test_failed_mask_enable_write_marks_hardware_config_dirty);
   RUN_TEST(test_raw_cached_register_write_and_reset_remain_dirty_until_recover);

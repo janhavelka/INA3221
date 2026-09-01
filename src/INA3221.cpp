@@ -594,6 +594,7 @@ void INA3221::_syncLegacyConfigViewFromProfile() {
   for (uint8_t i = 0; i < 3U; ++i) {
     _legacyConfigView.shuntResistance[i] =
         static_cast<float>(_profile.shunts[i].resistanceMicroOhms) / 1000000.0f;
+    _legacyConfigView.direction[i] = _profile.shunts[i].direction;
   }
 }
 
@@ -618,6 +619,7 @@ Status INA3221::_legacyToContracts(const Config& config,
   profile.vShCt = config.vShCt;
   profile.mode = config.mode;
   for (uint8_t i = 0; i < 3U; ++i) {
+    profile.shunts[i].direction = config.direction[i];
     const bool enabled =
         (profile.enabledChannels & static_cast<ChannelMask>(1U << i)) != 0U;
     if (!isPositiveFinite(config.shuntResistance[i])) {
@@ -892,6 +894,13 @@ void INA3221::_retainMaskEnable(uint16_t raw, AlertSnapshot* consumed) {
     consumed->timingControl = current.timingControl;
     consumed->timingControlFault = current.timingControlFault;
     consumed->conversionReady = current.conversionReady;
+  }
+}
+
+void INA3221::_handoffConversionReady(uint16_t raw) {
+  if ((raw & cmd::MASK_CVRF) != 0U && _conversionStarted) {
+    _conversionStarted = false;
+    _conversionReady = true;
   }
 }
 
@@ -2785,11 +2794,7 @@ Status INA3221::readAlertFlags(AlertFlags& flags) {
   }
 
   _decodeAlertFlags(regVal, flags);
-
-  if (flags.conversionReady && _conversionStarted) {
-    _conversionStarted = false;
-    _conversionReady = true;
-  }
+  _handoffConversionReady(regVal);
 
   return Status::Ok();
 }
@@ -3136,6 +3141,7 @@ Status INA3221::_writeManagedRegisterVerified(uint8_t reg, uint16_t value,
   uint16_t actual = 0;
   st = _readRegister16Tracked(reg, actual);
   if (!st.ok()) return st;
+  if (reg == cmd::REG_MASK_ENABLE) _handoffConversionReady(actual);
   if (!_registerMatches(reg, actual, value)) {
     return Status::Error(Err::PROFILE_MISMATCH,
                          "Managed register verification mismatch", reg);

@@ -17,7 +17,9 @@ Release metadata is updated atomically by the release owner, with
 The root `CMakeLists.txt` registers `src/INA3221.cpp` and exports `include/`.
 Core headers and source do not include ESP-IDF, FreeRTOS, Arduino, or Wire
 headers. `idf_component.yml` declares ESP-IDF component metadata and supported
-targets.
+targets. A consumer that adds the repository root directly through
+`EXTRA_COMPONENT_DIRS` must keep the checkout leaf directory named `INA3221`
+when its project declares `REQUIRES INA3221`, or supply a fixed-name wrapper.
 
 The repository example uses a fixed-name shim at
 `examples/esp_idf/basic/components/INA3221/CMakeLists.txt`. It references the

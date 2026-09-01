@@ -94,13 +94,38 @@ The follow-up audit found and fixed these residual edges:
   and lexical timing-checker behavior now have direct regression or static
   contract coverage.
 
-Review iterations continued through the residual findings above. The final
-post-correction review found no remaining defect in the original audit scope.
+Review iterations continued through the residual findings above. That review
+did not find another defect, but a subsequent independent audit reproduced the
+additional gaps recorded below; the earlier conclusion was therefore too
+strong.
+
+## Subsequent independent follow-up
+
+On 2026-09-01, a separate auditor reproduced three defects against `a41e791`.
+Each was reproduced again locally before correction:
+
+- Mask/Enable readback verification in the typed summation/latch setters
+  consumed CVRF without handing the observation to legacy conversion state.
+  Both setters now use the same small CVRF handoff as `readAlertFlags()`, and
+  their Doxygen calls out the destructive read. Mask/Enable is the only managed
+  register with read-clear behavior, so no other verifier needs this handoff.
+- The timing checker's character-literal lexer treated digit separators as
+  quotes and could hide a forbidden timing call between two separated numeric
+  literals. Token-start gating and adversarial odd-pair/balanced-number tests
+  now cover the case.
+- The Arduino `stress_owner` sampler bypassed the fixed-Wire transfer-budget
+  admission used by the other two poll sites. All three sites now share one
+  helper; native ESP-IDF sites remain uncapped because that adapter supports a
+  true per-call timeout.
+
+The same pass also carried current direction through legacy `Config`, tightened
+the Wire status and component-shim static checks, exercised ESP-IDF CI from a
+checkout path not named `INA3221`, documented the consumer naming constraint,
+and normalized timing-control labels across both CLIs.
 
 ## Validation
 
-Native coverage increased from the synced baseline of 124 tests to 144 tests.
-The completed local matrix was:
+Native coverage is now 146 tests. The completed local follow-up matrix was:
 
 - `python tools/check_cli_contract.py` — passed;
 - `python tools/check_idf_example_contract.py` — passed;
@@ -110,7 +135,7 @@ The completed local matrix was:
 - `python tools/check_strict_compile.py` — passed;
 - `python tools/hil_cli_runner.py --parser-self-test` — passed;
 - `doxygen Doxyfile` — passed with no warnings;
-- `.\scripts\pio.cmd test -e native` — 144/144 passed;
+- `.\scripts\pio.cmd test -e native` — 146/146 passed;
 - `.\scripts\pio.cmd run -e esp32s3dev` — passed;
 - `.\scripts\pio.cmd run -e esp32s2dev` — passed.
 

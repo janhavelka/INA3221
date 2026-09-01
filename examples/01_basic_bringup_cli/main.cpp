@@ -756,6 +756,13 @@ void printOwnerResult(const INA3221::JobResult& result) {
   if (result.sampleValid) printOwnerSample(result.sample);
 }
 
+uint8_t wireSafeTransferBudget(uint64_t deadlineMs, uint64_t nowMs,
+                               uint8_t requested) {
+  const uint64_t remaining = deadlineMs > nowMs ? deadlineMs - nowMs : 0U;
+  const uint64_t supported = remaining / board::I2C_TIMEOUT_MS;
+  return supported < requested ? static_cast<uint8_t>(supported) : requested;
+}
+
 void serviceOwnerJob() {
   if (ownerDemoPhase == OwnerDemoPhase::IDLE) return;
 
@@ -767,10 +774,8 @@ void serviceOwnerJob() {
     context.nowMs = now;
     context.deadlineMs = progress.deadlineMs;
     context.transferTimeoutMs = board::I2C_TIMEOUT_MS;
-    const uint64_t remaining = progress.deadlineMs > now
-                                   ? progress.deadlineMs - now : 0U;
     context.maxTransfers =
-        remaining >= board::I2C_TIMEOUT_MS ? 1U : 0U;
+        wireSafeTransferBudget(progress.deadlineMs, now, 1U);
     (void)device.pollJob(context);
     (void)device.getJobProgress(progress);
   }
@@ -848,10 +853,8 @@ INA3221::Status stepOwnerJob(uint8_t maxTransfers) {
   context.transferTimeoutMs = board::I2C_TIMEOUT_MS;
   const uint64_t remaining = progress.deadlineMs > context.nowMs
                                  ? progress.deadlineMs - context.nowMs : 0U;
-  const uint64_t supported = remaining / board::I2C_TIMEOUT_MS;
-  const uint8_t safeBudget = supported < maxTransfers
-                                 ? static_cast<uint8_t>(supported)
-                                 : maxTransfers;
+  const uint8_t safeBudget = wireSafeTransferBudget(
+      progress.deadlineMs, context.nowMs, maxTransfers);
   if (safeBudget != maxTransfers) {
     Serial.printf("  Wire-safe transfer budget: %u (requested %u, remaining "
                   "%llu ms, fixed timeout %u ms)\n",
@@ -1532,13 +1535,14 @@ void printMaskEnable() {
                 (raw & INA3221::cmd::MASK_WF1) != 0,
                 (raw & INA3221::cmd::MASK_WF2) != 0,
                 (raw & INA3221::cmd::MASK_WF3) != 0);
-  Serial.printf("  SF=%d  PVF=%d  TC=%d  TC_FAULT=%d  CVRF=%d\n",
+  Serial.printf("  SF=%d  PVF=%d  TCF=%d  TC_FAULT=%d  CVRF=%d\n",
                 (raw & INA3221::cmd::MASK_SF) != 0,
                 (raw & INA3221::cmd::MASK_PVF) != 0,
                 (raw & INA3221::cmd::MASK_TCF) != 0,
                 (raw & INA3221::cmd::MASK_TCF) == 0,
                 (raw & INA3221::cmd::MASK_CVRF) != 0);
   Serial.println("  Note: reading this register clears latched alert and conversion-ready flags.");
+  Serial.println("  Note: TC_FAULT is the inverted TCF level (1 when TCF is low).");
 }
 
 void printTimingInfo() {
@@ -1867,7 +1871,8 @@ INA3221::Status runOneOwnerSample(INA3221::JobResult& result) {
     context.nowMs = ownerNowMs();
     context.deadlineMs = progress.deadlineMs;
     context.transferTimeoutMs = board::I2C_TIMEOUT_MS;
-    context.maxTransfers = 1U;
+    context.maxTransfers = wireSafeTransferBudget(
+        progress.deadlineMs, context.nowMs, 1U);
     st = device.pollJob(context);
     if (!st.ok() && !st.inProgress()) {
       (void)device.getJobProgress(progress);
@@ -2658,8 +2663,8 @@ void processCommand(const String& cmdLine) {
                   flags.criticalCh1, flags.criticalCh2, flags.criticalCh3);
     Serial.printf("  Warning:  CH1=%d  CH2=%d  CH3=%d\n",
                   flags.warningCh1, flags.warningCh2, flags.warningCh3);
-    Serial.printf("  Summation=%d  PowerValid=%d  TimingCtl=%d  "
-                  "TimingCtlFault=%d  ConvReady=%d\n",
+    Serial.printf("  Summation=%d  PowerValid=%d  TimingControl=%d  "
+                  "TimingControlFault=%d  ConversionReady=%d\n",
                   flags.summation, flags.powerValid, flags.timingControl,
                   flags.timingControlFault, flags.conversionReady);
   } else if (cmd == "alertsnap" || cmd == "alertsnap take") {

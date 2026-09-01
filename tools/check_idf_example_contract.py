@@ -185,8 +185,22 @@ def main() -> int:
         ROOT / "examples" / "esp_idf" / "basic" / "components" /
         "INA3221" / "CMakeLists.txt"
     ).read_text(encoding="utf-8", errors="replace")
+    require_token(
+        shim_cmake,
+        'set(INA3221_REPOSITORY_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../..")',
+        "fixed-name INA3221 component shim root depth",
+    )
     for token in ("src/INA3221.cpp", "include"):
         require_token(shim_cmake, token, "fixed-name INA3221 component shim")
+
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    if '$PWD:/INA3221' in workflow or "-w /INA3221" in workflow:
+        fail("ESP-IDF CI must exercise a checkout path not named INA3221")
+    if (workflow.count('$PWD:/component-source') != 4 or
+            workflow.count("-w /component-source") != 4):
+        fail("Every ESP-IDF CI container must use the renamed checkout path")
 
     transport = (
         (ROOT / "examples" / "esp_idf" / "basic" / "main" / "Ina3221IdfI2cTransport.cpp")
@@ -218,6 +232,15 @@ def main() -> int:
         require_token(cli, token, "Arduino owner-safe triggered example")
     if CLI_SOURCE_INCLUDE in idf_main:
         fail("ESP-IDF main must not include Arduino CLI source")
+    for source_name, source in (("Arduino", cli), ("native IDF", idf_main)):
+        for stale_label in (" TC=%d", "TimingCtl"):
+            if stale_label in source:
+                fail(f"{source_name} CLI uses stale timing-control label '{stale_label}'")
+        for label in ("TCF=%d", "TC_FAULT=%d", "TimingControl=%d",
+                      "TimingControlFault=%d",
+                      "TC_FAULT is the inverted TCF level"):
+            if label not in source:
+                fail(f"{source_name} CLI timing-control label '{label}' is missing")
     for command in MANDATORY_COMMANDS:
         if f'printHelpItem("{command}' not in cli:
             fail(f"Arduino CLI missing help item '{command}'")

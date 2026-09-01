@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicit `timingControlFault` condition alongside the raw TCF level.
 - Added an example-local fixed-name ESP-IDF component shim so the native
   example builds independently of the repository checkout directory name.
+- Added per-channel `CurrentDirection` to the legacy `Config` compatibility
+  path and kept it synchronized with `DeviceProfile`.
 
 ### Fixed
 
@@ -67,6 +69,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including finite values outside the fixed-unit range, and made the timing
   guard lex comments, ordinary literals, and raw strings with an adversarial
   self-test instead of relying on substitution order.
+- Preserved triggered-conversion readiness when Mask/Enable setter verification
+  consumes CVRF, while retaining the existing alert-event evidence.
+- Made the core timing checker distinguish C++ digit separators from character
+  literal openers and pinned both separated numeric forms in its self-test.
+- Applied fixed-Wire transfer-budget admission to every Arduino owner poll
+  path, including the sampler used by `stress_owner`.
+- Strengthened CLI and ESP-IDF static contracts for the Wire error category,
+  component-shim depth, renamed CI checkout path, and timing-control labels.
+- Standardized both CLIs on `TCF` for the raw register field and
+  `TimingControl` / `TimingControlFault` for decoded state, with the inverted
+  `TC_FAULT` diagnostic made explicit.
 
 ### Changed
 
