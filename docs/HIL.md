@@ -57,7 +57,7 @@ Replace `COM26` and the external artifact paths as needed. Reports and raw
 transcripts are run artifacts, so keep them outside this repository. DTR and
 RTS remain deasserted unless explicitly requested.
 
-The default suite currently contains 379 bounded steps; `--sample-benchmark`
+The default suite currently contains 404 bounded steps; `--sample-benchmark`
 adds three more. Every ordinary step is enclosed by a sequence-specific
 `HIL_BEGIN`/`HIL_END` frame, so an asynchronous prompt cannot be mistaken for
 command completion. It covers:
@@ -66,9 +66,12 @@ command completion. It covers:
   inputs for `0x40`-`0x43`, runtime selection/init/end,
   10/100/400 kHz switching and input-bound validation, aliases, cache certainty, and
   health;
+- verified setters followed by measurement without recovery, exact two-callback
+  Configuration and three-callback Mask/Enable setters, rejected unselected
+  shunt-sum reads, and triggered blocking reads at AVG_1 and AVG_4;
 - every cooperative job kind, symbolic progress/deadlines, explicit zero/one
-  transfer budgets, automatic servicing, retained results/samples/alerts, and
-  bus-silent cancellation;
+  transfer budgets plus a Wire-safe requested budget of 255, automatic servicing,
+  retained results/samples/alerts, and bus-silent owner and legacy cancellation;
 - all eight public operating modes, including the alternate power-down
   encoding, and conversion-ready polling;
 - all eight averaging, bus-conversion-time, and shunt-conversion-time values,
@@ -98,6 +101,10 @@ fixture.
 
 The maintained ledger records only reviewed summaries. Raw generated artifacts
 remain external.
+
+The 2026-09-05 audit verification extended the suite and passed its host parser
+checks. The entries below predate these changes; they do not constitute hardware
+evidence for the audit fixes or the expanded 404-step suite.
 
 | Date | Target and port | Stack | Result | Evidence |
 |---|---|---|---|---|

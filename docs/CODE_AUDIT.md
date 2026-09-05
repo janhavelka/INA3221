@@ -1,18 +1,24 @@
 # INA3221 code audit — findings, resolutions, and verification
 
+> Independently reviewed on 2026-09-05 from `504a8b8`. The historical closure
+> claims below were mostly correct, but further F1/F2/L8 defects and a missing
+> Mask/Enable pre-read were found and fixed. See
+> [the independent verification report](CODE_AUDIT_VERIFICATION.md) for every
+> finding's disposition, the additional changes, and current validation limits.
+
 | | |
 |---|---|
 | Audited | 2026-08-27, library `3.1.0` at `9c18102` (the `v3.1.0` tag) |
 | Datasheet reference | TI SBOS576C (May 2012, revised September 2025), [`INA3221_datasheet.pdf`](INA3221_datasheet.pdf) |
 | Implemented in | `8dff5f9`, `a41e791`, `1eb94c7` |
 | Re-verified | 2026-09-04 against `1eb94c7` |
-| Result | 22 audit findings + 3 follow-up defects — all implemented; each re-verified against the baseline claim and the current behaviour |
+| Prior result | 23 audit findings + 3 follow-up defects — reported implemented at `1eb94c7`; independent follow-up above supersedes that closure claim |
 
 ## Purpose and how to read this
 
-This is a **verification checklist, not a work list**. Every finding below is
-already implemented. An independent reviewer should use it to confirm the
-implementation is correct, not to re-derive the defect.
+This is the historical verification checklist for the earlier fix passes.
+Its implementation claims were independently checked rather than assumed;
+the linked follow-up report records corrections and remaining release tasks.
 
 Each entry gives:
 
@@ -163,8 +169,9 @@ No test asserted `CONVERSION_BUSY`, so nothing depended on the behaviour.
 
 **Resolution.** Rebind and the lifecycle/recovery jobs (`INITIALIZE`,
 `APPLY_PROFILE`, `RECONCILE`, `POWER_DOWN`) discard stale legacy conversion
-bookkeeping bus-silently, because each rewrites the Configuration register
-anyway. Sample jobs still reject mixed ownership, which is the case where
+bookkeeping bus-silently while taking over Configuration reconciliation
+(already-matching registers can skip writes). Sample jobs still reject mixed
+ownership, which is the case where
 silently proceeding would produce a sample of unclear provenance. A new
 bus-silent `cancelConversion()` gives an explicit escape, exposed as `cancel` in
 both CLIs.
@@ -246,8 +253,9 @@ consumes.
 `static_assert` on `SampleBatch`); both CLIs print `TCF`, `TC_FAULT`,
 `TimingControl` and `TimingControlFault`, and both static contract checkers pin
 those labels. Note the second-order consequence now documented in the README:
-because `startInitialize()` writes the Configuration register, this library
-disables the device's timing-control function on every bring-up.
+a Configuration write before the timing-control sequence completes disables
+that function until reset or a power cycle. Initialization can skip an already
+matching Configuration value, so this is not unconditional on every bring-up.
 
 ### H3 — Transfer outcomes were classified by status code, not by callback invocation
 
@@ -654,12 +662,13 @@ table. The `AlertProfile`/`DeviceProfile` defaults against the POR values
 
 - The triggered-sample deadline rejection happens on the first `pollJob()`, not
   at `startTriggeredSample()` — still bus-silent, with `transfers == 0`.
-- Profile jobs write the Configuration register *before* the alert limits. The
-  ordering is deliberate and pinned by `buildExpectedProfile()` /
-  `queueProfileSequence()`, and it cannot create an exposure the silicon does
-  not already have: POR `CONFIG` is `0x7127` (all channels enabled, continuous
-  shunt+bus) while every crit/warn limit is `0x7FF8`, positive full scale,
-  "effectively disabling the alert".
+- Profile jobs reconcile the Configuration register *before* the alert limits.
+  The ordering is deliberate and pinned by `buildExpectedProfile()` /
+  `queueProfileSequence()`. POR defaults explain initial bring-up, but do not
+  prove glitch-free reconfiguration of an already configured device: the new
+  measurement setup can temporarily coexist with old alert limits. Profile
+  application is a sequence of observable effects, not an atomic hardware
+  transaction; owners must account for intermediate alerts and partial results.
 - `check_cli_contract.py`'s word-boundary command check is weak alone, but
   `check_idf_example_contract.py` runs in the same CI job, reads the same
   Arduino `main.cpp`, and requires a real dispatch pattern for a strict superset

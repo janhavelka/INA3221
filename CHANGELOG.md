@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-All entries below resolve findings from the 2026-08-27 code audit of `3.1.0`.
+All entries below resolve findings from the 2026-08-27 code audit of `3.1.0`
+and its independent follow-up reviews.
 
 ### Added
 
@@ -24,6 +25,21 @@ All entries below resolve findings from the 2026-08-27 code audit of `3.1.0`.
 
 ### Fixed
 
+- Independent verification closed further Mask/Enable gaps: raw diagnostic
+  reads now hand observed CVRF to legacy conversion state through the shared
+  consuming-read helper. Summation-channel and alert-latch setters now consume
+  and retain old flags before writing, as the datasheet requires; a failed
+  pre-read prevents the write. These two setters use three bounded callbacks;
+  Configuration and alert-limit setters still use two.
+- Staged sample snapshots now retain observed conversion readiness during and
+  after continuous or triggered reads, including a later channel-read failure.
+  CVRF fault rechecks no longer move the recorded conversion start time.
+- The timing guard recognizes prefixed C++ character literals (`L`, `u`, `U`,
+  `u8`) so their closing quotes cannot hide a subsequent forbidden timing call.
+- Updated the HIL suite for triggered blocking reads, legacy cancellation,
+  verified-setter transfer counts, Wire-safe maximum poll budgets, timing-control
+  diagnostics, and the shunt-sum selection precondition. The previous suite
+  still expected successful sum reads with no summation channel selected.
 - `readBlocking()` bounded its poll loop by iteration count rather than elapsed
   time, so a triggered read returned `CANCELLED` on any host fast enough to
   exhaust the budget before the conversion completed. It now runs against the
@@ -38,8 +54,8 @@ All entries below resolve findings from the 2026-08-27 code audit of `3.1.0`.
   retain honest `DIRTY`/`UNKNOWN` certainty.
 - An outstanding legacy conversion whose CVRF never arrived permanently rejected
   every owner job, `bind()` and `recover()`. Rebind and lifecycle/recovery jobs
-  now abandon that stale bookkeeping bus-silently because they rewrite
-  Configuration; sample jobs still reject mixed ownership.
+  now abandon that stale bookkeeping bus-silently while taking over lifecycle
+  and Configuration reconciliation; sample jobs still reject mixed ownership.
 - The legacy float path ignored `ShuntCalibration::direction`, so `readCurrent()`
   and `SampleBatch` reported opposite signs on the same channel. Current, power
   and combined-channel reads now apply the profile direction without losing

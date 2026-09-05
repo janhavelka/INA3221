@@ -936,6 +936,7 @@ Status INA3221::_readMaskEnableWithTimeout(uint16_t& value,
   if (!st.ok()) return st;
   value = static_cast<uint16_t>((static_cast<uint16_t>(rx[0]) << 8U) | rx[1]);
   _retainMaskEnable(value, consumed);
+  _handoffConversionReady(value);
   return Status::Ok();
 }
 
@@ -1512,7 +1513,9 @@ Status INA3221::_pollSampleOperation(const PollContext& context,
         _finishJobFailure(st);
         return st;
       }
-      _jobConversionStartMs = context.nowMs;
+      if (!_sampleWork.alertSnapshotValid) {
+        _jobConversionStartMs = context.nowMs;
+      }
       _jobReadyAtMs = context.nowMs + _jobWaitDurationMs;
       const uint64_t deadline = _effectiveDeadline(context);
       if (deadline != 0U && _jobReadyAtMs >= deadline) {
@@ -2162,6 +2165,8 @@ Status INA3221::pollSingleShot(uint32_t nowMs, uint8_t maxInstructions) {
   _pollInstructionsTotal = progress.totalTransfers;
   _pollNextChannel = _jobChannelIndex;
   _pollConversionStartMs = static_cast<uint32_t>(_jobConversionStartMs);
+  _pollObservedReady = _sampleWork.alertSnapshotValid &&
+                       _sampleWork.alerts.conversionReady;
   if (progress.stage == JobStage::WAIT_CONVERSION) _pollJobStage = PollJobStage::WAIT_CONVERSION;
   else if (progress.stage == JobStage::READ_ALERTS) _pollJobStage = PollJobStage::READ_READY;
   else if (progress.stage == JobStage::READ_CHANNELS) _pollJobStage = PollJobStage::READ_CHANNELS;
@@ -2172,7 +2177,6 @@ Status INA3221::pollSingleShot(uint32_t nowMs, uint8_t maxInstructions) {
     (void)takeJobResult(result);
     if (result.sampleValid) {
       for (uint8_t i = 0; i < 3U; ++i) _pollChannels[i] = completedRaw[i];
-      _pollObservedReady = result.sample.alerts.conversionReady;
       _pollJobStage = PollJobStage::COMPLETE;
     }
     return result.status;
@@ -2218,6 +2222,8 @@ Status INA3221::pollContinuousRead(uint32_t nowMs, uint8_t maxInstructions) {
   _pollInstructionsLast = progress.lastPollTransfers;
   _pollInstructionsTotal = progress.totalTransfers;
   _pollNextChannel = _jobChannelIndex;
+  _pollObservedReady = _sampleWork.alertSnapshotValid &&
+                       _sampleWork.alerts.conversionReady;
   _pollJobStage = progress.stage == JobStage::READ_ALERTS
                       ? PollJobStage::READ_READY
                       : PollJobStage::READ_CHANNELS;
@@ -2794,7 +2800,6 @@ Status INA3221::readAlertFlags(AlertFlags& flags) {
   }
 
   _decodeAlertFlags(regVal, flags);
-  _handoffConversionReady(regVal);
 
   return Status::Ok();
 }
@@ -3126,6 +3131,13 @@ Status INA3221::_writeManagedRegisterVerified(uint8_t reg, uint16_t value,
   if (writeConfirmed != nullptr) *writeConfirmed = false;
   Status available = _requireNoOwnerJob();
   if (!available.ok()) return available;
+  if (reg == cmd::REG_MASK_ENABLE) {
+    // Clear and retain old flags before changing warning settings, as required
+    // by datasheet section 7.6.2.16. A failed observation must prevent the write.
+    uint16_t observed = 0;
+    const Status st = _readRegister16Tracked(reg, observed);
+    if (!st.ok()) return st;
+  }
   const bool measurement = _registerIsMeasurementConfig(reg);
   const AppliedConfigState priorState =
       measurement ? _measurementConfigState : _alertConfigState;
@@ -3141,7 +3153,6 @@ Status INA3221::_writeManagedRegisterVerified(uint8_t reg, uint16_t value,
   uint16_t actual = 0;
   st = _readRegister16Tracked(reg, actual);
   if (!st.ok()) return st;
-  if (reg == cmd::REG_MASK_ENABLE) _handoffConversionReady(actual);
   if (!_registerMatches(reg, actual, value)) {
     return Status::Error(Err::PROFILE_MISMATCH,
                          "Managed register verification mismatch", reg);
@@ -3149,9 +3160,7 @@ Status INA3221::_writeManagedRegisterVerified(uint8_t reg, uint16_t value,
   if (measurement) {
     _measurementConfigState = AppliedConfigState::APPLIED;
   } else {
-    _alertConfigState = priorState == AppliedConfigState::APPLIED
-                            ? AppliedConfigState::APPLIED
-                            : priorState;
+    _alertConfigState = priorState;
   }
   if (_measurementConfigState == AppliedConfigState::APPLIED &&
       _alertConfigState == AppliedConfigState::APPLIED) {
@@ -3325,13 +3334,7 @@ Status INA3221::_readConversionReadyAt(uint32_t nowMs, bool& ready) {
     return st;
   }
 
-  if ((maskEn & cmd::MASK_CVRF) != 0U) {
-    ready = true;
-    if (isTriggeredMode(activeMode)) {
-      _conversionStarted = false;
-      _conversionReady = true;
-    }
-  }
+  ready = (maskEn & cmd::MASK_CVRF) != 0U;
 
   return Status::Ok();
 }

@@ -1312,6 +1312,85 @@ void test_legacy_facade_rejected_starts_preserve_and_cannot_cross_drive_jobs() {
   }
 }
 
+void test_legacy_sample_snapshot_retains_cvrf_before_and_after_channel_reads() {
+  for (uint8_t scenario = 0; scenario < 4U; ++scenario) {
+    const bool triggered = scenario >= 2U;
+    const bool failChannelRead = (scenario & 1U) != 0U;
+    const Mode mode = triggered ? Mode::SHUNT_BUS_TRIG : Mode::SHUNT_BUS_CONT;
+    const DeviceProfile profile = makeProfile(0x42, CHANNEL_1, mode);
+    ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+    INA3221::INA3221 device;
+    TEST_ASSERT_TRUE(initializeApplied(device, bus, profile));
+    bus.resetHarness();
+    uint32_t nowMs = 1000U;
+    if (triggered) {
+      bus.expectWrite(cmd::REG_CONFIG, configValue(profile, mode));
+      TEST_ASSERT_TRUE(device.startSingleShot().inProgress());
+      TEST_ASSERT_TRUE(device.pollSingleShot(nowMs, 1U).inProgress());
+      TEST_ASSERT_TRUE(device.pollSingleShot(++nowMs, 0U).inProgress());
+      JobProgress progress{};
+      TEST_ASSERT_TRUE(device.getJobProgress(progress).ok());
+      nowMs = static_cast<uint32_t>(progress.readyAtMs);
+    } else {
+      TEST_ASSERT_TRUE(device.startContinuousRead(true).inProgress());
+    }
+    PollJobSnapshot snapshot{};
+    TEST_ASSERT_TRUE(device.getPollJobSnapshot(snapshot).ok());
+    TEST_ASSERT_FALSE(snapshot.conversionReady);
+
+    bus.setRegister(cmd::REG_MASK_ENABLE, cmd::MASK_CVRF);
+    bus.expectRead(cmd::REG_MASK_ENABLE);
+    TEST_ASSERT_TRUE(device.pollJob(nowMs, 1U).inProgress());
+    TEST_ASSERT_TRUE(device.getPollJobSnapshot(snapshot).ok());
+    TEST_ASSERT_TRUE(snapshot.active);
+    TEST_ASSERT_TRUE(snapshot.conversionReady);
+    TEST_ASSERT_BITS_LOW(cmd::MASK_CVRF,
+                         bus.registerValue(cmd::REG_MASK_ENABLE));
+
+    bus.expectRead(cmd::REG_CH1_SHUNT,
+                   failChannelRead ? Status::Error(Err::I2C_BUS, "channel read failed")
+                                   : Status::Ok());
+    if (!failChannelRead) bus.expectRead(cmd::REG_CH1_BUS);
+    const Status result = device.pollJob(nowMs, 2U);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(failChannelRead ? Err::I2C_BUS : Err::OK),
+        static_cast<uint8_t>(result.code));
+    TEST_ASSERT_TRUE(device.getPollJobSnapshot(snapshot).ok());
+    TEST_ASSERT_FALSE(snapshot.active);
+    TEST_ASSERT_EQUAL(!failChannelRead, snapshot.complete);
+    TEST_ASSERT_TRUE(snapshot.conversionReady);
+    TEST_ASSERT_TRUE(bus.scriptConsumed());
+  }
+}
+
+void test_legacy_single_shot_snapshot_keeps_initial_start_during_cvrf_recheck() {
+  const DeviceProfile profile = makeProfile(0x42, CHANNEL_1, Mode::SHUNT_BUS_TRIG);
+  ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+  INA3221::INA3221 device;
+  TEST_ASSERT_TRUE(initializeApplied(device, bus, profile));
+  bus.resetHarness();
+  bus.expectWrite(cmd::REG_CONFIG, configValue(profile, profile.mode));
+  bus.expectRead(cmd::REG_MASK_ENABLE);
+  bus.setRegister(cmd::REG_MASK_ENABLE, 0U);
+  TEST_ASSERT_TRUE(device.startSingleShot().inProgress());
+  TEST_ASSERT_TRUE(device.pollSingleShot(1000U, 1U).inProgress());
+  TEST_ASSERT_TRUE(device.pollSingleShot(1001U, 0U).inProgress());
+  JobProgress progress{};
+  PollJobSnapshot snapshot{};
+  TEST_ASSERT_TRUE(device.getJobProgress(progress).ok());
+  TEST_ASSERT_TRUE(device.getPollJobSnapshot(snapshot).ok());
+  TEST_ASSERT_EQUAL_UINT32(1001U, snapshot.conversionStartMs);
+  const uint32_t readyAtMs = static_cast<uint32_t>(progress.readyAtMs);
+  TEST_ASSERT_TRUE(device.pollSingleShot(readyAtMs, 1U).inProgress());
+  const size_t callsBeforeRecheck = bus.callCount();
+  TEST_ASSERT_TRUE(device.pollSingleShot(readyAtMs + 1U, 0U).inProgress());
+  TEST_ASSERT_TRUE(device.getPollJobSnapshot(snapshot).ok());
+  TEST_ASSERT_EQUAL_UINT32(1001U, snapshot.conversionStartMs);
+  TEST_ASSERT_FALSE(snapshot.conversionReady);
+  TEST_ASSERT_EQUAL_UINT32(callsBeforeRecheck, bus.callCount());
+  TEST_ASSERT_TRUE(bus.scriptConsumed());
+}
+
 void test_raw_reset_updates_both_profile_certainty_families() {
   const DeviceProfile profile = makeProfile();
   {
@@ -1818,6 +1897,8 @@ void runOwnerOperationTests() {
   RUN_TEST(test_owner_power_down_mismatch_retains_full_register_evidence);
   RUN_TEST(test_owner_active_job_excludes_legacy_hardware_io_without_callbacks);
   RUN_TEST(test_legacy_facade_rejected_starts_preserve_and_cannot_cross_drive_jobs);
+  RUN_TEST(test_legacy_sample_snapshot_retains_cvrf_before_and_after_channel_reads);
+  RUN_TEST(test_legacy_single_shot_snapshot_keeps_initial_start_during_cvrf_recheck);
   RUN_TEST(test_raw_reset_updates_both_profile_certainty_families);
   RUN_TEST(test_owner_health_diagnostics_never_suppress_owner_requested_io);
   RUN_TEST(test_owner_alert_events_are_retained_and_taken_exactly_by_owner);

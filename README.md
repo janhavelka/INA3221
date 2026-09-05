@@ -412,7 +412,8 @@ reset can leave different from the retained `deviceProfile()`.
 | `begin()` / `recover()` | Up to 35 synchronous callbacks in one call |
 | `probe()` | Two synchronous raw identity reads; no health update |
 | Direct raw/scaled read | One callback in continuous mode; triggered reads also consume Mask/Enable readiness, while `readChannel()` and `readPower()` use multiple data reads |
-| Typed hardware setter | Two callbacks: write plus verification readback |
+| Typed Configuration or alert-limit setter | Two callbacks: write plus verification readback |
+| Summation-channel or alert-latch setter | Three callbacks: consume prior Mask/Enable flags, write, then verify |
 | `powerDown()` | Up to three callbacks for read/write/verify |
 | `readBlocking()` | Budget-one internal polling plus bounded cooperative polls until timeout |
 | Legacy staged APIs | Caller-supplied instruction budget and a derived finite deadline |
@@ -421,10 +422,16 @@ Each callback still has its configured timeout, so a multi-transfer synchronous
 call can block for the sum of callback bounds plus local work. Compatibility
 calls reject an active production job. Production sample jobs reject a legacy
 conversion in progress; lifecycle/recovery jobs abandon that legacy bookkeeping
-bus-silently because they rewrite Configuration. The `cancelConversion()`
+bus-silently as they take over Configuration reconciliation. Already-matching
+registers can skip writes. The `cancelConversion()`
 compatibility method provides an explicit bus-silent escape. Diagnostic writes
 can make profile certainty `DIRTY` or `UNKNOWN`; reconcile before returning to
 the production engine.
+
+The two Mask/Enable setters consume and retain flags before changing settings,
+as required by datasheet section 7.6.2.16, and again during verification. A failed
+pre-read prevents the write. Every successful Mask/Enable read, including raw
+diagnostic reads, hands observed CVRF to an outstanding legacy conversion.
 
 The staged compatibility methods extend their 32-bit monotonic time input
 through one wrap for the active job; callers must poll at least once per 32-bit

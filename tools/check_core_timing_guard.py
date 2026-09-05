@@ -20,6 +20,7 @@ INCLUDE_ARDUINO_RE = re.compile(r'^\s*#\s*include\s*[<\"]Arduino\.h[>\"]', re.MU
 RAW_STRING_START_RE = re.compile(
     r'(?:u8|u|U|L)?R"(?P<delimiter>[^ ()\\\t\r\n]{0,16})\('
 )
+QUOTED_LITERAL_START_RE = re.compile(r'''(?:u8|u|U|L)?(?P<quote>["'])''')
 
 
 def _blank_non_code(text: str) -> str:
@@ -68,8 +69,12 @@ def strip_non_code(text: str) -> str:
             cursor = end
             continue
 
-        if text[cursor] == '"' or (text[cursor] == "'" and at_token_start):
-            end = _quoted_literal_end(text, cursor, text[cursor])
+        literal = QUOTED_LITERAL_START_RE.match(text, cursor)
+        if literal is not None and (
+            at_token_start or literal.group("quote") == '"'
+        ):
+            end = _quoted_literal_end(text, literal.end() - 1,
+                                      literal.group("quote"))
             output.append(_blank_non_code(text[cursor:end]))
             cursor = end
             continue
@@ -107,6 +112,16 @@ def verify_strip_non_code() -> None:
     )
     if len(FORBIDDEN_CALLS["millis"].findall(balanced)) != 1:
         raise RuntimeError("strip_non_code balanced digit-separator self-test failed")
+
+    for prefix in ("", "L", "u", "U", "u8"):
+        literals = strip_non_code(
+            f"auto open = {prefix}'('; millis(); auto close = {prefix}')';\n"
+            f'auto text = {prefix}"/* micros() */";\n'
+        )
+        if len(FORBIDDEN_CALLS["millis"].findall(literals)) != 1:
+            raise RuntimeError(f"strip_non_code {prefix!r} character-literal self-test failed")
+        if FORBIDDEN_CALLS["micros"].search(literals) is not None:
+            raise RuntimeError(f"strip_non_code {prefix!r} string-literal self-test failed")
 
 
 def collect_sources() -> list[pathlib.Path]:

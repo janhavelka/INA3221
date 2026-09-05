@@ -854,8 +854,10 @@ public:
   /// @param ch1 Include channel 1.
   /// @param ch2 Include channel 2.
   /// @param ch3 Include channel 3.
-  /// @return Status from register write and readback verification.
+  /// @return Status from pre-read, register write, and readback verification.
   /// @note Reading Mask/Enable clears latched alert and conversion-ready flags.
+  ///       Both the pre-read and verification retain events and observed CVRF.
+  ///       A failed pre-read prevents the write; success uses three callbacks.
   /// @note The write composes the complete desired Mask/Enable writable bits
   ///       from the retained profile, so it also rewrites the other family's
   ///       SCC/WEN/CEN bits. A verified write advances profileGeneration().
@@ -864,8 +866,10 @@ public:
   /// @brief Configure warning and critical alert latch behavior.
   /// @param warningLatch true latches warning alerts.
   /// @param criticalLatch true latches critical alerts.
-  /// @return Status from register write and readback verification.
+  /// @return Status from pre-read, register write, and readback verification.
   /// @note Reading Mask/Enable clears latched alert and conversion-ready flags.
+  ///       Both the pre-read and verification retain events and observed CVRF.
+  ///       A failed pre-read prevents the write; success uses three callbacks.
   /// @note The write composes the complete desired Mask/Enable writable bits
   ///       from the retained profile, so it also rewrites the other family's
   ///       SCC/WEN/CEN bits. A verified write advances profileGeneration().

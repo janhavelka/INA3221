@@ -1622,7 +1622,10 @@ void test_typed_mask_enable_setters_preserve_observed_conversion_ready() {
   TEST_ASSERT_TRUE(dev.startConversion().inProgress());
   bus.nowMs += 20U;
   writeFakeRegister(bus, cmd::REG_MASK_ENABLE, cmd::MASK_CVRF);
+  const uint32_t callsBeforeSummation = bus.readCalls + bus.writeCalls;
   TEST_ASSERT_TRUE(dev.setSummationChannels(true, false, false).ok());
+  TEST_ASSERT_EQUAL_UINT32(callsBeforeSummation + 3U,
+                          bus.readCalls + bus.writeCalls);
 
   const uint32_t maskReadsAfterSummation = bus.maskReadCalls;
   bool ready = false;
@@ -1637,13 +1640,103 @@ void test_typed_mask_enable_setters_preserve_observed_conversion_ready() {
   bus.nowMs += 20U;
   writeFakeRegister(bus, cmd::REG_MASK_ENABLE,
                     cmd::MASK_SCC1 | cmd::MASK_CVRF);
+  const uint32_t callsBeforeLatch = bus.readCalls + bus.writeCalls;
   TEST_ASSERT_TRUE(dev.setAlertLatchEnable(true, false).ok());
+  TEST_ASSERT_EQUAL_UINT32(callsBeforeLatch + 3U,
+                          bus.readCalls + bus.writeCalls);
 
   const uint32_t maskReadsAfterLatch = bus.maskReadCalls;
   ready = false;
   TEST_ASSERT_TRUE(dev.readConversionReady(ready).ok());
   TEST_ASSERT_TRUE(ready);
   TEST_ASSERT_EQUAL_UINT32(maskReadsAfterLatch, bus.maskReadCalls);
+}
+
+void test_raw_mask_enable_read_preserves_observed_conversion_ready() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  bus.clearMaskEnableReadClearFlags = true;
+
+  TEST_ASSERT_TRUE(dev.startConversion().inProgress());
+  bus.nowMs += 20U;
+  const uint16_t observed = cmd::MASK_CVRF | cmd::MASK_CF1 | cmd::MASK_TCF;
+  writeFakeRegister(bus, cmd::REG_MASK_ENABLE, observed);
+  uint16_t raw = 0;
+  TEST_ASSERT_TRUE(dev.readRegister16(cmd::REG_MASK_ENABLE, raw).ok());
+  TEST_ASSERT_EQUAL_HEX16(observed, raw);
+  TEST_ASSERT_EQUAL_HEX16(cmd::MASK_TCF,
+                          readFakeRegister(bus, cmd::REG_MASK_ENABLE));
+
+  const uint32_t maskReadsAfterObservation = bus.maskReadCalls;
+  bool ready = false;
+  TEST_ASSERT_TRUE(dev.readConversionReady(ready).ok());
+  TEST_ASSERT_TRUE(ready);
+  float shuntMilliVolts = 0.0f;
+  TEST_ASSERT_TRUE(dev.readShuntVoltage(Channel::CH1, shuntMilliVolts).ok());
+  TEST_ASSERT_EQUAL_UINT32(maskReadsAfterObservation, bus.maskReadCalls);
+
+  AlertSnapshot retained{};
+  TEST_ASSERT_TRUE(dev.takeAlertEvents(retained).ok());
+  TEST_ASSERT_BITS_HIGH(cmd::MASK_CVRF | cmd::MASK_CF1, retained.events);
+}
+
+void test_mask_enable_setter_retains_prior_events_before_write_failure() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  Config cfg = makeConfig(bus);
+  cfg.mode = Mode::SHUNT_BUS_TRIG;
+  TEST_ASSERT_TRUE(dev.begin(cfg).ok());
+  TEST_ASSERT_TRUE(dev.startConversion().inProgress());
+  bus.nowMs += 20U;
+  bus.clearMaskEnableReadClearFlags = true;
+  writeFakeRegister(bus, cmd::REG_MASK_ENABLE,
+                    cmd::MASK_CVRF | cmd::MASK_CF1 | cmd::MASK_TCF);
+  bus.writeStatus = Status::Error(Err::I2C_NACK_ADDR, "address NACK");
+
+  const uint32_t readsBefore = bus.readCalls;
+  const uint32_t writesBefore = bus.writeCalls;
+  const uint32_t generationBefore = dev.profileGeneration();
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(Err::I2C_NACK_ADDR),
+      static_cast<uint8_t>(dev.setSummationChannels(true, false, false).code));
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 1U, bus.readCalls);
+  TEST_ASSERT_EQUAL_UINT32(writesBefore + 1U, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT8(0U, dev.deviceProfile().alerts.summationChannels);
+  TEST_ASSERT_EQUAL_UINT32(generationBefore, dev.profileGeneration());
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::APPLIED),
+                          static_cast<uint8_t>(dev.alertConfigState()));
+
+  bool ready = false;
+  TEST_ASSERT_TRUE(dev.readConversionReady(ready).ok());
+  TEST_ASSERT_TRUE(ready);
+  TEST_ASSERT_EQUAL_UINT32(readsBefore + 1U, bus.readCalls);
+  AlertSnapshot retained{};
+  TEST_ASSERT_TRUE(dev.takeAlertEvents(retained).ok());
+  TEST_ASSERT_BITS_HIGH(cmd::MASK_CVRF | cmd::MASK_CF1, retained.events);
+}
+
+void test_mask_enable_setter_failed_pre_read_prevents_write() {
+  FakeBus bus;
+  INA3221::INA3221 dev;
+  TEST_ASSERT_TRUE(dev.begin(makeConfig(bus)).ok());
+  bus.readStatus = Status::Error(Err::I2C_TIMEOUT, "failed flag observation");
+  const uint32_t writesBefore = bus.writeCalls;
+  const uint32_t generationBefore = dev.profileGeneration();
+
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(Err::I2C_TIMEOUT),
+      static_cast<uint8_t>(dev.setAlertLatchEnable(true, false).code));
+  TEST_ASSERT_EQUAL_UINT32(writesBefore, bus.writeCalls);
+  TEST_ASSERT_EQUAL_UINT32(generationBefore, dev.profileGeneration());
+  TEST_ASSERT_FALSE(dev.deviceProfile().alerts.warningLatch);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AppliedConfigState::APPLIED),
+                          static_cast<uint8_t>(dev.alertConfigState()));
+  AlertSnapshot retained{};
+  TEST_ASSERT_TRUE(dev.peekAlertEvents(retained).ok());
+  TEST_ASSERT_TRUE(retained.evidenceUncertain);
 }
 
 void test_poll_apply_mask_enable_respects_budget_and_completes_profile_apply() {
@@ -2507,6 +2600,9 @@ int main() {
   RUN_TEST(test_set_shunt_resistance_rejects_nan);
   RUN_TEST(test_mask_enable_cache_survives_config_writes);
   RUN_TEST(test_typed_mask_enable_setters_preserve_observed_conversion_ready);
+  RUN_TEST(test_raw_mask_enable_read_preserves_observed_conversion_ready);
+  RUN_TEST(test_mask_enable_setter_retains_prior_events_before_write_failure);
+  RUN_TEST(test_mask_enable_setter_failed_pre_read_prevents_write);
   RUN_TEST(test_poll_apply_mask_enable_respects_budget_and_completes_profile_apply);
   RUN_TEST(test_failed_mask_enable_write_marks_hardware_config_dirty);
   RUN_TEST(test_raw_cached_register_write_and_reset_remain_dirty_until_recover);
