@@ -174,8 +174,14 @@ and missing verification transfers. No new firmware command was required.
 | Arduino ESP32-S3 and ESP32-S2 | Both PlatformIO environments built successfully |
 | Documentation / metadata | Doxygen warning-clean; generated-version and release-metadata consistency checks passed |
 | Packaging | `scripts/pio.cmd pkg pack` passed; tarball written outside the repository |
-| Native ESP-IDF compilation | No local IDF 6.x, Docker, or installed WSL; the existing CI job builds both targets from `/component-source` |
+| Native ESP-IDF compilation | CI passed both ESP32-S3 and ESP32-S2 with IDF 6.0.1 from `/component-source`; no local IDF 6.x, Docker, or installed WSL |
 | Physical HIL / electrical faults | Not run; no fixture was identified for this review |
+
+The complete [CI run 33986107170](https://github.com/janhavelka/INA3221/actions/runs/33986107170)
+passed for implementation commit `2ffa66afeb41108a319988c7e5e36dbe3890be4f`:
+native tests/strict warnings, both Arduino builds, package/documentation/contracts,
+and both native ESP-IDF builds. This report's CI-evidence update is a separate
+documentation-only commit; no implementation changed after that successful run.
 
 Windows build commands used the required `scripts/pio.cmd` and the existing
 PlatformIO Core 6.1.19. The inherited `PLATFORMIO_CORE_DIR=C:\pio` referred to a
