@@ -221,6 +221,7 @@ Transport callbacks (TransportConfig::i2cWrite, i2cWriteRead)
 
 - `_updateHealth()` called ONLY inside tracked transport wrappers.
 - State transitions guarded by `_initialized` (no DEGRADED/OFFLINE before `begin()` succeeds).
+- Counters, `lastError`, and timestamps DO update for tracked transfers made before `begin()` succeeds; only the `DriverState` transition is suppressed.
 - NOT called for config/param validation errors (INVALID_CONFIG, INVALID_PARAM).
 - NOT called for precondition errors (NOT_INITIALIZED).
 - `probe()` uses raw I2C and does NOT update health (diagnostic only).

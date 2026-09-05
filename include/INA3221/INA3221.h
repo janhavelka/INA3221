@@ -82,7 +82,9 @@ struct PollJobSnapshot {
   bool pollConversionReady = false; ///< True when readiness polling was requested
   bool conversionReady = false; ///< True after CVRF was observed for this job
   Mode sampleMode = Mode::SHUNT_BUS_TRIG; ///< Measurement mode used by the job
-  uint32_t conversionStartMs = 0; ///< Extended job start reduced to 32-bit milliseconds
+  uint32_t conversionStartMs = 0; ///< SINGLE_SHOT only: extended job start
+                                  ///< reduced to 32-bit milliseconds; zero for
+                                  ///< other compatibility job kinds
   uint8_t nextChannel = 0; ///< Zero-based index of the next channel to service
   uint8_t lastInstructions = 0; ///< Register transfers used by the previous poll
   uint16_t totalInstructions = 0; ///< Register transfers used by the whole job
@@ -135,7 +137,13 @@ struct AlertSnapshot {
   bool powerValid = false;        ///< Latest condition-level PVF value
   bool timingControl = false;     ///< Latest raw TCF level: true means TC high/no fault
   bool conversionReady = false;   ///< CVRF in the consuming read
-  bool evidenceUncertain = false; ///< Failed read may have cleared unknown events
+  bool evidenceUncertain = false; ///< A failed read that may have reached the
+                                  ///< device could have cleared unknown events.
+                                  ///< An address-phase NACK, DEVICE_NOT_FOUND,
+                                  ///< a callback-local INVALID_CONFIG or
+                                  ///< INVALID_PARAM rejection, and a
+                                  ///< driver-side abort before any callback do
+                                  ///< not set it.
   bool timingControlFault = false; ///< Latest derived TCF-low/TC-fault condition
 };
 
@@ -295,7 +303,9 @@ public:
   /// @param profile Complete desired volatile device state and calibration.
   /// @return OK after a bus-silent bind, or a validation/admission error.
   /// @note Performs no I2C. A successful call clears prior job results, samples,
-  /// retained alerts, and profile certainty by first performing unbind().
+  /// retained alerts, and profile certainty by first performing unbind(). An
+  /// outstanding legacy single-shot conversion is discarded bus-silently rather
+  /// than rejected.
   Status bind(const TransportConfig& transport, const DeviceProfile& profile);
 
   /// @brief Release the binding and discard active, pending, and cached state.
@@ -317,8 +327,9 @@ public:
   /// @return Verification state of alert-related managed registers.
   AppliedConfigState alertConfigState() const { return _alertConfigState; }
 
-  /// @return Generation counter incremented after a profile is fully verified
-  /// and after setShuntResistance() changes host-only calibration, so a cached
+  /// @return Generation counter incremented after a profile job is fully
+  /// verified, after any typed setter commits a verified register write, and
+  /// after setShuntResistance() changes host-only calibration, so a cached
   /// SampleBatch can always be matched against the calibration that produced it.
   uint32_t profileGeneration() const { return _profileGeneration; }
 
@@ -386,6 +397,9 @@ public:
   /// @return CANCELLED after publishing a terminal result, or NO_ACTIVE_JOB.
   /// @note Partial sample work is discarded; confirmed earlier writes remain
   /// represented by the result's hardware effect and configuration certainty.
+  /// A confirmed sample trigger reports HardwareEffect::PARTIAL but leaves
+  /// measurementConfigState() APPLIED, because the trigger rewrites the value
+  /// that was already verified. Only power-down degrades it to DIRTY.
   Status cancelJob();
 
   /// @brief Copy a cache-only progress snapshot.
@@ -540,12 +554,14 @@ public:
   /// @param ch Channel to read.
   /// @param mW Receives signed power in milliwatts.
   /// @return Status from validation and the two measurement reads.
+  /// @note Applies DeviceProfile::shunts[ch].direction to current and power.
   Status readPower(Channel ch, float& mW);
 
   /// @brief Read both raw quantities and calculate all legacy channel values.
   /// @param ch Channel to read.
   /// @param out Replaced with converted voltage, current, and power.
   /// @return Status from validation, readiness, and the two register reads.
+  /// @note Applies DeviceProfile::shunts[ch].direction to current and power.
   Status readChannel(Channel ch, ChannelMeasurement& out);
 
   /// @brief Read the raw shunt-voltage summation register.
@@ -553,7 +569,9 @@ public:
   /// @return Status from precondition, readiness, and register-read checks.
   /// @note Requires a shunt-measuring mode, at least one selected summation
   ///       channel, and verified alert configuration; invalid states are
-  ///       rejected before I2C.
+  ///       rejected before I2C. A summation selection retained under a
+  ///       bus-only or power-down profile stays valid so future configuration
+  ///       is not lost; only the read is rejected.
   Status readShuntSumRaw(int16_t& raw);
 
   /// @brief Read and convert the shunt-voltage summation register.
@@ -573,6 +591,8 @@ public:
   /// @brief Bus-silently abandon an outstanding legacy conversion.
   /// @return OK after clearing the legacy conversion state, or NO_ACTIVE_JOB
   ///         when no legacy conversion is outstanding.
+  /// @note A completed-but-unread conversion is not outstanding; owner-job
+  ///       admission clears that provenance instead.
   Status cancelConversion();
   /// Read conversion-ready state with Status propagation.
   /// @note This reads Mask/Enable and therefore clears CVRF and latched alert flags
@@ -664,7 +684,8 @@ public:
   ///         single-shot conversion; otherwise the write/readback status.
   Status setMode(Mode mode);
 
-  /// @return Cached legacy operating mode.
+  /// @return Latest observed legacy operating mode; this may differ from
+  /// deviceProfile() after a raw writeConfig() or software reset.
   Mode getMode() const { return _legacyConfigView.mode; }
 
   /// @brief Write a new averaging setting through the compatibility API.
@@ -672,7 +693,8 @@ public:
   /// @return Status from validation, Configuration write, and readback verification.
   Status setAveraging(Averaging avg);
 
-  /// @return Cached legacy averaging setting.
+  /// @return Latest observed legacy averaging setting; this may differ from
+  /// deviceProfile() after a raw writeConfig() or software reset.
   Averaging getAveraging() const { return _legacyConfigView.averaging; }
 
   /// Set bus-voltage conversion time.
@@ -680,14 +702,16 @@ public:
   /// @return Status from validation, Configuration write, and readback verification.
   Status setVBusConvTime(ConvTime ct);
   /// Get bus-voltage conversion time.
-  /// @return Cached bus-voltage conversion-time setting.
+  /// @return Latest observed legacy bus-voltage conversion-time setting; this may
+  /// differ from deviceProfile() after a raw writeConfig() or software reset.
   ConvTime getVBusConvTime() const { return _legacyConfigView.vBusCt; }
   /// Cross-library naming alias for setVBusConvTime().
   /// @param ct Desired conversion-time setting.
   /// @return Status from setVBusConvTime().
   Status setVbusConvTime(ConvTime ct) { return setVBusConvTime(ct); }
   /// Cross-library naming alias for getVBusConvTime().
-  /// @return Cached bus-voltage conversion-time setting.
+  /// @return Latest observed legacy bus-voltage conversion-time setting; this may
+  /// differ from deviceProfile() after a raw writeConfig() or software reset.
   ConvTime getVbusConvTime() const { return getVBusConvTime(); }
 
   /// Set shunt-voltage conversion time.
@@ -695,14 +719,16 @@ public:
   /// @return Status from validation, Configuration write, and readback verification.
   Status setVShuntConvTime(ConvTime ct);
   /// Get shunt-voltage conversion time.
-  /// @return Cached shunt-voltage conversion-time setting.
+  /// @return Latest observed legacy shunt-voltage conversion-time setting; this may
+  /// differ from deviceProfile() after a raw writeConfig() or software reset.
   ConvTime getVShuntConvTime() const { return _legacyConfigView.vShCt; }
   /// Cross-library naming alias for setVShuntConvTime().
   /// @param ct Desired conversion-time setting.
   /// @return Status from setVShuntConvTime().
   Status setVshuntConvTime(ConvTime ct) { return setVShuntConvTime(ct); }
   /// Cross-library naming alias for getVShuntConvTime().
-  /// @return Cached shunt-voltage conversion-time setting.
+  /// @return Latest observed legacy shunt-voltage conversion-time setting; this may
+  /// differ from deviceProfile() after a raw writeConfig() or software reset.
   ConvTime getVshuntConvTime() const { return getVShuntConvTime(); }
 
   /// @brief Enable or disable one channel through the compatibility API.
@@ -740,6 +766,9 @@ public:
   ///       conversion timing; a definitely non-reaching failure preserves it.
   /// @note The retained DeviceProfile is unchanged so recover()/reconcile can
   ///       restore it; managed configuration certainty becomes UNKNOWN.
+  /// @note A write with the reset bit set behaves like softReset() instead: a
+  ///       confirmed reset leaves both certainty families DIRTY, an ambiguous
+  ///       one UNKNOWN.
   Status writeConfig(uint16_t config);
 
   /// @brief Issue a software reset and invalidate configuration certainty.
@@ -747,7 +776,12 @@ public:
   /// @note A confirmed reset leaves both certainty families DIRTY (the device
   ///       is known to hold power-on defaults, not the desired profile); an
   ///       ambiguous write leaves them UNKNOWN. Reconcile before measuring.
-  ///       Host-retained alert evidence is not acknowledged or fabricated.
+  ///       Host-retained alert evidence is not acknowledged or fabricated:
+  ///       clearing the whole snapshot would silently acknowledge events the
+  ///       application has not taken. A confirmed reset clears the known
+  ///       power-on writable-bit cache; an ambiguous one preserves the last
+  ///       real observation. Retained condition levels (TCF, PVF, CVRF) are
+  ///       stale until the next Mask/Enable read.
   Status softReset();
 
   // === Alert Limits ===
@@ -822,6 +856,9 @@ public:
   /// @param ch3 Include channel 3.
   /// @return Status from register write and readback verification.
   /// @note Reading Mask/Enable clears latched alert and conversion-ready flags.
+  /// @note The write composes the complete desired Mask/Enable writable bits
+  ///       from the retained profile, so it also rewrites the other family's
+  ///       SCC/WEN/CEN bits. A verified write advances profileGeneration().
   Status setSummationChannels(bool ch1, bool ch2, bool ch3);
 
   /// @brief Configure warning and critical alert latch behavior.
@@ -829,6 +866,9 @@ public:
   /// @param criticalLatch true latches critical alerts.
   /// @return Status from register write and readback verification.
   /// @note Reading Mask/Enable clears latched alert and conversion-ready flags.
+  /// @note The write composes the complete desired Mask/Enable writable bits
+  ///       from the retained profile, so it also rewrites the other family's
+  ///       SCC/WEN/CEN bits. A verified write advances profileGeneration().
   Status setAlertLatchEnable(bool warningLatch, bool criticalLatch);
   /// @brief Schedule complete read/conditional-write/verify reconciliation
   /// after replacing the desired Mask/Enable writable bits.

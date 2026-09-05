@@ -7,101 +7,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+All entries below resolve findings from the 2026-08-27 code audit of `3.1.0`.
+
 ### Added
 
-- Added bus-silent `cancelConversion()` to release stale legacy single-shot
-  bookkeeping, exposed it as `cancel` in both diagnostic CLIs, and added the
-  explicit `timingControlFault` condition alongside the raw TCF level.
-- Added an example-local fixed-name ESP-IDF component shim so the native
-  example builds independently of the repository checkout directory name.
-- Added per-channel `CurrentDirection` to the legacy `Config` compatibility
-  path and kept it synchronized with `DeviceProfile`.
+- Added bus-silent `cancelConversion()`, which releases an outstanding legacy
+  single-shot conversion without I2C, and exposed it as `cancel` in both
+  diagnostic CLIs.
+- Added `AlertFlags::timingControlFault` and `AlertSnapshot::timingControlFault`,
+  the explicit TCF-low fault condition, alongside the existing raw TCF level.
+- Added per-channel `CurrentDirection` to the legacy `Config`, mapped onto
+  `DeviceProfile::shunts[i].direction` by `begin()` and reported back by
+  `getConfig()`.
+- Added an example-local fixed-name ESP-IDF component shim so the native example
+  builds independently of the repository checkout directory name.
 
 ### Fixed
 
+- `readBlocking()` bounded its poll loop by iteration count rather than elapsed
+  time, so a triggered read returned `CANCELLED` on any host fast enough to
+  exhaust the budget before the conversion completed. It now runs against the
+  absolute extended monotonic deadline with a stalled-clock guard that resets on
+  time or transfer progress, and publishes capture uptime in the caller's
+  absolute domain across the 32-bit clock wrap.
+- Typed Configuration and alert setters marked the register unverified after a
+  successful write, which left `measurementConfigState()` `DIRTY` and blocked
+  every direct measurement read until a full `recover()`. All typed setters now
+  share one write/readback verifier, commit staged profile state only after a
+  matching read, and leave verified state `APPLIED`; failed or mismatched writes
+  retain honest `DIRTY`/`UNKNOWN` certainty.
+- An outstanding legacy conversion whose CVRF never arrived permanently rejected
+  every owner job, `bind()` and `recover()`. Rebind and lifecycle/recovery jobs
+  now abandon that stale bookkeeping bus-silently because they rewrite
+  Configuration; sample jobs still reject mixed ownership.
+- The legacy float path ignored `ShuntCalibration::direction`, so `readCurrent()`
+  and `SampleBatch` reported opposite signs on the same channel. Current, power
+  and combined-channel reads now apply the profile direction without losing
+  float precision.
+- `readShuntSumRaw()` / `readShuntSumVoltage()` returned stale data as valid.
+  They now require a shunt-measuring mode, at least one selected summation
+  channel, and verified alert configuration, all rejected before I2C.
+- Owner failure terminalization is centralized: interior deadline exhaustion is
+  `TIMED_OUT`, a failure whose callback was never invoked cannot become an
+  indeterminate write, and `PARTIAL` is reported only after a confirmed earlier
+  write.
+- Tracked transfers made before initialization succeeds now update the health
+  counters, `lastError` and timestamps, so a failed first bring-up leaves usable
+  diagnostics; only the `DriverState` transition stays gated on initialization.
+- A confirmed software reset no longer fabricates a zero Mask/Enable reading. It
+  clears the known power-on writable-bit cache; an ambiguous reset preserves the
+  last real observation while certainty becomes `UNKNOWN`.
+- Permanent-CVRF-low fault polling used a flat 1 ms recheck, saturating a shared
+  bus with destructive Mask/Enable reads. It now rechecks every 50 ms and waits
+  bus-silently when no further bounded read fits before the deadline.
+- Mask/Enable typed setters composed their write from a destructive-read
+  observation cache that a raw write or software reset could leave stale. They
+  now compose the complete desired register from the retained profile and verify
+  the readback.
+- The Mask/Enable verification readback consumed CVRF without handing the
+  observation to legacy conversion state, so a typed setter between a trigger
+  and a read left readiness permanently false. The handoff `readAlertFlags()`
+  performs is now shared by both paths.
+- Every Arduino owner poll path, including the sampler used by `stress_owner`,
+  now caps or pauses the transfer budget that its fixed Wire timeout can honor,
+  and the adapter reports an unsupported tighter callback deadline as a
+  callback-local configuration error rather than a fabricated bus timeout.
 - `PollJobSnapshot::nextChannel` and `PollJobSnapshot::conversionStartMs` are
-  now published from the live cooperative-job cursor. Both were backed by
-  fields that were never written and always reported zero.
-- Reworked `readBlocking()` around the absolute extended monotonic deadline and
-  a progress-resetting stalled-clock guard, preserving absolute sample capture
-  uptime even across the 32-bit clock wrap.
-- Made typed Configuration and alert setters commit staged profile state only
-  after write/readback verification, so successful setters remain `APPLIED`
-  and mismatches/failures retain honest `DIRTY`/`UNKNOWN` certainty.
-- Allowed initialize/reconcile/power-down jobs and rebind to abandon stale
-  legacy conversion bookkeeping while keeping sample-job cross-driving
-  rejected.
-- Applied profile current-direction calibration to all legacy float current and
-  power paths without reducing their precision.
-- Corrected TCF polarity (`true` is TC high/no fault), exposed TCF-low fault
-  state, and retained only real Mask/Enable observations across software reset.
-- Rejected shunt-sum reads before I2C unless shunt conversion, selected sum
-  channels, and verified alert configuration make the register meaningful.
-- Centralized owner failure terminalization so interior deadline exhaustion is
-  `TIMED_OUT`, bus-silent failures cannot become indeterminate writes, and
-  confirmed earlier writes remain `PARTIAL`.
-- Recorded tracked initialization transfers in health counters/timestamps while
-  keeping `DriverState::UNINIT` until initialization succeeds.
-- Reduced permanent-CVRF-low traffic to a fixed 50 ms fault recheck and a
-  bus-silent wait when the next bounded read cannot fit before the deadline.
-- Clamped float-to-register conversion before `lrintf`, accepted absent
-  calibration on disabled legacy channels, and removed dead owner state and
-  dead power-valid range checks.
-- Made Mask/Enable typed setters compose from the desired profile instead of a
-  destructive-read observation cache, then verify the complete write.
-- Made the Arduino owner loop cap/pause transfer budgets that cannot honor its
-  fixed Wire timeout, reporting unsupported tighter callback deadlines as
-  adapter configuration errors rather than bus timeouts.
-- Hardened the core timing checker so comment markers inside string literals
-  cannot hide forbidden calls later on the same line.
-- Kept the legacy observed Configuration view coherent across raw writes,
-  host-only calibration changes, settings snapshots, readiness polling, and
-  explicit re-triggers; owner admission now also clears completed legacy-ready
-  provenance before taking control.
-- Preserved active/completed legacy conversion evidence after definitely
-  non-reaching Configuration-write failures, retained Mask/Enable observations
-  after ambiguous resets, and preserved the original dirty-register diagnostic
-  when a different typed setter is successfully verified.
-- Invalidated stale legacy conversion timing after confirmed or ambiguous raw
-  Configuration writes while preserving it after definitely non-reaching
-  diagnostic failures.
-- Made disabled-channel legacy calibration ignore every invalid representation,
-  including finite values outside the fixed-unit range, and made the timing
-  guard lex comments, ordinary literals, and raw strings with an adversarial
-  self-test instead of relying on substitution order.
-- Preserved triggered-conversion readiness when Mask/Enable setter verification
-  consumes CVRF, while retaining the existing alert-event evidence.
-- Made the core timing checker distinguish C++ digit separators from character
-  literal openers and pinned both separated numeric forms in its self-test.
-- Applied fixed-Wire transfer-budget admission to every Arduino owner poll
-  path, including the sampler used by `stress_owner`.
-- Strengthened CLI and ESP-IDF static contracts for the Wire error category,
-  component-shim depth, renamed CI checkout path, and timing-control labels.
+  published from the live cooperative-job cursor; both were backed by fields that
+  were never written and always reported zero.
+- The legacy observed Configuration view stays coherent across raw writes,
+  host-only calibration changes, settings snapshots, readiness polling and
+  explicit re-triggers. A definitely non-reaching Configuration write preserves
+  active or completed conversion evidence; confirmed or ambiguous writes discard
+  stale provenance. A successful typed write no longer overwrites the diagnostic
+  explaining a pre-existing dirty or unknown register family.
+- Float-to-register conversion now saturates in the float domain before
+  `lrintf`, whose result is unspecified for out-of-range input. Legacy
+  conversion accepts any invalid shunt representation on disabled channels,
+  including zero, NaN and finite out-of-range values, while enabled channels
+  still require representable finite positive calibration.
+- Removed unreachable negative guards after masked power-valid decoding, and
+  owner state members that were assigned but never read.
+- The core timing checker now lexes comments, quoted literals, character
+  literals and C++ raw strings, distinguishes digit separators from character
+  literal openers, and runs an adversarial self-test instead of relying on
+  substitution order. Each of those gaps could previously hide a forbidden
+  timing call in core sources.
+- Strengthened the CLI and ESP-IDF static contracts for the Wire error category,
+  the transfer-budget helper, the component-shim depth, the renamed CI checkout
+  path and the timing-control labels.
 - Standardized both CLIs on `TCF` for the raw register field and
   `TimingControl` / `TimingControlFault` for decoded state, with the inverted
   `TC_FAULT` diagnostic made explicit.
 
 ### Changed
 
+- `AlertSnapshot::timingControl` is now the latest observed raw TCF level
+  instead of a sticky OR across reads, so a timing-control fault is reportable
+  at all. The INA3221 latches TCF low in hardware until a power cycle or
+  software reset, so the library no longer latches it a second time. The raw
+  decode is unchanged: `true` still means TC high, that is, no fault.
+- `profileGeneration()` now also advances after every typed setter whose write
+  and readback verified, not only after a full profile job or
+  `setShuntResistance()`. Code comparing a cached
+  `SampleBatch::profileGeneration` must expect a bump from any successful setter.
+- Cancelling or timing out a triggered sample no longer degrades
+  `measurementConfigState()` to `DIRTY`. The trigger rewrites the already
+  verified desired Configuration value, so a confirmed trigger write cannot
+  change managed state. Power-down still reports `DIRTY` after a confirmed write
+  and now also raises `hardwareConfigDirty()`.
+- `AlertSnapshot::evidenceUncertain` is no longer set when a Mask/Enable read
+  definitely did not reach the device: an address-phase NACK,
+  `DEVICE_NOT_FOUND`, a callback-local `INVALID_CONFIG`/`INVALID_PARAM`
+  rejection, or a driver-side abort before any callback. Adapters must report an
+  accurate failure phase for this classification to hold.
 - Corrected public Doxygen contracts that did not match the implementation:
   `readConversionReady()` (never returns `CONVERSION_NOT_READY`), `end()`
-  (bus-silent, performs no power-down), `softReset()` (a confirmed reset leaves
-  certainty `DIRTY`, not `UNKNOWN`), `writeRegister16()` (every accepted or
-  ambiguous raw write invalidates its certainty family, not only Configuration
-  and Mask/Enable), `profileGeneration()` (also advanced by
-  `setShuntResistance()`), and `SampleBatch::validChannels` (gated on derived
-  quantities as well as raw reads).
-- Replaced the stale v2 "managed synchronous driver" architecture description
-  in `AGENTS.md` with the current cooperative owner engine, corrected the
-  repository layout, the lifecycle rule, the `recover()` health note, and the
-  saturating-counter description.
+  (bus-silent, performs no power-down), `softReset()` and a reset-bit
+  `writeConfig()` (a confirmed reset leaves certainty `DIRTY`, not `UNKNOWN`),
+  `writeRegister16()` (every accepted or ambiguous raw write invalidates its
+  certainty family), `profileGeneration()`, `cancelJob()`, `bind()`,
+  `SampleBatch::validChannels`, `PollJobSnapshot::conversionStartMs`, the
+  Mask/Enable setters, and the legacy observed-configuration getters.
 - Documented verified-setter callback counts, initial health telemetry,
-  power-down retention, timing-control semantics, non-atomic live profile
-  application, fixed-timeout adapter admission, legacy cancellation, and the
-  provenance of reserved/transport-supplied error codes.
-- Clarified that callback-local validation may be bus-silent and that owner
+  power-down retention, timing-control semantics and the device-side TCF latch,
+  non-atomic live profile application, fixed-timeout adapter admission, legacy
+  cancellation, per-family certainty promotion, and the provenance of reserved
+  and transport-supplied error codes.
+- Clarified that callback-local validation may be bus-silent, that owner
   transfer counts measure callback invocations rather than guaranteed physical
-  bus attempts.
+  bus attempts, and which failure phases are treated as definitely not having
+  reached the device.
+- Replaced the stale v2 "managed synchronous driver" architecture description in
+  `AGENTS.md` with the current cooperative owner engine, and corrected the
+  repository layout, the lifecycle rule, the `recover()` health note, the
+  pre-initialization counter rule, and the saturating-counter description.
 
 ## [3.1.0] - 2026-08-05
 

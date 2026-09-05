@@ -82,6 +82,13 @@ return `INVALID_CONFIG` or `INVALID_PARAM`; actual bus failures should use the
 most accurate transport error available. In particular, a deadline that rounds
 to zero inside the driver is bus-silent and cannot make a write indeterminate.
 
+A phase-definite address NACK, `DEVICE_NOT_FOUND`, or a callback-local
+`INVALID_CONFIG`/`INVALID_PARAM` rejection is treated as definitely not having
+reached the device: such a failure never makes a write indeterminate and never
+sets `AlertSnapshot::evidenceUncertain`. Callback invocation alone cannot prove
+a physical transfer occurred inside an adapter, so adapters must report an
+accurate failure phase for that classification to hold.
+
 ### Complete device profile
 
 `DeviceProfile` is the desired state of every managed volatile register plus
@@ -113,6 +120,7 @@ The initial defaults are:
 | Shunt-sum limit | 655,320 µV |
 | Power-valid window | 9,000–10,000 mV |
 | Warning/critical latch | Disabled |
+| Current direction | Positive shunt is positive current |
 
 ### Job lifecycle
 
@@ -253,6 +261,12 @@ A Configuration-register write before that sequence completes disables the
 function until the next power cycle or reset; applications that depend on TC
 must account for when initialization writes occur.
 
+The device latches TCF low in hardware until a power cycle or software reset,
+so `timingControl` is the latest observed level rather than a second software
+latch, and `timingControlFault` is that level inverted. Neither is part of the
+read-clear `events` bitmap, because TCF is a device-latched condition and not
+an event a host read consumes.
+
 If a failed or short transport attempt may already have reached a destructive
 read, `evidenceUncertain` remains set until the application takes the retained
 record. The library never fabricates alert evidence that could have been lost.
@@ -268,6 +282,11 @@ with `measurementConfigState()` and `alertConfigState()`:
 
 `HardwareEffect::PARTIAL` and `INDETERMINATE` deliberately avoid claiming
 rollback after confirmed or ambiguous writes.
+
+The measurement family is the Configuration register alone, so one verified
+write restores it to `APPLIED`. The alert family spans ten registers, so a
+single verified typed alert setter preserves the family's prior certainty
+instead of promoting it; run `startReconcile()` to reach `APPLIED`.
 
 Profile application is verified register by register, but is not an atomic
 hardware transaction. A live apply can transiently expose the newly written
@@ -380,6 +399,13 @@ hardware change occurred. Take the result, inspect certainty/effect, and run
 `readBlocking()`, `probe()`, and `recover()` remain bounded compatibility tools
 for standalone bring-up and diagnostics. They are not the recommended
 shared-I2C-owner steady path.
+
+`Config` carries per-channel `direction` alongside `shuntResistance`. `begin()`
+maps both onto `DeviceProfile::shunts[i]`, and `getConfig()` reports them back,
+so `readCurrent()`, `readPower()` and `readChannel()` apply the same sign
+convention as the fixed-unit owner path. The legacy getters report the latest
+*observed* Configuration register, which a raw `writeConfig()` or a software
+reset can leave different from the retained `deviceProfile()`.
 
 | Compatibility operation | Worst-case transfer behavior |
 |---|---|
@@ -501,8 +527,6 @@ parameter documentation with warnings treated as errors.
 - [Native ESP-IDF integration](docs/IDF_PORT.md) — bus ownership and adapter rules.
 - [Hardware-in-the-loop validation](docs/HIL.md) — reproducible fixture run and
   reviewed evidence ledger.
-- [Code audit resolution](docs/CODE_AUDIT_RESOLUTION.md) records the
-  finding-by-finding verification and selected remedies for the 2026-08-27 audit.
 - <a href="docs/INA3221_datasheet.pdf">INA3221 datasheet</a> — authoritative
   bundled device reference.
 
