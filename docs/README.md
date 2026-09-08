@@ -18,7 +18,8 @@ contains maintained integration guidance and the primary device datasheet.
 ## Transient review artifacts
 
 - [Independent audit verification](CODE_AUDIT_VERIFICATION.md) records the
-  2026-09-05 review of every finding, additional fixes, and validation evidence.
+  2026-09-08 review of every finding, additional fixes, and validation evidence,
+  with a link to the earlier review in Git history.
 - [Code audit](CODE_AUDIT.md) records the 2026-08-27 audit of `3.1.0`, the
   resolution of every finding, and how to re-verify each one. Every permanent
   contract change it describes is already in the changelog, the README and the

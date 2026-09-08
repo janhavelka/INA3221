@@ -12,6 +12,7 @@ VALID_SUFFIXES = {".c", ".cc", ".cpp", ".h", ".hpp"}
 FORBIDDEN_CALLS = {
     "millis": re.compile(r"\bmillis\s*\("),
     "micros": re.compile(r"\bmicros\s*\("),
+    "delay": re.compile(r"\bdelay\s*\("),
     "delayMicroseconds": re.compile(r"\bdelayMicroseconds\s*\("),
     "yield": re.compile(r"\byield\s*\("),
 }
@@ -21,6 +22,7 @@ RAW_STRING_START_RE = re.compile(
     r'(?:u8|u|U|L)?R"(?P<delimiter>[^ ()\\\t\r\n]{0,16})\('
 )
 QUOTED_LITERAL_START_RE = re.compile(r'''(?:u8|u|U|L)?(?P<quote>["'])''')
+NUMBER_START_RE = re.compile(r"(?:[0-9]|\.[0-9])(?:[eEpP][+-]|[\w.]|'(?=\w))*")
 
 
 def _blank_non_code(text: str) -> str:
@@ -39,7 +41,17 @@ def _quoted_literal_end(text: str, start: int, quote: str) -> int:
     return len(text)
 
 def strip_non_code(text: str) -> str:
-    """Blank comments and C++ literals without letting either spoof the other."""
+    """Scan C++ lexical text; this does not expand macros or evaluate directives."""
+    # Phase-2 line splicing joins identifiers and comment delimiters. Remember
+    # the joins: a raw-string terminator may not be manufactured by a splice,
+    # because C++ preserves physical backslash/newline pairs inside raw bodies.
+    parts = re.split(r"\\\r?\n", text)
+    splice_positions: set[int] = set()
+    length = 0
+    for part in parts[:-1]:
+        length += len(part)
+        splice_positions.add(length)
+    text = "".join(parts)
     output: list[str] = []
     cursor = 0
     while cursor < len(text):
@@ -64,15 +76,27 @@ def strip_non_code(text: str) -> str:
         if raw is not None and at_token_start:
             terminator = ")" + raw.group("delimiter") + '"'
             end = text.find(terminator, raw.end())
+            while end >= 0 and any(
+                end < position < end + len(terminator)
+                for position in splice_positions
+            ):
+                end = text.find(terminator, end + 1)
             end = len(text) if end < 0 else end + len(terminator)
             output.append(_blank_non_code(text[cursor:end]))
             cursor = end
             continue
 
+        # Consume preprocessing numbers before recognizing apostrophes. A
+        # character literal can directly follow a keyword (return'(';), so
+        # the previous character alone cannot distinguish it from a separator.
+        number = NUMBER_START_RE.match(text, cursor) if at_token_start else None
+        if number is not None:
+            output.append(number.group())
+            cursor = number.end()
+            continue
+
         literal = QUOTED_LITERAL_START_RE.match(text, cursor)
-        if literal is not None and (
-            at_token_start or literal.group("quote") == '"'
-        ):
+        if literal is not None:
             end = _quoted_literal_end(text, literal.end() - 1,
                                       literal.group("quote"))
             output.append(_blank_non_code(text[cursor:end]))
@@ -122,6 +146,32 @@ def verify_strip_non_code() -> None:
             raise RuntimeError(f"strip_non_code {prefix!r} character-literal self-test failed")
         if FORBIDDEN_CALLS["micros"].search(literals) is not None:
             raise RuntimeError(f"strip_non_code {prefix!r} string-literal self-test failed")
+
+    adjacent = strip_non_code(
+        "char open() { return'('; }\n"
+        "void adjacent() { millis(); auto close = ')'; }\n"
+    )
+    if len(FORBIDDEN_CALLS["millis"].findall(adjacent)) != 1:
+        raise RuntimeError("strip_non_code keyword-adjacent character self-test failed")
+
+    for number in ("400'000", "1'000'000", "0xAB'CD", "0b10'01", "1.25",
+                   ".5", "1e+1'0", "0x1.fp+1'0"):
+        code = strip_non_code(f"auto value = {number}; millis(); auto close = ')';")
+        if len(FORBIDDEN_CALLS["millis"].findall(code)) != 1:
+            raise RuntimeError(f"strip_non_code number {number!r} self-test failed")
+
+    for name, pattern in FORBIDDEN_CALLS.items():
+        spliced = strip_non_code(name[:2] + "\\\n" + name[2:] + "();")
+        if len(pattern.findall(spliced)) != 1:
+            raise RuntimeError(f"strip_non_code spliced {name} self-test failed")
+        hidden = strip_non_code(
+            f'// continued comment \\\n{name}();\n'
+            f'/\\\n* {name}(); */\n'
+            f'auto raw = R"tag()ta\\\ng"; {name}();)tag";\n'
+            f'auto text = "{name}()";\n'
+        )
+        if pattern.search(hidden) is not None:
+            raise RuntimeError(f"strip_non_code hidden {name} self-test failed")
 
 
 def collect_sources() -> list[pathlib.Path]:

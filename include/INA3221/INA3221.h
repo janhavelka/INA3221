@@ -395,11 +395,13 @@ public:
 
   /// @brief Cancel the active job without another I2C operation.
   /// @return CANCELLED after publishing a terminal result, or NO_ACTIVE_JOB.
-  /// @note Partial sample work is discarded; confirmed earlier writes remain
+  /// @note Partial samples are never published; observed readiness remains
+  /// available to compatibility poll snapshots. Confirmed earlier writes remain
   /// represented by the result's hardware effect and configuration certainty.
   /// A confirmed sample trigger reports HardwareEffect::PARTIAL but leaves
   /// measurementConfigState() APPLIED, because the trigger rewrites the value
-  /// that was already verified. Only power-down degrades it to DIRTY.
+  /// that was already verified. Power-down writes and observed profile drift
+  /// leave the affected configuration family DIRTY until reconciled.
   Status cancelJob();
 
   /// @brief Copy a cache-only progress snapshot.
@@ -572,6 +574,9 @@ public:
   ///       rejected before I2C. A summation selection retained under a
   ///       bus-only or power-down profile stays valid so future configuration
   ///       is not lost; only the read is rejected.
+  /// @note Changing summation channels does not refresh the result register.
+  ///       Configure selection before triggering a new conversion, or allow
+  ///       a complete conversion cycle after a continuous-mode change.
   Status readShuntSumRaw(int16_t& raw);
 
   /// @brief Read and convert the shunt-voltage summation register.

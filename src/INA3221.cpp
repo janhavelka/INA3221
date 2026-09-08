@@ -1145,8 +1145,6 @@ Status INA3221::cancelJob() {
     if (_jobKind == JobKind::POWER_DOWN)
       _measurementConfigState = AppliedConfigState::DIRTY;
   }
-  _sampleWork = SampleBatch{};
-  for (uint8_t i = 0; i < 3U; ++i) _sampleRaw[i] = ChannelRawMeasurement{};
   const HardwareEffect effect = _jobAnyWriteConfirmed
                                     ? HardwareEffect::PARTIAL
                                     : HardwareEffect::NONE;
@@ -1360,6 +1358,23 @@ Status INA3221::_pollProfileJob(const PollContext& context,
       if (!st.ok()) {
         _finishJobFailure(st);
         return st;
+      }
+      uint8_t retainedReg = 0;
+      uint16_t retainedValue = 0;
+      st = _desiredRegister(_jobProfileIndex, _profile, retainedReg,
+                             retainedValue);
+      if (!st.ok()) {
+        _finishJobFailure(st);
+        return st;
+      }
+      const AppliedConfigState retainedState =
+          _registerIsMeasurementConfig(retainedReg) ? _measurementConfigState
+                                                    : _alertConfigState;
+      if (retainedState == AppliedConfigState::APPLIED &&
+          !_registerMatches(retainedReg, actual, retainedValue)) {
+        // This read disproved the retained profile, even if a later write is
+        // rejected or the observed value already matches the pending profile.
+        _markRegisterDirty(retainedReg);
       }
       if (_registerMatches(_jobDesiredRegisterAddress, actual,
                            _jobDesiredRegisterValue)) {
@@ -1654,6 +1669,10 @@ Status INA3221::_pollPowerDownOperation(const PollContext& context,
     if (!st.ok()) {
       _finishJobFailure(st);
       return st;
+    }
+    if (_measurementConfigState == AppliedConfigState::APPLIED &&
+        !_registerMatches(reg, actual, _buildConfigRegister(_profile))) {
+      _markRegisterDirty(reg);
     }
     if (_registerMatches(reg, actual, desired)) {
       _finishJobSuccess();
@@ -3135,8 +3154,16 @@ Status INA3221::_writeManagedRegisterVerified(uint8_t reg, uint16_t value,
     // Clear and retain old flags before changing warning settings, as required
     // by datasheet section 7.6.2.16. A failed observation must prevent the write.
     uint16_t observed = 0;
-    const Status st = _readRegister16Tracked(reg, observed);
+    Status st = _readRegister16Tracked(reg, observed);
     if (!st.ok()) return st;
+    uint8_t retainedReg = 0;
+    uint16_t retainedValue = 0;
+    st = _desiredRegister(8U, _profile, retainedReg, retainedValue);
+    if (!st.ok()) return st;
+    if (_alertConfigState == AppliedConfigState::APPLIED &&
+        !_registerMatches(retainedReg, observed, retainedValue)) {
+      _markRegisterDirty(reg);
+    }
   }
   const bool measurement = _registerIsMeasurementConfig(reg);
   const AppliedConfigState priorState =

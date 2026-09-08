@@ -1,8 +1,8 @@
 # INA3221 code audit — findings, resolutions, and verification
 
-> Independently reviewed on 2026-09-05 from `504a8b8`. The historical closure
-> claims below were mostly correct, but further F1/F2/L8 defects and a missing
-> Mask/Enable pre-read were found and fixed. See
+> Independently reviewed again on 2026-09-08 from `6b64b9a`. The historical
+> closure claims below were mostly correct, but further configuration-certainty,
+> cancellation-snapshot and timing-guard gaps were found and fixed. See
 > [the independent verification report](CODE_AUDIT_VERIFICATION.md) for every
 > finding's disposition, the additional changes, and current validation limits.
 
@@ -636,8 +636,9 @@ strings, raw strings or balanced separators.
 `runOneOwnerSample()` still set `maxTransfers = 1` unconditionally, so
 `stress_owner` could hand the Wire callback a sub-50 ms deadline once the
 remaining window shrank. All three sites now share `wireSafeTransferBudget()`,
-and `check_cli_contract.py` enforces a helper-use-per-`PollContext` invariant so
-a fourth site cannot silently skip it.
+and `check_cli_contract.py` compares global helper-use and `PollContext` counts.
+This structural regression check complements inspection of each site; it does
+not prove assignment or data flow for arbitrary future edits.
 
 ---
 
@@ -742,8 +743,8 @@ Neither is an audit finding; both are release tasks surfaced by this work.
   `3.2.0` under the rules in `AGENTS.md`, and the `timingControl` semantics
   change should be called out because it can silently alter an integrator's
   behaviour.
-- **Hardware validation.** `tools/hil_cli_runner.py` is unchanged since
-  `v3.1.0`: 379 steps, no `cancel` step, no `TCF`/`TC_FAULT` assertions, and no
-  transfer-count assertion over a typed setter — which is exactly where
-  behaviour changed from one callback to two. The evidence ledger in
-  [`HIL.md`](HIL.md) has no entry covering any of this work.
+- **Hardware validation.** The earlier 379-step runner has been expanded to
+  404 default / 407 benchmark steps, including `cancel`, complementary TCF
+  diagnostics, and two-/three-callback typed-setter assertions. Host checks pass;
+  the physical evidence ledger in [`HIL.md`](HIL.md) still predates that suite
+  and the later driver fixes. A new fixture qualification remains pending.

@@ -25,6 +25,16 @@ and its independent follow-up reviews.
 
 ### Fixed
 
+- A reconciliation or power-down read that proves hardware drift now invalidates
+  the affected configuration family before a repair write. Cancellation or a
+  definitely non-reaching write failure can no longer leave stale `APPLIED`
+  certainty. Comparisons use the retained profile, preserving valid old state
+  when an ordinary profile change has not yet taken effect.
+- Cancelling a staged sample preserves its already observed CVRF diagnostic
+  while still publishing no partial sample and retaining the last good sample.
+- Closed further timing-guard gaps for keyword-adjacent character literals,
+  backslash-newline calls, and `delay()`. Numeric separators and raw-string
+  bodies remain supported without adding a parser dependency.
 - Independent verification closed further Mask/Enable gaps: raw diagnostic
   reads now hand observed CVRF to legacy conversion state through the shared
   consuming-read helper. Summation-channel and alert-latch setters now consume

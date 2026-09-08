@@ -277,7 +277,7 @@ with `measurementConfigState()` and `alertConfigState()`:
 | State | Meaning | Owner action |
 |---|---|---|
 | `APPLIED` | Desired managed state was read back and verified | Measurement may be admitted |
-| `DIRTY` | A confirmed side effect changed managed state | Reconcile before measurement |
+| `DIRTY` | Managed state changed or a read proved it differs from the retained profile | Reconcile before measurement |
 | `UNKNOWN` | Hardware acceptance or retained state is ambiguous | Reconcile or fully initialize |
 
 `HardwareEffect::PARTIAL` and `INDETERMINATE` deliberately avoid claiming
@@ -287,6 +287,11 @@ The measurement family is the Configuration register alone, so one verified
 write restores it to `APPLIED`. The alert family spans ten registers, so a
 single verified typed alert setter preserves the family's prior certainty
 instead of promoting it; run `startReconcile()` to reach `APPLIED`.
+
+A reconciliation read that proves drift invalidates the affected family's
+certainty immediately, even if cancellation or a failed write prevents repair.
+An ordinary profile change compares this observation with the retained profile,
+so merely requesting a different candidate does not invalidate verified state.
 
 Profile application is verified register by register, but is not an atomic
 hardware transaction. A live apply can transiently expose the newly written

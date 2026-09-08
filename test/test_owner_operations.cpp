@@ -1391,6 +1391,188 @@ void test_legacy_single_shot_snapshot_keeps_initial_start_during_cvrf_recheck() 
   TEST_ASSERT_TRUE(bus.scriptConsumed());
 }
 
+void test_owner_profile_reads_disprove_retained_certainty_before_writes() {
+  const DeviceProfile profile = makeProfile();
+  ExpectedRegister retained[11]{};
+  (void)buildExpectedProfile(profile, retained);
+  for (uint8_t index = 0; index < 11U; ++index) {
+    const DeviceProfile changed = changedAtManagedRegister(profile, index);
+    ExpectedRegister different[11]{};
+    (void)buildExpectedProfile(changed, different);
+    for (uint8_t scenario = 0; scenario < 5U; ++scenario) {
+      // An unchanged old profile must stay verified when a pending change is
+      // abandoned. Real drift must be remembered, including a read that already
+      // matches the pending candidate and therefore skips its write.
+      const bool drift = scenario >= 2U;
+      const bool matchesPending = scenario == 4U;
+      const bool failWrite = scenario == 1U || scenario == 3U;
+      if (matchesPending && index == 10U) continue;  // Final read commits the job.
+      ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+      INA3221::INA3221 device;
+      TEST_ASSERT_TRUE(initializeApplied(device, bus, profile));
+      const uint32_t generation = device.profileGeneration();
+      bus.resetHarness();
+      if (drift) bus.setRegister(retained[index].reg, different[index].value);
+      for (uint8_t readIndex = 0; readIndex <= index; ++readIndex) {
+        bus.expectRead(retained[readIndex].reg);
+      }
+      if (failWrite) {
+        bus.expectWrite(retained[index].reg,
+                        drift ? retained[index].value : different[index].value,
+                        Status::Error(Err::I2C_NACK_ADDR, "write rejected"));
+      }
+      const Status start = drift && !matchesPending
+                               ? device.startReconcile(711U, 2000U)
+                               : device.startApplyProfile(changed, 711U, 2000U);
+      TEST_ASSERT_TRUE(start.inProgress());
+      const uint8_t budget = static_cast<uint8_t>(index + (failWrite ? 2U : 1U));
+      const Status polled = device.pollJob(pollContext(1000U, 2000U,
+                                                       DEFAULT_TIMEOUT_MS, budget));
+      if (failWrite) {
+        TEST_ASSERT_TRUE(polled.code == Err::I2C_NACK_ADDR);
+      } else {
+        TEST_ASSERT_TRUE(polled.inProgress());
+        TEST_ASSERT_TRUE(device.cancelJob().code == Err::CANCELLED);
+      }
+      const AppliedConfigState expected = drift ? AppliedConfigState::DIRTY
+                                                : AppliedConfigState::APPLIED;
+      TEST_ASSERT_TRUE((index == 0U ? device.measurementConfigState()
+                                    : device.alertConfigState()) == expected);
+      TEST_ASSERT_TRUE((index == 0U ? device.alertConfigState()
+                                    : device.measurementConfigState()) ==
+                       AppliedConfigState::APPLIED);
+      TEST_ASSERT_EQUAL(drift, device.hardwareConfigDirty());
+      TEST_ASSERT_EQUAL_UINT32(generation, device.profileGeneration());
+      JobResult result{};
+      TEST_ASSERT_TRUE(device.takeJobResult(result).ok());
+      TEST_ASSERT_TRUE(result.hardwareEffect == HardwareEffect::NONE);
+      TEST_ASSERT_FALSE(result.sampleValid);
+      if (index == 0U && drift) {
+        int16_t raw = 0;
+        TEST_ASSERT_TRUE(device.readShuntRaw(Channel::CH1, raw).code ==
+                         Err::CONFIG_UNKNOWN);
+      }
+      TEST_ASSERT_EQUAL_UINT32(budget, bus.callCount());
+      TEST_ASSERT_TRUE(bus.scriptConsumed());
+    }
+  }
+}
+
+void test_owner_power_down_read_preserves_evidence_when_write_is_abandoned() {
+  const DeviceProfile profile = makeProfile();
+  const DeviceProfile changed = changedAtManagedRegister(profile, 0U);
+  for (uint8_t scenario = 0; scenario < 4U; ++scenario) {
+    const bool drift = scenario >= 2U;
+    const bool failWrite = (scenario & 1U) != 0U;
+    ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+    INA3221::INA3221 device;
+    TEST_ASSERT_TRUE(initializeApplied(device, bus, profile));
+    bus.resetHarness();
+    if (drift) bus.setRegister(cmd::REG_CONFIG, configValue(changed, changed.mode));
+    bus.expectRead(cmd::REG_CONFIG);
+    if (failWrite) {
+      bus.expectWrite(cmd::REG_CONFIG, configValue(profile, Mode::POWER_DOWN),
+                      Status::Error(Err::I2C_NACK_ADDR, "write rejected"));
+    }
+    TEST_ASSERT_TRUE(device.startPowerDown(712U, 2000U).inProgress());
+    const uint8_t budget = failWrite ? 2U : 1U;
+    const Status polled = device.pollJob(pollContext(1000U, 2000U,
+                                                    DEFAULT_TIMEOUT_MS, budget));
+    if (failWrite) TEST_ASSERT_TRUE(polled.code == Err::I2C_NACK_ADDR);
+    else {
+      TEST_ASSERT_TRUE(polled.inProgress());
+      TEST_ASSERT_TRUE(device.cancelJob().code == Err::CANCELLED);
+    }
+    TEST_ASSERT_TRUE(device.measurementConfigState() ==
+                     (drift ? AppliedConfigState::DIRTY : AppliedConfigState::APPLIED));
+    TEST_ASSERT_EQUAL(drift, device.hardwareConfigDirty());
+    TEST_ASSERT_TRUE(device.deviceProfile().mode == profile.mode);
+    JobResult result{};
+    TEST_ASSERT_TRUE(device.takeJobResult(result).ok());
+    TEST_ASSERT_TRUE(result.hardwareEffect == HardwareEffect::NONE);
+    TEST_ASSERT_EQUAL_UINT32(budget, bus.callCount());
+    TEST_ASSERT_TRUE(bus.scriptConsumed());
+  }
+}
+
+void test_typed_mask_pre_read_disproves_certainty_without_losing_alerts() {
+  const DeviceProfile profile = makeProfile();
+  ExpectedRegister retained[11]{};
+  (void)buildExpectedProfile(profile, retained);
+  for (uint8_t scenario = 0; scenario < 4U; ++scenario) {
+    const bool drift = scenario >= 2U;
+    const bool failWrite = (scenario & 1U) != 0U;
+    ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+    INA3221::INA3221 device;
+    TEST_ASSERT_TRUE(initializeApplied(device, bus, profile));
+    const uint32_t generation = device.profileGeneration();
+    bus.resetHarness();
+    bus.setRegister(cmd::REG_MASK_ENABLE, static_cast<uint16_t>(
+        (retained[8].value ^ (drift ? cmd::MASK_WEN : 0U)) |
+        cmd::MASK_CF1 | cmd::MASK_TCF));
+    bus.expectRead(cmd::REG_MASK_ENABLE);
+    bus.expectWrite(cmd::REG_MASK_ENABLE, retained[8].value,
+                    failWrite ? Status::Error(Err::I2C_NACK_ADDR, "write rejected")
+                              : Status::Ok());
+    if (!failWrite) bus.expectRead(cmd::REG_MASK_ENABLE);
+    const Status written = device.setAlertLatchEnable(true, true);
+    TEST_ASSERT_TRUE(written.code == (failWrite ? Err::I2C_NACK_ADDR : Err::OK));
+    TEST_ASSERT_TRUE(device.alertConfigState() ==
+                     (drift ? AppliedConfigState::DIRTY : AppliedConfigState::APPLIED));
+    TEST_ASSERT_EQUAL(drift, device.hardwareConfigDirty());
+    TEST_ASSERT_EQUAL_UINT32(generation + (failWrite ? 0U : 1U),
+                             device.profileGeneration());
+    AlertSnapshot alerts{};
+    TEST_ASSERT_TRUE(device.peekAlertEvents(alerts).ok());
+    TEST_ASSERT_BITS_HIGH(cmd::MASK_CF1, alerts.events);
+    TEST_ASSERT_EQUAL_UINT32(failWrite ? 2U : 3U, bus.callCount());
+    TEST_ASSERT_TRUE(bus.scriptConsumed());
+  }
+}
+
+void test_legacy_cancelled_sample_snapshot_keeps_observed_ready() {
+  for (uint8_t scenario = 0; scenario < 2U; ++scenario) {
+    const bool triggered = scenario != 0U;
+    const Mode mode = triggered ? Mode::SHUNT_BUS_TRIG : Mode::SHUNT_BUS_CONT;
+    const DeviceProfile profile = makeProfile(0x42, CHANNEL_1, mode);
+    ScriptedTransport bus(0x42, DEFAULT_TIMEOUT_MS);
+    INA3221::INA3221 device;
+    TEST_ASSERT_TRUE(initializeApplied(device, bus, profile));
+    bus.resetHarness();
+    uint32_t nowMs = 1000U;
+    if (triggered) {
+      bus.expectWrite(cmd::REG_CONFIG, configValue(profile, mode));
+      TEST_ASSERT_TRUE(device.startSingleShot().inProgress());
+      TEST_ASSERT_TRUE(device.pollSingleShot(nowMs, 1U).inProgress());
+      TEST_ASSERT_TRUE(device.pollSingleShot(++nowMs, 0U).inProgress());
+      JobProgress progress{};
+      TEST_ASSERT_TRUE(device.getJobProgress(progress).ok());
+      nowMs = static_cast<uint32_t>(progress.readyAtMs);
+    } else {
+      TEST_ASSERT_TRUE(device.startContinuousRead(true).inProgress());
+    }
+    bus.setRegister(cmd::REG_MASK_ENABLE, cmd::MASK_CVRF);
+    bus.expectRead(cmd::REG_MASK_ENABLE);
+    TEST_ASSERT_TRUE(device.pollJob(nowMs, 1U).inProgress());
+    PollJobSnapshot before{};
+    TEST_ASSERT_TRUE(device.getPollJobSnapshot(before).ok());
+    TEST_ASSERT_TRUE(before.conversionReady);
+    const size_t callsBeforeCancel = bus.callCount();
+    TEST_ASSERT_TRUE(device.cancelJob().code == Err::CANCELLED);
+    TEST_ASSERT_TRUE(device.pollJob(nowMs + 1U, 1U).code == Err::CANCELLED);
+    PollJobSnapshot after{};
+    TEST_ASSERT_TRUE(device.getPollJobSnapshot(after).ok());
+    TEST_ASSERT_TRUE(after.conversionReady);
+    TEST_ASSERT_EQUAL_UINT32(before.conversionStartMs, after.conversionStartMs);
+    TEST_ASSERT_FALSE(after.active);
+    TEST_ASSERT_FALSE(after.complete);
+    SampleBatch sample{};
+    TEST_ASSERT_TRUE(device.peekLastSample(sample).code == Err::NO_RESULT);
+    TEST_ASSERT_EQUAL_UINT32(callsBeforeCancel, bus.callCount());
+    TEST_ASSERT_TRUE(bus.scriptConsumed());
+  }
+}
+
 void test_raw_reset_updates_both_profile_certainty_families() {
   const DeviceProfile profile = makeProfile();
   {
@@ -1899,6 +2081,10 @@ void runOwnerOperationTests() {
   RUN_TEST(test_legacy_facade_rejected_starts_preserve_and_cannot_cross_drive_jobs);
   RUN_TEST(test_legacy_sample_snapshot_retains_cvrf_before_and_after_channel_reads);
   RUN_TEST(test_legacy_single_shot_snapshot_keeps_initial_start_during_cvrf_recheck);
+  RUN_TEST(test_owner_profile_reads_disprove_retained_certainty_before_writes);
+  RUN_TEST(test_owner_power_down_read_preserves_evidence_when_write_is_abandoned);
+  RUN_TEST(test_typed_mask_pre_read_disproves_certainty_without_losing_alerts);
+  RUN_TEST(test_legacy_cancelled_sample_snapshot_keeps_observed_ready);
   RUN_TEST(test_raw_reset_updates_both_profile_certainty_families);
   RUN_TEST(test_owner_health_diagnostics_never_suppress_owner_requested_io);
   RUN_TEST(test_owner_alert_events_are_retained_and_taken_exactly_by_owner);
