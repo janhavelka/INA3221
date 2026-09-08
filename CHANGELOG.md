@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-09-08
+
+**Upgrade note:** `AlertSnapshot::timingControl` changes from a sticky OR to
+the latest observed raw TCF level. `true` still means TC high/no fault;
+`timingControlFault` exposes the inverse fault condition. Review code that
+relied on the old sticky behavior. Physical qualification of the expanded
+404-step suite is **NOT RUN**; see [HIL evidence](docs/HIL.md).
+
 All entries below resolve findings from the 2026-08-27 code audit of `3.1.0`
 and its independent follow-up reviews.
 
@@ -128,6 +136,12 @@ and its independent follow-up reviews.
 
 ### Changed
 
+- Consolidated the audit and verification reports into one review record,
+  preserving the finding dispositions and corrections while keeping permanent
+  contracts in the README, changelog and public API documentation.
+- Documented that repeated synchronous typed setters intentionally retain their
+  two-/three-callback write-and-verify behavior; identical Configuration writes
+  can retrigger conversions, unlike a read-only reconciliation match.
 - `AlertSnapshot::timingControl` is now the latest observed raw TCF level
   instead of a sticky OR across reads, so a timing-control fault is reportable
   at all. The INA3221 latches TCF low in hardware until a power cycle or
@@ -495,7 +509,8 @@ and its independent follow-up reviews.
 - `end()` now best-effort powers the monitor down before clearing runtime state.
 - `recover()` now re-validates manufacturer / die IDs, clears conversion state, and reapplies cached configuration.
 
-[Unreleased]: https://github.com/janhavelka/INA3221/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/janhavelka/INA3221/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/janhavelka/INA3221/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/janhavelka/INA3221/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/janhavelka/INA3221/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/janhavelka/INA3221/compare/v1.2.0...v2.0.0

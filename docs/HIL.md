@@ -106,6 +106,13 @@ The 2026-09-05 audit verification extended the suite and passed its host parser
 checks. The entries below predate these changes; they do not constitute hardware
 evidence for the audit fixes or the expanded 404-step suite.
 
+**3.2.0 qualification status (2026-09-08): NOT RUN.** COM11 and COM12 were
+enumerated as ESP USB serial interfaces, but neither was confirmed as an
+isolated ESP32-S2/S3 fixture wired to an INA3221. Hardware testing stopped at
+fixture identification; no firmware was uploaded, no HIL commands were sent,
+and no transcript or result hash was generated. Host parser checks and green
+CI do not qualify the hardware behavior of this release.
+
 | Date | Target and port | Stack | Result | Evidence |
 |---|---|---|---|---|
 | 2026-08-05 | ESP32-S3 rev 0.1, COM26, 4 MB QIO flash, 2 MB QSPI PSRAM | INA3221 `3.1.0`; pioarduino `55.03.311`; Arduino `3.3.11`; IDF `5.5.5`; PlatformIO `6.1.19` | PASS: 379/379 bounded checks; 50/50 measurement stress; 300/300 mixed operations; 25/25 owner jobs; 20/20 frequency switches; post-run `READY`, online, 2,212 successes, zero failures, last error never, configuration verified | External `release-short-hil.md` SHA-256 `716A4E6416F83AE7BC2F0AEFDDE1E94E20F3B4EABAA8C23589E7E81076E7D874`; transcript SHA-256 `7DCBAB18DCB3A09C2C79B4DD32B803D327BFC20156BD37C1BC6BEF97B5B4FF11`; release-candidate worktree based on `afe1c1b8702e90fed4e5ca5f9d81696362cbff92` |

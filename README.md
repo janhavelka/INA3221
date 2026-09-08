@@ -4,11 +4,17 @@ Framework-neutral, production-oriented INA3221 triple-channel voltage/current
 monitor driver for ESP32-S2 and ESP32-S3 projects using Arduino, PlatformIO, or
 native ESP-IDF.
 
-Library version: `v3.1.0`
+Library version: `v3.2.0`
 
-Version 3.1 adds complete Arduino/native-IDF diagnostic CLI parity, retained
-register-mismatch evidence, runtime address and I2C-frequency control, bounded
-self/stress tests, and sequence-framed HIL automation.
+Version 3.2 adds legacy conversion cancellation, per-channel current direction
+in `Config`, explicit timing-control fault diagnostics, and the verified audit
+fixes for deadlines, configuration certainty and consuming reads.
+
+**Upgrading from 3.1:** `AlertSnapshot::timingControl` now holds the latest
+observed TCF level instead of a sticky OR across reads. `true` still means
+TC high/no fault; use `timingControlFault` for the inverse fault condition.
+Review any integration that relied on the former sticky behavior. Physical
+qualification of the expanded HIL suite is still [NOT RUN](docs/HIL.md).
 
 The v3 production API separates application-owned I2C transport from a complete
 device profile and executes hardware work through one cooperative,
@@ -408,7 +414,9 @@ shared-I2C-owner steady path.
 `Config` carries per-channel `direction` alongside `shuntResistance`. `begin()`
 maps both onto `DeviceProfile::shunts[i]`, and `getConfig()` reports them back,
 so `readCurrent()`, `readPower()` and `readChannel()` apply the same sign
-convention as the fixed-unit owner path. The legacy getters report the latest
+convention as the fixed-unit owner path. Float readers apply direction with a
+sign operation to preserve fractional current, rather than rounding through
+the whole-milliamp helper. The legacy getters report the latest
 *observed* Configuration register, which a raw `writeConfig()` or a software
 reset can leave different from the retained `deviceProfile()`.
 
@@ -423,6 +431,13 @@ reset can leave different from the retained `deviceProfile()`.
 | `readBlocking()` | Budget-one internal polling plus bounded cooperative polls until timeout |
 | Legacy staged APIs | Caller-supplied instruction budget and a derived finite deadline |
 
+Repeated typed setters intentionally keep the same two-/three-callback cost,
+even when the requested value is unchanged. The shared verifier also serves
+conversion triggers, where an identical Configuration write starts a new
+conversion. Reconciliation can skip an already-matching write. Configuration
+reads themselves have no side effects (datasheet section 7.6.2.1), so verifying
+the trigger write does not consume conversion readiness.
+
 Each callback still has its configured timeout, so a multi-transfer synchronous
 call can block for the sum of callback bounds plus local work. Compatibility
 calls reject an active production job. Production sample jobs reject a legacy
@@ -435,8 +450,10 @@ the production engine.
 
 The two Mask/Enable setters consume and retain flags before changing settings,
 as required by datasheet section 7.6.2.16, and again during verification. A failed
-pre-read prevents the write. Every successful Mask/Enable read, including raw
-diagnostic reads, hands observed CVRF to an outstanding legacy conversion.
+pre-read prevents the write. Writing Mask/Enable does not clear flag status,
+so writing zero in its flag positions does not acknowledge events. Every
+successful Mask/Enable read, including raw diagnostic reads, hands observed
+CVRF to an outstanding legacy conversion.
 
 The staged compatibility methods extend their 32-bit monotonic time input
 through one wrap for the active job; callers must poll at least once per 32-bit
@@ -456,7 +473,7 @@ Pin a release tag:
 
 ```ini
 lib_deps =
-  https://github.com/janhavelka/INA3221.git#v3.1.0
+  https://github.com/janhavelka/INA3221.git#v3.2.0
 ```
 
 Then include the public umbrella header:

@@ -3170,6 +3170,8 @@ Status INA3221::_writeManagedRegisterVerified(uint8_t reg, uint16_t value,
       measurement ? _measurementConfigState : _alertConfigState;
   const bool priorHardwareDirty = _hardwareConfigDirty;
   const Status priorHardwareDirtyStatus = _hardwareConfigDirtyStatus;
+  // Compatibility calls intentionally write then verify even identical values:
+  // unlike reconciliation, a Configuration write can retrigger conversion.
   Status st = _writeRegister16Tracked(reg, value);
   if (!st.ok()) {
     if (_writeMayHaveReachedDevice(st)) _markRegisterUnknown(reg);

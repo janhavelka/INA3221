@@ -15,16 +15,12 @@ contains maintained integration guidance and the primary device datasheet.
   library are documented in the public headers and tests rather than duplicated
   in generated research notes.
 
-## Transient review artifacts
+## Audit record
 
-- [Independent audit verification](CODE_AUDIT_VERIFICATION.md) records the
-  2026-09-08 review of every finding, additional fixes, and validation evidence,
-  with a link to the earlier review in Git history.
-- [Code audit](CODE_AUDIT.md) records the 2026-08-27 audit of `3.1.0`, the
-  resolution of every finding, and how to re-verify each one. Every permanent
-  contract change it describes is already in the changelog, the README and the
-  public headers, so the file may be deleted once an independent reviewer has
-  confirmed the implementations.
+- [Audit closeout](CODE_AUDIT.md) maps all 26 findings to their final remedies
+  and verification, preserves corrections to the original audit and CI provenance,
+  and records the release and hardware-validation boundary. Permanent contracts
+  remain in the README, changelog and public headers.
 
 ## Generated and validation output
 
