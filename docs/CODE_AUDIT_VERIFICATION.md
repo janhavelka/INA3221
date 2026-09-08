@@ -176,11 +176,18 @@ This verification commits fixes; it does not publish or tag a release.
 | Strict host warnings | Passed, including conversion/sign-conversion warnings as errors |
 | Static contracts | Timing guard, Arduino CLI and IDF example checks passed |
 | HIL host validation | Parser self-test and 404/407-step dry runs passed; IDs unique and final health step retained |
-| Arduino ESP32-S3 / ESP32-S2 | Baseline builds passed; final local rebuild blocked by missing shared compiler executables; CI evidence pending |
+| Arduino ESP32-S3 / ESP32-S2 | Both final CI builds passed; baseline local builds passed, later local rebuild hit the shared-tooling failure documented below |
 | Doxygen / metadata | Warning-clean; metadata and generated version checks passed |
 | Packaging | Passed; tarball written outside the repository |
-| Native ESP-IDF | Final CI evidence pending; no local IDF/Docker/installed WSL |
+| Native ESP-IDF | CI passed ESP32-S3 and ESP32-S2 using IDF 6.0.1 from `/component-source`; no local IDF/Docker/installed WSL |
 | Physical HIL | Not run: COM11/COM12 are ESP USB interfaces, but neither was confirmed as the isolated INA3221 fixture |
+
+The complete [CI run 34210620245](https://github.com/janhavelka/INA3221/actions/runs/34210620245)
+passed for implementation commit `2c5240b29561c4d438925305e8dd182c8d85b318`:
+native tests and strict warnings, both Arduino targets, package/documentation/
+contract validation, and both native ESP-IDF targets. The subsequent commit
+records this evidence in this report only; no implementation changed after the
+passing run.
 
 Windows commands use the required VS Code-managed wrapper. The first Arduino
 build encountered Windows' disabled long-path support while unpacking framework
