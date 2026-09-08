@@ -127,15 +127,21 @@ write/verification costs: the shared Configuration path also performs explicit
 triggers, for which an identical write can start a new conversion. The
 cooperative engine's conditional writes serve a different operation contract.
 
-- **Release 3.2.0:** metadata and dated changelog are prepared, including the
-  prominent TCF migration note. Tag creation and publication await green CI for
-  the pushed release commit, following [CONTRIBUTING.md](../CONTRIBUTING.md).
+- **Release 3.2.0: complete.** Release commit
+  `39f28767b346211dda320286166490b4fdf8b91f` passed
+  [CI 34232799942](https://github.com/janhavelka/INA3221/actions/runs/34232799942)
+  before the annotated `v3.2.0` tag was created and pushed. The
+  [GitHub release](https://github.com/janhavelka/INA3221/releases/tag/v3.2.0)
+  is published with the TCF migration note and explicit HIL limitation, following
+  [CONTRIBUTING.md](../CONTRIBUTING.md).
 - **Current local validation: PASS.** Native 155/155; strict host warnings;
   timing, Arduino CLI and IDF contracts; generated version and 3.2.0 metadata;
   HIL parser self-test and 404-step dry run; warning-clean Doxygen; both Arduino
   ESP32-S3/ESP32-S2 builds; package creation; and `git diff --check`.
   **Native IDF local builds: NOT RUN** (no local IDF/Docker/installed WSL).
-  The release commit's full CI matrix is pending and gates tag creation.
+  The release commit's full CI matrix passed, including both native IDF 6.0.1
+  targets built from `/component-source`. This subsequent documentation update
+  records the release evidence; no implementation changed after that passing run.
 - **Physical HIL: NOT RUN.** No isolated INA3221 fixture is confirmed; COM11/COM12
   identify ESP USB interfaces only. The hardware workflow stops at this boundary.
   [HIL.md](HIL.md) retains the actual evidence ledger and required qualification
