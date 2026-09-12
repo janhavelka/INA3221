@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Consolidated earlier development notes into the first published release
+  that included them; release comparisons now use published tags only.
+
 ## [3.2.0] - 2026-09-08
 
 **Upgrade note:** `AlertSnapshot::timingControl` changes from a sticky OR to
@@ -185,6 +190,8 @@ and its independent follow-up reviews.
 
 ## [3.1.0] - 2026-08-05
 
+Includes earlier development work that was not separately published.
+
 ### Added
 
 - Added complete Arduino and native ESP-IDF diagnostic CLI coverage for all
@@ -203,6 +210,28 @@ and its independent follow-up reviews.
   commands, explicit coverage, fixture assumptions, and non-claims.
 - Added a PlatformIO post-builder upload-configuration hook that disables
   esptool `5.3.0`'s Unicode progress bar on legacy Windows code pages.
+
+- Added the production `TransportConfig` and complete fixed-size
+  `DeviceProfile`, including integer shunt calibration/direction and the full
+  managed alert profile.
+- Added zero-I2C `bind()` and bus-silent `unbind()` lifecycle operations.
+- Added one cooperative job engine for staged initialize, apply-profile,
+  reconcile, triggered/continuous sampling, and verified power-down operations.
+- Added `PollContext` with absolute monotonic deadlines, per-transfer timeouts,
+  and a strict callback budget; one poll never exceeds `maxTransfers`.
+- Added cache-only `JobProgress` and take-once `JobResult` with request identity,
+  terminal state, transfer count, profile generation, and explicit hardware
+  effect.
+- Added fixed-unit `SampleBatch` results with three fixed channel slots,
+  per-quantity/channel validity, coherence, capture uptime, profile generation,
+  request ID, and alert snapshot provenance.
+- Added retained destructive alert events with peek/take access, and separate
+  measurement/alert configuration certainty (`UNKNOWN`, `APPLIED`, `DIRTY`).
+- Added pure fixed-unit conversion, calibration, timing, register-policy, and
+  successful-path maximum-transfer helpers.
+- Added deterministic owner-engine and fault-injection coverage plus strict
+  compiler, metadata consistency, Doxygen warning, and compiled ESP-IDF CI
+  gates.
 
 ### Changed
 
@@ -249,6 +278,29 @@ and its independent follow-up reviews.
   obsolete native-test Arduino/Wire stubs, and TunnelMonitor-only version
   generator logic that could never run in this repository.
 
+- Made the shared-bus production path explicitly single-owner, serialized,
+  non-reentrant, non-ISR, non-copyable, and non-movable. The library owns no bus,
+  task, lock, retry/recovery policy, or deadline renewal.
+- Defined each transport callback as exactly one bounded physical attempt with
+  exact-length completion, no hidden retry/recovery/reconfiguration, and no
+  driver re-entry.
+- Made READY/DEGRADED/OFFLINE health passive telemetry; OFFLINE no longer acts
+  as an I2C admission gate.
+- Changed triggered conversion scheduling to use maximum conversion timing plus
+  a fixed 100 us wake margin from a strictly post-callback time origin before
+  the CVRF/alert read, with bus-silent deadline-fit admission.
+- Bounded the staged compatibility APIs with derived deadlines, extended their
+  32-bit poll clock across wrap, and made `readBlocking()` use wrap-safe elapsed
+  time.
+- Updated Arduino and native ESP-IDF examples to lead with budget-one staged
+  initialization, triggered fixed-unit sampling, progress, bus-silent cancel,
+  and take-once result handling while retaining the diagnostic CLI.
+- Version-pinned PlatformIO and ESP-IDF build inputs and added real
+  ESP32-S3/ESP32-S2 IDF compiler jobs in CI.
+- Reclassified `Config`, `begin()`, direct measurement/configuration calls,
+  `readBlocking()`, `probe()`, and `recover()` as bounded standalone/diagnostic
+  compatibility APIs rather than the recommended shared-owner steady path.
+
 ### Removed
 
 - Removed synthesized application-note summaries, supplemental research PDFs,
@@ -280,56 +332,6 @@ and its independent follow-up reviews.
   corrected the HIL runner's `pyserial` installation guidance and strict final
   health classification.
 
-## [3.0.0] - 2026-07-19
-
-### Added
-- Added the production `TransportConfig` and complete fixed-size
-  `DeviceProfile`, including integer shunt calibration/direction and the full
-  managed alert profile.
-- Added zero-I2C `bind()` and bus-silent `unbind()` lifecycle operations.
-- Added one cooperative job engine for staged initialize, apply-profile,
-  reconcile, triggered/continuous sampling, and verified power-down operations.
-- Added `PollContext` with absolute monotonic deadlines, per-transfer timeouts,
-  and a strict callback budget; one poll never exceeds `maxTransfers`.
-- Added cache-only `JobProgress` and take-once `JobResult` with request identity,
-  terminal state, transfer count, profile generation, and explicit hardware
-  effect.
-- Added fixed-unit `SampleBatch` results with three fixed channel slots,
-  per-quantity/channel validity, coherence, capture uptime, profile generation,
-  request ID, and alert snapshot provenance.
-- Added retained destructive alert events with peek/take access, and separate
-  measurement/alert configuration certainty (`UNKNOWN`, `APPLIED`, `DIRTY`).
-- Added pure fixed-unit conversion, calibration, timing, register-policy, and
-  successful-path maximum-transfer helpers.
-- Added deterministic owner-engine and fault-injection coverage plus strict
-  compiler, metadata consistency, Doxygen warning, and compiled ESP-IDF CI
-  gates.
-
-### Changed
-- Made the shared-bus production path explicitly single-owner, serialized,
-  non-reentrant, non-ISR, non-copyable, and non-movable. The library owns no bus,
-  task, lock, retry/recovery policy, or deadline renewal.
-- Defined each transport callback as exactly one bounded physical attempt with
-  exact-length completion, no hidden retry/recovery/reconfiguration, and no
-  driver re-entry.
-- Made READY/DEGRADED/OFFLINE health passive telemetry; OFFLINE no longer acts
-  as an I2C admission gate.
-- Changed triggered conversion scheduling to use maximum conversion timing plus
-  a fixed 100 us wake margin from a strictly post-callback time origin before
-  the CVRF/alert read, with bus-silent deadline-fit admission.
-- Bounded the staged compatibility APIs with derived deadlines, extended their
-  32-bit poll clock across wrap, and made `readBlocking()` use wrap-safe elapsed
-  time.
-- Updated Arduino and native ESP-IDF examples to lead with budget-one staged
-  initialization, triggered fixed-unit sampling, progress, bus-silent cancel,
-  and take-once result handling while retaining the diagnostic CLI.
-- Version-pinned PlatformIO and ESP-IDF build inputs and added real
-  ESP32-S3/ESP32-S2 IDF compiler jobs in CI.
-- Reclassified `Config`, `begin()`, direct measurement/configuration calls,
-  `readBlocking()`, `probe()`, and `recover()` as bounded standalone/diagnostic
-  compatibility APIs rather than the recommended shared-owner steady path.
-
-### Fixed
 - Preserved latched alert events across destructive Mask/Enable reads until the
   application explicitly takes them.
 - Exposed uncertainty when a failed or short Mask/Enable transfer may already
@@ -511,8 +513,7 @@ and its independent follow-up reviews.
 
 [Unreleased]: https://github.com/janhavelka/INA3221/compare/v3.2.0...HEAD
 [3.2.0]: https://github.com/janhavelka/INA3221/compare/v3.1.0...v3.2.0
-[3.1.0]: https://github.com/janhavelka/INA3221/compare/v3.0.0...v3.1.0
-[3.0.0]: https://github.com/janhavelka/INA3221/compare/v2.0.0...v3.0.0
+[3.1.0]: https://github.com/janhavelka/INA3221/compare/v2.0.0...v3.1.0
 [2.0.0]: https://github.com/janhavelka/INA3221/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/janhavelka/INA3221/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/janhavelka/INA3221/compare/v1.0.0...v1.1.0
