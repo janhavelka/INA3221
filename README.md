@@ -549,6 +549,7 @@ parameter documentation with warnings treated as errors.
 
 ## Documentation map
 
+- [Retained branch review](docs/RETAINED_BRANCH_AUDIT.md) - implementation coverage, open integration questions, and retain/retire workflow.
 - <a href="docs/README.md">Documentation index</a> — maintained guides and the
   bundled device datasheet.
 - [Changelog](CHANGELOG.md) — release history and unreleased changes.

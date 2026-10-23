@@ -17,6 +17,9 @@ contains maintained integration guidance and the primary device datasheet.
 
 ## Audit record
 
+- [Retained branch review](RETAINED_BRANCH_AUDIT.md) inventories historical
+  audit/port tips, reconciles their findings with current main, and records the
+  remaining PV integration and timing-evidence questions.
 - [Audit closeout](CODE_AUDIT.md) maps all 26 findings to their final remedies
   and verification, preserves corrections to the original audit and CI provenance,
   and records the release and hardware-validation boundary. Permanent contracts
