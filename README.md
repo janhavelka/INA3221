@@ -549,7 +549,8 @@ parameter documentation with warnings treated as errors.
 
 ## Documentation map
 
-- [Retained branch review](docs/RETAINED_BRANCH_AUDIT.md) - implementation coverage, open integration questions, and retain/retire workflow.
+- [Retained branch review](https://github.com/janhavelka/INA3221/blob/main/docs/RETAINED_BRANCH_AUDIT.md) - implementation coverage, open integration questions, and retain/retire workflow.
+- [Software follow-up prompt](https://github.com/janhavelka/INA3221/blob/main/docs/prompts/README.md) - source-audited instructions for completing the power-valid integration contract.
 - <a href="docs/README.md">Documentation index</a> — maintained guides and the
   bundled device datasheet.
 - [Changelog](CHANGELOG.md) — release history and unreleased changes.

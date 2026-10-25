@@ -81,6 +81,10 @@ them. Add only when an actual consumer requires them.
 
 ## Open actionable items
 
+The [software implementation prompt](prompts/README.md), source-reviewed on
+2026-10-25, supplies the PV-1 implementation task and its evidence boundaries.
+Writing the prompt does not close PV-1, TIM-1 or HIL-1.
+
 ### PV-1: explain when the PV signal is meaningful
 
 **P1 for a product using PV as a power-good decision; otherwise P2 integration
@@ -91,8 +95,9 @@ only validates numeric limits. `AlertFlags::powerValid` is the raw PVF bit, not
 a certification of fresh board-level rail state. The current public README and
 PV setter documentation omit the needed qualification conditions.
 
-The bundled [TI SBOS576C datasheet](INA3221_datasheet.pdf), section 7.3.2.4,
-printed pages 13-14, independently confirms: PV evaluates all three bus rails,
+The bundled [TI SBOS576C datasheet](INA3221_datasheet.pdf), section 7.3.2.3,
+printed pages 13-14 (section references rechecked on 2026-10-25), independently
+confirms: PV evaluates all three bus rails,
 unused-channel IN- must connect to a used rail and unused IN+ must float, and
 periodic bus-voltage conversions are needed to keep the result current. VPU/PV
 interface voltage also needs explicit board-level treatment. These constraints
@@ -116,7 +121,7 @@ The current worst-case three-channel, shunt+bus, AVG_1024 gate is 55,713,792 us
 before the wake margin. The old report suggested removing the averaging factor.
 The bundled datasheet describes an iterative averaging filter (7.4.1), a scan
 period (7.4.2.1), samples in AVG bits (7.6.2.1), and CVRF after all conversions
-(7.6.2.10); these statements alone do not establish the earliest CVRF observed
+(7.6.2.16); these statements alone do not establish the earliest CVRF observed
 for every triggered configuration. Current tests establish the chosen software
 contract, not physical earliest-ready timing.
 
