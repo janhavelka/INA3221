@@ -118,7 +118,7 @@ not failed local runs. Historical review reports and recorded validation results
 remain in Git history rather than being duplicated here; raw HIL transcripts are
 external.
 
-## Current closeout and open items
+## Release closeout and open hardware qualification
 
 Closeout started on **2026-09-08** from `8b89b4f`. This file replaces the two
 reports and the documentation index points here; neither audit file is a
@@ -134,14 +134,14 @@ cooperative engine's conditional writes serve a different operation contract.
   [GitHub release](https://github.com/janhavelka/INA3221/releases/tag/v3.2.0)
   is published with the TCF migration note and explicit HIL limitation, following
   [CONTRIBUTING.md](../CONTRIBUTING.md).
-- **Current local validation: PASS.** Native 155/155; strict host warnings;
+- **Recorded 3.2.0 release validation (2026-09-08): PASS.** Native 155/155; strict host warnings;
   timing, Arduino CLI and IDF contracts; generated version and 3.2.0 metadata;
   HIL parser self-test and 404-step dry run; warning-clean Doxygen; both Arduino
   ESP32-S3/ESP32-S2 builds; package creation; and `git diff --check`.
   **Native IDF local builds: NOT RUN** (no local IDF/Docker/installed WSL).
   The release commit's full CI matrix passed, including both native IDF 6.0.1
-  targets built from `/component-source`. This subsequent documentation update
-  records the release evidence; no implementation changed after that passing run.
+  targets built from `/component-source`. These are results for the recorded
+  release revision, not evidence that a later checkout has been retested.
 - **Physical HIL: NOT RUN.** No isolated INA3221 fixture is confirmed; COM11/COM12
   identify ESP USB interfaces only. The hardware workflow stops at this boundary.
   [HIL.md](HIL.md) retains the actual evidence ledger and required qualification
@@ -149,7 +149,7 @@ cooperative engine's conditional writes serve a different operation contract.
   setter/read-clear timing, CVRF fault rechecks, and observed-drift handling remain
   unqualified by the expanded suite; no result or transcript hash is inferred.
 
-The current Windows build reused installed packages with process-only settings:
+The recorded 2026-09-08 Windows build reused installed packages with process-only settings:
 `PLATFORMIO_CORE_DIR=$USERPROFILE/.platformio`,
 `PLATFORMIO_PACKAGES_DIR=C:/pio/packages`, `PLATFORMIO_OFFLINE=1`, and a `PATH`
 prefix of `$USERPROFILE/.platformio/tools/toolchain-xtensa-esp-elf/bin`

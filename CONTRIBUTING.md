@@ -9,8 +9,8 @@ rules.
 
 Required for the full host/documentation pass:
 
-- Python 3
-- PlatformIO
+- Python 3 (CI uses 3.11)
+- PlatformIO Core (CI pins 6.1.19)
 - a C++17 host compiler
 - Doxygen
 
@@ -18,8 +18,14 @@ ESP-IDF `6.0.1` is additionally required to reproduce the native example builds.
 Hardware-in-the-loop checks require a supported ESP32-S2/S3 fixture and are not
 implied by a successful host build.
 
-Create a focused branch, make the smallest coherent change, and preserve any
-unrelated worktree changes. `library.json` is the version source of truth;
+On Windows, use `.\scripts\pio.cmd`; it selects the existing VS Code-managed
+PlatformIO installation. If it is missing, report that rather than installing
+another Core.
+
+Fetch and inspect the current branch/upstream before editing; fast-forward only
+when safe. Keep an existing promptset on its branch unless the user requests
+another branch. Make the smallest coherent change and preserve unrelated
+worktree changes. `library.json` is the version source of truth;
 `include/INA3221/Version.h` is generated and must not be edited manually.
 
 ## Engineering expectations
@@ -57,6 +63,8 @@ doxygen Doxyfile
 .\scripts\pio.cmd test -e native
 .\scripts\pio.cmd run -e esp32s3dev
 .\scripts\pio.cmd run -e esp32s2dev
+.\scripts\pio.cmd pkg pack
+git diff --check
 ```
 
 When ESP-IDF is installed, also run both native targets:
@@ -70,9 +78,16 @@ Report unavailable toolchains as `NOT RUN`; do not treat a static contract check
 as compiler, linker, or hardware evidence. Hardware contributors must also
 follow the bounded procedure and evidence rules in [docs/HIL.md](docs/HIL.md).
 
+Documentation-only changes normally need the contract, version/metadata, local
+link and Doxygen checks above. Use native/strict checks for behavior changes.
+Major behavior, integration, toolchain and release changes require the exact
+final commit's terminal CI results; follow `AGENTS.md` for scope and triggers.
+CI runs on pushes/PRs to `main`; it has no manual dispatch trigger.
+
 ## Commits and pull requests
 
-Use clear, scoped commits. Conventional prefixes such as `feat:`, `fix:`,
+Stage only owned files or hunks and use clear, scoped commits. Conventional
+prefixes such as `feat:`, `fix:`,
 `docs:`, `refactor:`, `test:`, and `chore:` are preferred.
 
 A pull request should explain:
@@ -103,13 +118,23 @@ library, and review any applicable HIL evidence. Then commit and push the
 release preparation:
 
 ```powershell
-git add -A
+git add -- library.json idf_component.yml Doxyfile README.md CHANGELOG.md include/INA3221/Version.h
 git commit -m "Release vX.Y.Z"
 git push origin main
-gh run watch --exit-status
+$releaseCommit = git rev-parse HEAD
+gh run list --workflow ci.yml --branch main --commit $releaseCommit --json databaseId,headSha,status,conclusion
 ```
 
-Create the annotated tag only after the pushed commit's CI run is green:
+Select the CI run whose `headSha` matches `$releaseCommit`, then replace
+`RUN_ID` below with its `databaseId`:
+
+```powershell
+gh run watch RUN_ID --exit-status
+gh run view RUN_ID --json headSha,status,conclusion
+```
+
+Create the annotated tag only after that exact commit's run has completed
+successfully and HEAD still equals `$releaseCommit`:
 
 ```powershell
 git tag -a vX.Y.Z -m "Release vX.Y.Z"

@@ -1,29 +1,32 @@
 # Hardware-in-the-loop validation
 
-<a href="README.md">Documentation index</a> |
-<a href="../examples/01_basic_bringup_cli/README.md">Arduino example</a>
+[Documentation index](https://github.com/janhavelka/INA3221/blob/main/docs/README.md) |
+[Arduino example](https://github.com/janhavelka/INA3221/blob/main/examples/01_basic_bringup_cli/README.md)
 
 This guide defines the maintained hardware qualification workflow for the
 Arduino/PlatformIO diagnostic firmware. Build success and native tests do not
 substitute for this run: HIL talks to a physical INA3221 through the public
 example command surface and retains a reviewable report.
 
-## Qualified stack and fixture
+## Configured stack and reference fixture
 
 The repository exact-pins pioarduino `platform-espressif32` `55.03.311`, which
 contains Arduino-ESP32 `3.3.11`, ESP-IDF `5.5.5`, esptool `5.3.0`, and the GCC
 14.2.0 toolchain. The ESP32-S3 environment assumes 4 MB QIO flash, 2 MB QSPI
 PSRAM, USB Serial/JTAG HWCDC, SDA on GPIO 8, SCL on GPIO 9, and an INA3221 at
-`0x40`. Adjust `platformio.ini` and `examples/common/BoardConfig.h` before
-claiming evidence for different hardware.
+`0x40`. The runner checks those framework versions and memory sizes, and
+expects exactly one healthy INA3221 at `0x40`. Different memory layouts,
+addresses or target fixtures require reviewed runner expectations as well as
+changes to `platformio.ini` and `examples/common/BoardConfig.h` before claiming
+hardware evidence. The firmware build targets remain ESP32-S2 and ESP32-S3.
 
-The native ESP-IDF example is a separate build surface qualified with ESP-IDF
+The native ESP-IDF example is a separate build surface targeted by CI with ESP-IDF
 `6.0.1`; an Arduino HIL result does not prove native-IDF hardware behavior.
 
 ## Prerequisites
 
-- An isolated ESP32-S2/S3 fixture wired to a powered INA3221 with suitable I2C
-  pull-ups and safe shunts/loads.
+- An isolated reference fixture matching the expectations above, wired to a
+  powered INA3221 with suitable I2C pull-ups and safe shunts/loads.
 - PlatformIO Core `6.1.19` or newer.
 - Python 3 and the `pyserial` package (`python -m pip install pyserial`).
 - Exclusive access to the selected serial port.
@@ -34,7 +37,8 @@ library archive contains paths that can exceed the legacy 260-character limit.
 
 Confirm the A0 strap, voltage levels, shunt ratings, and load limits before
 uploading. The automated run changes volatile INA3221 configuration and alert
-limit registers, then verifies their restoration. The chip has no EEPROM/NVM.
+limit registers and checks restoration to the suite's fixed test baseline;
+it does not preserve arbitrary pre-run settings. The chip has no EEPROM/NVM.
 
 ## Build, upload, and run
 
@@ -92,10 +96,12 @@ and total transport failures and clean hardware-configuration certainty. A
 PASS count alone is insufficient; review the final health transcript and the
 runner's limitations section.
 
-Restoration is guaranteed only when the bounded suite reaches its restore and
-final-health steps. If the host, serial link, or runner is interrupted, run
-`recover` and verify `settings`, or power-cycle the INA3221, before reusing the
-fixture.
+Treat restoration as verified only when the restore, register-verification and
+final-health checks pass. Reaching those steps alone is insufficient: ordinary
+test failures do not stop the suite. After interruption or failure, reapply the
+intended profile and verify it before reusing the fixture. `recover` reapplies
+the currently retained profile, which may still be an intermediate test profile;
+a power cycle restores chip defaults rather than the application's settings.
 
 ## Evidence ledger
 

@@ -17,17 +17,19 @@ contains maintained integration guidance and the primary device datasheet.
 
 ## Audit record
 
-- [Software follow-up prompt](prompts/README.md) records the completed PV-1 task,
-  resolution commit, verified device citation and checks. It preserves
-  the separate TIM-1/HIL evidence boundaries.
-
 - [Retained branch review](RETAINED_BRANCH_AUDIT.md) inventories historical
-  audit/port tips, reconciles their findings with current main, and records the
+  audit/port tips, reconciles their findings with the reviewed source, and records the
   PV contract resolution and remaining physical-qualification/timing questions.
 - [Audit closeout](CODE_AUDIT.md) maps all 26 findings to their final remedies
   and verification, preserves corrections to the original audit and CI provenance,
   and records the release and hardware-validation boundary. Permanent contracts
   remain in the README, changelog and public headers.
+
+Completed implementation prompts have been removed from the working tree;
+their instructions remain in Git history and their resolution commits/checks
+are recorded in the retained branch review. TIM-1 (earliest CVRF timing) and
+HIL-1 (physical qualification) remain open. The historical 3.1.0 HIL results
+do not qualify the current 3.2.0 implementation.
 
 ## Generated and validation output
 

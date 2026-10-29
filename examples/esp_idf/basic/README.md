@@ -36,8 +36,9 @@ idf.py -C examples/esp_idf/basic flash monitor
 ```
 
 Replace `esp32s3` with `esp32s2` for that target. Running `set-target` rewrites
-the example's generated build configuration; do not infer that the other target
-still has current build evidence after switching.
+the example's generated build configuration; retain each target's build log
+before switching. Artifacts in the build directory belong to the last target
+built, while saved logs retain evidence for their recorded target and revision.
 
 The example-local `components/INA3221/CMakeLists.txt` shim loads the root source
 and public include directory under a fixed component name. The build therefore

@@ -38,8 +38,9 @@ operation.
   adapters provide the actual I2C callbacks.
 - Bounded synchronous compatibility API for standalone bring-up and diagnostics.
 
-The library requires C++17. This repository validates ESP32-S2 and ESP32-S3;
-other targets are not claimed by the package metadata.
+The library requires C++17. CI builds the examples for ESP32-S2 and ESP32-S3;
+hardware qualification is recorded separately in [HIL.md](docs/HIL.md).
+Other targets are not claimed by the package metadata.
 
 ## Hardware and address selection
 
@@ -162,8 +163,8 @@ uses exactly one.
 ### Minimal owner loop
 
 The transport functions below are application adapters. See the complete
-<a href="examples/01_basic_bringup_cli/README.md">Arduino example</a> and
-<a href="examples/esp_idf/basic/README.md">native ESP-IDF example</a> for real
+[Arduino example](https://github.com/janhavelka/INA3221/blob/main/examples/01_basic_bringup_cli/README.md) and
+[native ESP-IDF example](https://github.com/janhavelka/INA3221/blob/main/examples/esp_idf/basic/README.md) for real
 single-attempt implementations.
 
 ```cpp
@@ -231,10 +232,10 @@ void service(uint64_t nowMs) {
 }
 ```
 
-After successful initialization, use
+After successful initialization of the triggered profile above, schedule
 `startTriggeredSample(Mode::SHUNT_BUS_TRIG, id, deadline)` for an atomic
-triggered batch, or `startContinuousSample(id, deadline, consumeAlerts)` for a
-mixed-age continuous read.
+triggered batch. For mixed-age continuous reads, first apply a continuous-mode
+profile, then use `startContinuousSample(id, deadline, consumeAlerts)`.
 The triggered example needs repeated application-scheduled acquisitions to
 keep PV current; the default PV window also needs board-specific review.
 
@@ -342,8 +343,8 @@ arbitrary floating inputs. Check the selected measurement channels and actual
 rail topology together before trusting PV.
 
 Figure 7-2 shows the PV open-drain output stage, pull-up network and optional
-divider; the high output depends on VPU and that network. Check the board's input and
-output voltages, loading and receiving GPIO limits against
+divider; the high output depends on VPU and that network. Check the board's
+input and output voltages, loading and receiving GPIO limits against
 [sections 6.1, 6.3 and 6.5, printed pages 4–5](https://github.com/janhavelka/INA3221/blob/8b2fc66068ead8631e5eaa0b4ca9188c89294a46/docs/INA3221_datasheet.pdf#page=4).
 The bus measurement range is 0–26 V; **VPU's 26 V and PV's 6 V absolute maxima
 are different stress limits**, not operating targets. Neither an I2C read nor
@@ -549,10 +550,9 @@ library code.
 Repository example and HIL builds exact-pin pioarduino
 [`platform-espressif32` `55.03.311`](https://github.com/pioarduino/platform-espressif32/releases/tag/55.03.311),
 which supplies Arduino-ESP32 `3.3.11` and ESP-IDF `5.5.5` and requires
-PlatformIO Core `6.1.19` or newer. This replaces the previous `54.03.20` /
-Arduino `3.2.0` / ESP-IDF `5.4.1` build baseline. Consuming applications own
-their platform selection; the repository pin qualifies the examples, not an
-application's separate toolchain.
+PlatformIO Core `6.1.19` or newer. These pins define the repository's example
+build inputs. Consuming applications own their platform selection and must
+verify their own toolchain and hardware.
 
 ### Native ESP-IDF
 
@@ -572,14 +572,14 @@ See the [native ESP-IDF integration guide](docs/IDF_PORT.md).
 
 ## Examples
 
-- <a href="examples/01_basic_bringup_cli/README.md">Arduino/PlatformIO bring-up CLI</a>:
+- [Arduino/PlatformIO bring-up CLI](https://github.com/janhavelka/INA3221/blob/main/examples/01_basic_bringup_cli/README.md):
   complete cooperative job control, address/frequency lifecycle, all chip
   setters, retained sample/alert/register-mismatch evidence, exact transfer
   counters, full diagnostics, framed HIL, stress, and self-test commands.
-- <a href="examples/esp_idf/basic/README.md">Native ESP-IDF application</a>: native
+- [Native ESP-IDF application](https://github.com/janhavelka/INA3221/blob/main/examples/esp_idf/basic/README.md): native
   `app_main`, `driver/i2c_master.h`, `esp_timer`, FreeRTOS waits, fixed C
   buffers, and the same owner-safe workflow without Arduino facades.
-- [`examples/common/`](examples/common/): Arduino-example glue only, not
+- [`examples/common/`](https://github.com/janhavelka/INA3221/tree/main/examples/common): Arduino-example glue only, not
   installed library code.
 
 ## Validation
@@ -594,13 +594,15 @@ builds from the root:
 .\scripts\pio.cmd run -e esp32s2dev
 ```
 
-CI compiles native tests, both Arduino targets, and both native ESP-IDF targets.
+CI runs native tests and strict host checks, and builds both Arduino targets
+and both native ESP-IDF targets.
 A static source-contract check is not an ESP-IDF compile. When `idf.py` is not
 available, report the corresponding local build as not run.
 
-The release-candidate Arduino fixture is covered by the reviewed 379-step
-short-HIL result in [docs/HIL.md](docs/HIL.md). That run is intentionally
-separate from native-IDF and ESP32-S2 hardware claims.
+The reviewed 379-step Arduino HIL result covers a historical **3.1.0** fixture
+build. It predates the 3.2.0 fixes and expanded 404-step suite, whose physical
+qualification remains **NOT RUN**. See [docs/HIL.md](docs/HIL.md) for exact
+source/fixture identity and the separate native-IDF and ESP32-S2 evidence limits.
 
 Doxygen HTML is generated at `docs/doxygen/html/index.html` and is intentionally
 ignored by Git. Public headers are checked for undocumented symbols and missing
@@ -608,18 +610,18 @@ parameter documentation with warnings treated as errors.
 
 ## Documentation map
 
-- [Retained branch review](https://github.com/janhavelka/INA3221/blob/main/docs/RETAINED_BRANCH_AUDIT.md) - implementation coverage, open integration questions, and retain/retire workflow.
-- [Software follow-up prompt](https://github.com/janhavelka/INA3221/blob/main/docs/prompts/README.md) - source-audited instructions for completing the power-valid integration contract.
-- <a href="docs/README.md">Documentation index</a> — maintained guides and the
+- [Documentation index](https://github.com/janhavelka/INA3221/blob/main/docs/README.md) — maintained guides and the
   bundled device datasheet.
 - [Changelog](CHANGELOG.md) — release history and unreleased changes.
-- [Public API header](include/INA3221/INA3221.h) — authoritative Doxygen contract.
+- [Public API header](https://github.com/janhavelka/INA3221/blob/main/include/INA3221/INA3221.h) — authoritative Doxygen contract.
 - [Native ESP-IDF integration](docs/IDF_PORT.md) — bus ownership and adapter rules.
 - [Hardware-in-the-loop validation](docs/HIL.md) — reproducible fixture run and
   reviewed evidence ledger.
+- [Audit closeout](https://github.com/janhavelka/INA3221/blob/main/docs/CODE_AUDIT.md) — 3.2.0 remedies and historical software verification.
+- [Retained branch review](https://github.com/janhavelka/INA3221/blob/main/docs/RETAINED_BRANCH_AUDIT.md) — PV-1 resolution and open timing/hardware evidence questions.
 - [INA3221 datasheet](https://github.com/janhavelka/INA3221/blob/8b2fc66068ead8631e5eaa0b4ca9188c89294a46/docs/INA3221_datasheet.pdf) — authoritative
   bundled device reference.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE).
+MIT License. See [LICENSE](https://github.com/janhavelka/INA3221/blob/main/LICENSE).

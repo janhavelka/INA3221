@@ -1,6 +1,6 @@
 # Native ESP-IDF integration
 
-[Documentation index](README.md) · [Project README](../README.md)
+[Documentation index](https://github.com/janhavelka/INA3221/blob/main/docs/README.md) · [Project README](../README.md)
 
 The repository is an ESP-IDF component and its core remains framework-neutral.
 The production API is the same under Arduino and ESP-IDF: an application-owned
@@ -63,8 +63,9 @@ the native detail.
 Some other backends expose only one bus-level timeout rather than a true
 per-call timeout. An owner using such an adapter must cap `maxTransfers` so the
 remaining deadline divided across the budget is never tighter than that fixed
-timeout, or poll with a zero transfer budget until enough time/deadline progress
-is available. The Arduino example demonstrates that admission rule. The native
+timeout, or poll with a zero transfer budget to advance deadline processing
+without bus traffic. Waiting does not increase the remaining deadline budget.
+The Arduino example demonstrates that admission rule. The native
 IDF adapter accepts the driver's per-call timeout directly and needs no such
 cap.
 
@@ -92,7 +93,7 @@ passive telemetry and never suppresses an owner-admitted transfer.
 
 The authoritative successful-path callback maxima, triggered-conversion wake
 margin, and deadline admission rules are maintained in the root README's
-[deterministic-bounds section](../README.md#deterministic-bounds). Budget one
+[deterministic-bounds section](https://github.com/janhavelka/INA3221/blob/main/README.md#deterministic-bounds). Budget one
 limits each normal service call to one synchronous backend callback.
 
 ## Native example
@@ -108,8 +109,8 @@ limits each normal service call to one synchronous backend callback.
 - the existing scan, measurement, configuration, alert, raw register, health,
   stress, and self-test diagnostics.
 
-The CLI exposes every cooperative job kind, exact manual budgets and automatic
-service, retained results/samples/alerts, full diagnostics and register mismatch
+The CLI exposes every cooperative job kind, explicit manual transfer budgets
+and automatic service, retained results/samples/alerts, full diagnostics and register mismatch
 evidence, runtime valid-address selection, runtime 10-400 kHz bus configuration,
 and transfer/owner/frequency stress. The transport callback still performs one
 attempt only; retry and bus recovery remain application policy.

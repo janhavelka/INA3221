@@ -83,9 +83,11 @@ them. Add only when an actual consumer requires them.
 
 ## Follow-up status
 
-The [software implementation prompt](prompts/README.md), source-reviewed on
-2026-10-25, records the PV-1 task and its resolution. TIM-1 and HIL-1 remain
-open; completing the documentation does not supply physical evidence.
+The completed PV-1 prompt and its index have been removed from the working
+tree. The [original instructions](https://github.com/janhavelka/INA3221/blob/184d38c52b2b59f56c6a8eee8e10bbe9630efd6f/docs/prompts/01-power-valid-contract.md)
+remain in Git history; resolution and verification are recorded below.
+TIM-1 and HIL-1 remain open; completing the documentation does not supply
+physical evidence.
 
 ### PV-1: explain when the PV signal is meaningful
 

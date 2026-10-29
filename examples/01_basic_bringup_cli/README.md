@@ -37,7 +37,7 @@ configuration for board wiring; the library must not own pins or bus setup.
 
 From the repository root:
 
-```bash
+```powershell
 .\scripts\pio.cmd run -e esp32s3dev
 .\scripts\pio.cmd run -e esp32s3dev -t upload
 .\scripts\pio.cmd device monitor -e esp32s3dev
@@ -54,7 +54,7 @@ the Arduino core's ESP-IDF `5.5.5` libraries.
 For a strict automated qualification on an isolated fixture, follow the
 [HIL guide](../../docs/HIL.md). A typical bounded invocation is:
 
-```bash
+```powershell
 python tools/hil_cli_runner.py --port COM5 `
   --stress-count 500 --stress-mix-count 500 `
   --sample-benchmark --benchmark-count 500
@@ -99,7 +99,7 @@ production-flow commands are:
 | `job init` / `job apply` / `job reconcile` | Admit lifecycle/profile jobs |
 | `job sample` / `job continuous [0\|1]` | Admit triggered or continuous fixed-unit samples |
 | `job powerdown` | Admit verified power-down |
-| `job step <0..255>` / `job auto <0\|1>` | Select an exact manual transfer budget or loop servicing |
+| `job step <0..255>` / `job auto <0\|1>` | Request a manual transfer budget (capped for the fixed Wire timeout) or select loop servicing |
 | `job cancel` | Cancel the active job without I2C |
 | `cancel` | Abandon an outstanding legacy conversion without I2C |
 | `job lastsample` / `job alerts [take]` | Inspect retained sample and alert evidence |

@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   polarity and freshness, hysteresis, unused-input wiring, VPU/PV ratings,
   threshold quantization and application responsibility. Runtime behavior and
   supported profiles are unchanged.
+- Clarified current build/HIL evidence, fixture and restoration requirements,
+  contribution/release checks, and links from generated API documentation.
+
+### Removed
+
+- Removed completed PV-1 prompt files; the maintained audit record retains
+  resolution commits, verification and open timing/hardware qualification items.
 
 ## [3.2.0] - 2026-09-08
 
@@ -77,8 +84,10 @@ and its independent follow-up reviews.
   successful write, which left `measurementConfigState()` `DIRTY` and blocked
   every direct measurement read until a full `recover()`. All typed setters now
   share one write/readback verifier, commit staged profile state only after a
-  matching read, and leave verified state `APPLIED`; failed or mismatched writes
-  retain honest `DIRTY`/`UNKNOWN` certainty.
+  matching read. A verified Configuration setter restores measurement certainty
+  to `APPLIED`; a verified alert setter preserves the alert family's prior
+  certainty. Failures preserve or invalidate certainty according to the observed
+  hardware effects.
 - An outstanding legacy conversion whose CVRF never arrived permanently rejected
   every owner job, `bind()` and `recover()`. Rebind and lifecycle/recovery jobs
   now abandon that stale bookkeeping bus-silently while taking over lifecycle
@@ -349,6 +358,9 @@ Includes earlier development work that was not separately published.
   calibration, or alert-summation profile invariants invalid before any I2C.
 
 ## [2.0.0] - 2026-06-29
+
+The original release notes carry the date above; the tag and GitHub release
+were published on 2026-07-01.
 
 ### Added
 - Added `tickStatus(nowMs)` for callers that need the bounded `tick()` work
