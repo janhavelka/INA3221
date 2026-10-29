@@ -323,7 +323,7 @@ threshold, stays high through the hysteresis band, and goes low if any rail
 falls below the lower threshold. It then requires the upper condition again.
 The 10 V upper / 9 V lower values are register defaults, not safe settings for
 every board. This contract follows the bundled **TI SBOS576C, September 2025**,
-[section 7.3.2.3, Figures 7-1 and 7-2, printed pages 13–14](docs/INA3221_datasheet.pdf#page=13).
+[section 7.3.2.3, Figures 7-1 and 7-2, printed pages 13–14](https://github.com/janhavelka/INA3221/blob/8b2fc66068ead8631e5eaa0b4ca9188c89294a46/docs/INA3221_datasheet.pdf#page=13).
 
 Bus-voltage conversions must run periodically: use a continuous bus mode or
 schedule repeated bus-inclusive triggered conversions. Power-down, shunt-only
@@ -344,7 +344,7 @@ rail topology together before trusting PV.
 Figure 7-2 shows the PV open-drain output stage, pull-up network and optional
 divider; the high output depends on VPU and that network. Check the board's input and
 output voltages, loading and receiving GPIO limits against
-[sections 6.1, 6.3 and 6.5, printed pages 4–5](docs/INA3221_datasheet.pdf#page=4).
+[sections 6.1, 6.3 and 6.5, printed pages 4–5](https://github.com/janhavelka/INA3221/blob/8b2fc66068ead8631e5eaa0b4ca9188c89294a46/docs/INA3221_datasheet.pdf#page=4).
 The bus measurement range is 0–26 V; **VPU's 26 V and PV's 6 V absolute maxima
 are different stress limits**, not operating targets. Neither an I2C read nor
 the 26 V threshold check establishes a GPIO-safe PV level.
@@ -360,7 +360,7 @@ neither qualifies wiring, current rails or the complete alert configuration.
 `AlertFlags::powerValid` and `AlertSnapshot::powerValid` expose observed PVF:
 `true` means PV high, the device's power-valid condition. PVF follows the pin
 condition and is not cleared by a Mask/Enable read
-([section 7.6.2.16, Table 7-36, printed page 34](docs/INA3221_datasheet.pdf#page=34)).
+([section 7.6.2.16, Table 7-36, printed page 34](https://github.com/janhavelka/INA3221/blob/8b2fc66068ead8631e5eaa0b4ca9188c89294a46/docs/INA3221_datasheet.pdf#page=34)).
 The retained snapshot replaces PVF on each successful alert read; it does not
 OR-latch it into the CF/SF/WF/CVRF `events`. Cache-only peek/take calls do not
 refresh PVF, and taking events leaves that observation cached. Its initial
@@ -617,7 +617,7 @@ parameter documentation with warnings treated as errors.
 - [Native ESP-IDF integration](docs/IDF_PORT.md) — bus ownership and adapter rules.
 - [Hardware-in-the-loop validation](docs/HIL.md) — reproducible fixture run and
   reviewed evidence ledger.
-- <a href="docs/INA3221_datasheet.pdf">INA3221 datasheet</a> — authoritative
+- [INA3221 datasheet](https://github.com/janhavelka/INA3221/blob/8b2fc66068ead8631e5eaa0b4ca9188c89294a46/docs/INA3221_datasheet.pdf) — authoritative
   bundled device reference.
 
 ## License
