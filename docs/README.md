@@ -17,13 +17,13 @@ contains maintained integration guidance and the primary device datasheet.
 
 ## Audit record
 
-- [Software follow-up prompt](prompts/README.md) provides the active PV-1 task,
-  its source map, verified device citation and acceptance checks. It preserves
+- [Software follow-up prompt](prompts/README.md) records the completed PV-1 task,
+  resolution commit, verified device citation and checks. It preserves
   the separate TIM-1/HIL evidence boundaries.
 
 - [Retained branch review](RETAINED_BRANCH_AUDIT.md) inventories historical
   audit/port tips, reconciles their findings with current main, and records the
-  remaining PV integration and timing-evidence questions.
+  PV contract resolution and remaining physical-qualification/timing questions.
 - [Audit closeout](CODE_AUDIT.md) maps all 26 findings to their final remedies
   and verification, preserves corrections to the original audit and CI provenance,
   and records the release and hardware-validation boundary. Permanent contracts
