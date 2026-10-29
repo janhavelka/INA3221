@@ -128,6 +128,9 @@ The initial defaults are:
 | Warning/critical latch | Disabled |
 | Current direction | Positive shunt is positive current |
 
+The PV defaults do not qualify a board's power-good signal. See
+[Power-valid integration](#power-valid-integration) before using PV/PVF.
+
 ### Job lifecycle
 
 The normal lifecycle is:
@@ -232,6 +235,8 @@ After successful initialization, use
 `startTriggeredSample(Mode::SHUNT_BUS_TRIG, id, deadline)` for an atomic
 triggered batch, or `startContinuousSample(id, deadline, consumeAlerts)` for a
 mixed-age continuous read.
+The triggered example needs repeated application-scheduled acquisitions to
+keep PV current; the default PV window also needs board-specific review.
 
 ## Samples, units, and provenance
 
@@ -308,6 +313,60 @@ When profile or power-down readback fails, `JobResult::mismatchValid` is true
 and `mismatchRegister`, `mismatchExpected`, `mismatchActual`, and
 `mismatchMask` retain the first exact comparison failure. These fields are
 zero/false for results that did not fail register verification.
+
+<a id="power-valid-integration"></a>
+
+### Power-valid integration
+
+PV starts low. It goes high when the monitored bus rails exceed the upper
+threshold, stays high through the hysteresis band, and goes low if any rail
+falls below the lower threshold. It then requires the upper condition again.
+The 10 V upper / 9 V lower values are register defaults, not safe settings for
+every board. This contract follows the bundled **TI SBOS576C, September 2025**,
+[section 7.3.2.3, Figures 7-1 and 7-2, printed pages 13–14](docs/INA3221_datasheet.pdf#page=13).
+
+Bus-voltage conversions must run periodically: use a continuous bus mode or
+schedule repeated bus-inclusive triggered conversions. Power-down, shunt-only
+operation, or stopping subsequent triggers can leave PV stale. Reading alerts
+does not acquire a new bus measurement, and a threshold setter does not start
+monitoring. The application owns conversion cadence, successful completion and
+subsequent PVF observation, and the maximum observation age it can accept for a
+power-good decision. The driver supplies no PVF freshness timestamp or expiry;
+its conservative conversion scheduling bound is not proof of current rails.
+
+The datasheet narrative requires all three rails; Figure 7-1 describes the
+transitions in terms of enabled channels. Follow its explicit wiring rule when
+using PV with fewer rails: connect each unused-channel IN− to a used rail and
+leave its IN+ floating. Clearing `enabledChannels` bits alone does not qualify
+arbitrary floating inputs. Check the selected measurement channels and actual
+rail topology together before trusting PV.
+
+Figure 7-2 shows the PV open-drain output stage, pull-up network and optional
+divider; the high output depends on VPU and that network. Check the board's input and
+output voltages, loading and receiving GPIO limits against
+[sections 6.1, 6.3 and 6.5, printed pages 4–5](docs/INA3221_datasheet.pdf#page=4).
+The bus measurement range is 0–26 V; **VPU's 26 V and PV's 6 V absolute maxima
+are different stress limits**, not operating targets. Neither an I2C read nor
+the 26 V threshold check establishes a GPIO-safe PV level.
+
+`validatePowerValidWindow()` checks requested `lower < upper`, the 0–26,000 mV
+range and encodability only. Profile thresholds round to the nearest 8 mV;
+distinct requested limits can encode to the same value, so choose encoded
+limits that retain the intended hysteresis. Valid shunt-only, power-down and
+partially enabled profiles remain supported when PV is not used. Threshold
+getters read configuration, and typed setters write/read back a threshold;
+neither qualifies wiring, current rails or the complete alert configuration.
+
+`AlertFlags::powerValid` and `AlertSnapshot::powerValid` expose observed PVF:
+`true` means PV high, the device's power-valid condition. PVF follows the pin
+condition and is not cleared by a Mask/Enable read
+([section 7.6.2.16, Table 7-36, printed page 34](docs/INA3221_datasheet.pdf#page=34)).
+The retained snapshot replaces PVF on each successful alert read; it does not
+OR-latch it into the CF/SF/WF/CVRF `events`. Cache-only peek/take calls do not
+refresh PVF, and taking events leaves that observation cached. Its initial
+`false` is not evidence of an observed low pin. Keep the destructive-read and
+configuration-certainty rules above: even `APPLIED` verifies register state,
+not a fresh board-level power-good decision.
 
 ## Deterministic bounds
 

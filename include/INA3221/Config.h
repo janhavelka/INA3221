@@ -84,6 +84,9 @@ enum class ConvTime : uint8_t {
 };
 
 /// @brief Operating mode.
+/// @note PV tracks rail changes only with periodic bus-voltage conversions.
+/// Power-down/shunt-only modes do not refresh PV; bus-inclusive triggered
+/// modes need repeated application-scheduled conversions when PV is used.
 enum class Mode : uint8_t {
   POWER_DOWN      = 0,  ///< Power-down
   SHUNT_TRIG      = 1,  ///< Shunt voltage, single-shot
@@ -124,13 +127,21 @@ struct ShuntCalibration {
 };
 
 /// @brief Complete desired state for all managed volatile alert registers.
+/// @note PV thresholds validate numeric configuration only, not wiring, rail
+/// freshness or PV output voltage. The 10 V/9 V defaults are register defaults,
+/// not board recommendations. Limits round to nearest 8 mV; requested ordering
+/// does not ensure distinct codes. See
+/// @ref power-valid-integration "Power-valid integration" before using PV as power-good.
 struct AlertProfile {
   int32_t criticalLimitMicroVolts[3] = {163800, 163800, 163800}; ///< Per-channel single-conversion limits
   int32_t warningLimitMicroVolts[3] = {163800, 163800, 163800}; ///< Per-channel averaged limits
   ChannelMask summationChannels = 0; ///< Enabled channels included in shunt summation
   int32_t shuntSumLimitMicroVolts = 655320; ///< Signed shunt-sum alert limit
-  uint32_t powerValidUpperMilliVolts = 10000; ///< Upper bus-voltage threshold
-  uint32_t powerValidLowerMilliVolts = 9000; ///< Lower bus-voltage threshold
+
+  /// @brief Upper PV threshold in mV, 0..26000; must exceed the requested lower limit.
+  uint32_t powerValidUpperMilliVolts = 10000;
+  /// @brief Lower PV threshold in mV, 0..26000; must be below the requested upper limit.
+  uint32_t powerValidLowerMilliVolts = 9000;
   bool warningLatch = false; ///< Enable latched warning-alert behavior
   bool criticalLatch = false; ///< Enable latched critical-alert behavior
 };
@@ -139,9 +150,14 @@ struct AlertProfile {
 /// @note The default shunt calibrations are zero, so the default profile is not
 /// valid while any channel is enabled. Set resistanceMicroOhms for each enabled
 /// channel before passing the profile to INA3221::bind().
+/// @note PV limits are carried even when unused. Valid shunt-only, power-down
+/// and partially enabled profiles do not certify a usable PV signal.
+/// See AlertProfile for threshold and integration requirements.
 struct DeviceProfile {
   uint8_t i2cAddress = 0x40; ///< Seven-bit address; valid range is 0x40 through 0x43
-  ChannelMask enabledChannels = ALL_CHANNELS; ///< Enabled CH1-through-CH3 mask
+
+  /// @brief Enabled CH1-through-CH3 mask; disabling a channel does not qualify unused PV wiring.
+  ChannelMask enabledChannels = ALL_CHANNELS;
   Averaging averaging = Averaging::AVG_1; ///< Recursive averaging setting
   ConvTime vBusCt = ConvTime::CT_1100US; ///< Bus-voltage conversion time
   ConvTime vShCt = ConvTime::CT_1100US; ///< Shunt-voltage conversion time

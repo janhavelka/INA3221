@@ -31,6 +31,8 @@ struct ChannelMeasurement {
 
 /// @brief Alert flags snapshot from Mask/Enable register.
 /// @note Reading Mask/Enable register clears CF1-CF3, SF, WF1-WF3, and CVRF.
+/// PVF is a condition level, not read-clear. It does not establish fresh rails
+/// or board-level power-good; see @ref power-valid-integration "Power-valid integration".
 struct AlertFlags {
   bool criticalCh1 = false;     ///< CF1: Critical flag Ch1
   bool criticalCh2 = false;     ///< CF2: Critical flag Ch2
@@ -39,7 +41,7 @@ struct AlertFlags {
   bool warningCh1 = false;      ///< WF1: Warning flag Ch1
   bool warningCh2 = false;      ///< WF2: Warning flag Ch2
   bool warningCh3 = false;      ///< WF3: Warning flag Ch3
-  bool powerValid = false;      ///< PVF: Power valid flag
+  bool powerValid = false;      ///< Observed PVF: true means PV high; no freshness guarantee
   bool timingControl = false;   ///< Raw TCF level: true means TC high/no fault
   bool conversionReady = false; ///< CVRF: Conversion ready flag
   bool timingControlFault = false; ///< True when TCF is low/TC fault asserted
@@ -130,11 +132,15 @@ struct ConversionTiming {
 };
 
 /// @brief Decoded and retained Mask/Enable evidence.
+/// @note PVF is replaced on each successful Mask/Enable read, not OR-retained
+/// in events. There is no PVF timestamp or observation-valid flag; an initial
+/// false value is not proof of a low pin. See AlertFlags and
+/// @ref power-valid-integration "Power-valid integration" before trusting power-good.
 struct AlertSnapshot {
   uint16_t raw = 0;               ///< Raw value from the consuming read
   uint16_t events = 0;            ///< OR-latched destructive event bits
   uint16_t writableBits = 0;      ///< SCC/WEN/CEN bits from the latest read
-  bool powerValid = false;        ///< Latest condition-level PVF value
+  bool powerValid = false;        ///< Latest observed PVF: true means PV high; may be stale
   bool timingControl = false;     ///< Latest raw TCF level: true means TC high/no fault
   bool conversionReady = false;   ///< CVRF in the consuming read
   bool evidenceUncertain = false; ///< A failed read that may have reached the
@@ -423,6 +429,7 @@ public:
   /// @brief Copy retained destructive alert evidence without consuming it.
   /// @param out Replaced with the retained alert snapshot.
   /// @return Always OK; an all-zero snapshot means no retained event evidence.
+  /// @note Cache-only: does not refresh PVF or establish current rail state.
   Status peekAlertEvents(AlertSnapshot& out) const;
 
   /// @brief Copy and acknowledge retained destructive alert evidence.
@@ -430,6 +437,7 @@ public:
   /// @return Always OK.
   /// @note Clears only retained event bits and evidenceUncertain; condition
   /// levels and the latest raw/writable-bit snapshot remain cached.
+  /// No I2C occurs, so taking events does not refresh or acknowledge PVF.
   Status takeAlertEvents(AlertSnapshot& out);
   /// @}
 
@@ -825,34 +833,55 @@ public:
   Status getShuntSumLimit(int16_t& raw);
 
   /// @brief Set power-valid upper bus-voltage limit.
-  /// @param raw Datasheet-format raw threshold; reserved bits are cleared before write.
-  /// @return Status from register write and readback verification.
+  /// @param raw Register-format threshold: bits 14:3 in 8 mV steps; bit 15 and
+  /// bits 2:0 are cleared. The decoded value must be at most 26000 mV and above
+  /// the retained profile's lower threshold.
+  /// @return Status from validation, register write and readback verification.
+  /// @note Success updates the desired upper threshold and preserves prior
+  /// alert-family certainty; it does not verify the whole family, start bus
+  /// conversions or qualify PV. See validatePowerValidWindow() and
+  /// @ref power-valid-integration "Power-valid integration".
   Status setPowerValidUpperLimit(int16_t raw);
 
   /// @brief Read power-valid upper bus-voltage limit.
-  /// @param raw Raw threshold register value.
+  /// @param raw Receives the raw upper threshold register, in 8 mV steps at
+  /// bits 14:3, on success; unchanged on failure.
   /// @return Status from register read.
+  /// @note Reads configuration only, not PVF or a fresh bus measurement; does
+  /// not verify the complete alert family. See setPowerValidUpperLimit().
   Status getPowerValidUpperLimit(int16_t& raw);
 
   /// @brief Set power-valid lower bus-voltage limit.
-  /// @param raw Datasheet-format raw threshold; reserved bits are cleared before write.
-  /// @return Status from register write and readback verification.
+  /// @param raw Register-format threshold: bits 14:3 in 8 mV steps; bit 15 and
+  /// bits 2:0 are cleared. The decoded value must be at most 26000 mV and below
+  /// the retained profile's upper threshold.
+  /// @return Status from validation, register write and readback verification.
+  /// @note Success updates the desired lower threshold and preserves prior
+  /// alert-family certainty; it does not verify the whole family, start bus
+  /// conversions or qualify PV. See validatePowerValidWindow() and
+  /// @ref power-valid-integration "Power-valid integration".
   Status setPowerValidLowerLimit(int16_t raw);
 
   /// @brief Read power-valid lower bus-voltage limit.
-  /// @param raw Raw threshold register value.
+  /// @param raw Receives the raw lower threshold register, in 8 mV steps at
+  /// bits 14:3, on success; unchanged on failure.
   /// @return Status from register read.
+  /// @note Reads configuration only, not PVF or a fresh bus measurement; does
+  /// not verify the complete alert family. See setPowerValidLowerLimit().
   Status getPowerValidLowerLimit(int16_t& raw);
 
   // === Mask/Enable Register ===
   /// @brief Read and decode Mask/Enable alert flags.
-  /// @param flags Decoded alert flags.
+  /// @param flags Receives decoded flags on success; unchanged on failure.
   /// @return Status from register read.
-  /// @note Reading Mask/Enable clears latched alert and conversion-ready flags.
+  /// @note Reading Mask/Enable retains CF/SF/WF/CVRF events before exposing the
+  /// consuming read. PVF is an observed pin condition, not read-clear or proof
+  /// of a new bus measurement. See AlertFlags and peekAlertEvents().
   Status readAlertFlags(AlertFlags& flags);
   /// @brief Explicitly read Mask/Enable and clear latched flags/CVRF.
   /// @param flags Receives decoded flags from the consuming read.
   /// @return Status from precondition and register-read checks.
+  /// @note Same retention and observed-PVF semantics as readAlertFlags().
   Status readAndClearAlertFlags(AlertFlags& flags);
 
   /// @brief Configure channels included in shunt-voltage summation.
@@ -1014,6 +1043,11 @@ public:
   /// @param upperMilliVolts Upper bus-voltage threshold in millivolts.
   /// @return OK when lower is less than upper and both fit at or below 26 V;
   /// otherwise OUT_OF_RANGE.
+  /// @note Checks requested ordering before round-to-nearest 8 mV encoding;
+  /// does not guarantee distinct encoded limits. Performs no I2C and does not
+  /// validate mode, wiring, conversion cadence, current rails or PV voltage.
+  /// Those remain application/board responsibilities; see AlertProfile and
+  /// @ref power-valid-integration "Power-valid integration".
   static Status validatePowerValidWindow(uint32_t lowerMilliVolts,
                                          uint32_t upperMilliVolts);
 

@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Consolidated earlier development notes into the first published release
   that included them; release comparisons now use published tags only.
+- Completed the power-valid integration contract and public API notes: PVF
+  polarity and freshness, hysteresis, unused-input wiring, VPU/PV ratings,
+  threshold quantization and application responsibility. Runtime behavior and
+  supported profiles are unchanged.
 
 ## [3.2.0] - 2026-09-08
 
