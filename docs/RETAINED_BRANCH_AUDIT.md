@@ -131,6 +131,17 @@ compile and firmware builds were not rerun for this documentation-only
 correction. Remote CI was not separately dispatched or awaited under the
 documentation-change policy. No hardware run was performed or claimed.
 
+**Independent re-audit, 2026-10-29:** reviewed the completed diff through
+`1180469` against the full prompt, live source/tests/consumers and bundled PDF.
+The confirmed gap was delivery: README-relative PDF citations worked in the
+repository but resolved to missing files in generated Doxygen HTML. Fixed in
+[`a465047ff14f62072268c456f38c7fc5ac51a4db`](https://github.com/janhavelka/INA3221/commit/a465047ff14f62072268c456f38c7fc5ac51a4db)
+by linking all four README datasheet references to the immutable bundled-PDF
+revision. The permalink returned HTTP 200 and its downloaded PDF matched the
+local file byte for byte. All commands above passed again, along with 43 local
+links, seven generated API/README links to the PV section, and its four PDF
+links/page references. No other in-scope gap or runtime defect was found.
+
 **Remaining consumer-specific condition:** a product relying on PV must
 qualify its rail topology, bus-conversion mode/cadence, accepted observation
 age, encoded hysteresis and PV electrical interface on its actual board.

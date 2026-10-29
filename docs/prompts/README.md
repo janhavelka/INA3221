@@ -39,3 +39,9 @@ for scope and consumer-specific qualification. Runtime behavior is unchanged;
 native tests, strict compile and firmware builds were not rerun, and remote CI
 was not separately dispatched or awaited. No hardware run is claimed. **TIM-1 and
 HIL-1 remain OPEN**, including physical proof for any consumer relying on PV.
+
+Independent re-audit on 2026-10-29 found and fixed generated-Doxygen PDF links
+in [`a465047ff14f62072268c456f38c7fc5ac51a4db`](https://github.com/janhavelka/INA3221/commit/a465047ff14f62072268c456f38c7fc5ac51a4db).
+The same required checks passed again, plus generated PV navigation and HTTP/
+byte-identity verification of the pinned datasheet. No other in-scope gap was
+found; runtime behavior and the physical-evidence boundaries remain unchanged.
